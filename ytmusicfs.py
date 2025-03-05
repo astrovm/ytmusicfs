@@ -19,33 +19,14 @@ class YouTubeMusicFS(Operations):
             auth_file: Path to authentication file
             auth_type: Type of authentication, either 'browser' (cookie-based) or 'oauth'
         """
-        if auth_type == "oauth":
-            # Load OAuth credentials from the auth file
-            try:
-                with open(auth_file, "r") as f:
-                    oauth_data = json.load(f)
-
-                # Extract client_id and client_secret from the file
-                client_id = oauth_data.get("client_id")
-                client_secret = oauth_data.get("client_secret")
-
-                if not client_id or not client_secret:
-                    print("Error: client_id or client_secret not found in OAuth file")
-                    raise ValueError("Missing OAuth credentials in auth file")
-
-                # Initialize with OAuth credentials
-                self.ytmusic = YTMusic(
-                    auth_file,
-                    oauth_credentials=OAuthCredentials(
-                        client_id=client_id, client_secret=client_secret
-                    ),
-                )
-            except Exception as e:
-                print(f"Error initializing with OAuth: {e}")
-                raise
-        else:
-            # Browser authentication
+        # We no longer need special handling for OAuth - the auth file is already
+        # in the correct format and the API will detect it automatically
+        try:
             self.ytmusic = YTMusic(auth_file)
+            print(f"Authentication successful using {auth_type} method!")
+        except Exception as e:
+            print(f"Error during authentication: {e}")
+            raise
 
         self.cache = {}  # Cache: {path: {'data': ..., 'time': ...}}
         self.cache_timeout = 300  # 5 minutes in seconds
@@ -56,31 +37,13 @@ class YouTubeMusicFS(Operations):
 
     def _refresh_auth_if_needed(self):
         """Attempt to refresh authentication if available"""
-        if self.auth_type == "oauth":
-            try:
-                # Reload OAuth credentials
-                with open(self.auth_file, "r") as f:
-                    oauth_data = json.load(f)
-
-                client_id = oauth_data.get("client_id")
-                client_secret = oauth_data.get("client_secret")
-
-                if not client_id or not client_secret:
-                    print("Error: client_id or client_secret not found in OAuth file")
-                    return False
-
-                # Re-initialize with OAuth credentials
-                self.ytmusic = YTMusic(
-                    self.auth_file,
-                    oauth_credentials=OAuthCredentials(
-                        client_id=client_id, client_secret=client_secret
-                    ),
-                )
-                return True
-            except Exception as e:
-                print(f"Error refreshing OAuth authentication: {e}")
-                return False
-        return False
+        try:
+            # Simply re-initialize the API with the auth file
+            self.ytmusic = YTMusic(self.auth_file)
+            return True
+        except Exception as e:
+            print(f"Error refreshing authentication: {e}")
+            return False
 
     def _get_from_cache(self, path):
         if (

@@ -30,32 +30,10 @@ def main():
     print()
 
     try:
-        if args.auth_type == "oauth":
-            # Load OAuth credentials from the auth file
-            try:
-                with open(args.auth_file, "r") as f:
-                    oauth_data = json.load(f)
-
-                # Extract client_id and client_secret from the file
-                client_id = oauth_data.get("client_id")
-                client_secret = oauth_data.get("client_secret")
-
-                if not client_id or not client_secret:
-                    print("Error: client_id or client_secret not found in OAuth file")
-                    raise ValueError("Missing OAuth credentials in auth file")
-
-                # Initialize with OAuth credentials
-                ytmusic = YTMusic(
-                    args.auth_file,
-                    oauth_credentials=OAuthCredentials(
-                        client_id=client_id, client_secret=client_secret
-                    ),
-                )
-            except Exception as e:
-                print(f"Error initializing with OAuth: {e}")
-                raise
-        else:
-            ytmusic = YTMusic(args.auth_file)
+        # We no longer need special handling for OAuth - the auth file is already
+        # in the correct format and the API will detect it automatically
+        ytmusic = YTMusic(args.auth_file)
+        print(f"Authentication successful using {args.auth_type} method!")
 
         # Test getting playlists
         print("Fetching playlists...")

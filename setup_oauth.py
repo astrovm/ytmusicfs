@@ -95,6 +95,27 @@ def main():
             client_secret=client_secret,
             open_browser=True,
         )
+
+        # Read the created file and ensure it has client_id and client_secret
+        try:
+            with open(output_file, "r") as f:
+                oauth_data = json.load(f)
+
+            # Add client_id and client_secret if they aren't already there
+            if "client_id" not in oauth_data:
+                oauth_data["client_id"] = client_id
+            if "client_secret" not in oauth_data:
+                oauth_data["client_secret"] = client_secret
+
+            # Write back the updated file
+            with open(output_file, "w") as f:
+                json.dump(oauth_data, f, indent=4)
+        except Exception as e:
+            print(f"Warning: Could not update OAuth file with client credentials: {e}")
+            print(
+                "You may need to manually add client_id and client_secret to your OAuth file."
+            )
+
         print()
         print(f"OAuth authentication data saved to {output_file}")
         print("You can now use this file with YTMusicFS by running:")
