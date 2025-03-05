@@ -2,7 +2,7 @@
 
 import sys
 import json
-from ytmusicapi import YTMusic, OAuthCredentials
+from ytmusicapi import YTMusic
 import argparse
 
 
@@ -30,10 +30,10 @@ def main():
     print()
 
     try:
-        # We no longer need special handling for OAuth - the auth file is already
-        # in the correct format and the API will detect it automatically
+        # Use simplified approach: just initialize YTMusic with the auth file
+        # and let the library handle the type detection
         ytmusic = YTMusic(args.auth_file)
-        print(f"Authentication successful using {args.auth_type} method!")
+        print(f"Authentication successful with {args.auth_type} method!")
 
         # Test getting playlists
         print("Fetching playlists...")

@@ -6,7 +6,7 @@ import time
 import errno
 import json
 from fuse import FUSE, Operations
-from ytmusicapi import YTMusic, OAuthCredentials
+from ytmusicapi import YTMusic
 import requests
 import subprocess
 
@@ -19,13 +19,18 @@ class YouTubeMusicFS(Operations):
             auth_file: Path to authentication file
             auth_type: Type of authentication, either 'browser' (cookie-based) or 'oauth'
         """
-        # We no longer need special handling for OAuth - the auth file is already
-        # in the correct format and the API will detect it automatically
+        # For version 1.10.2 we're going to use a simplified approach
+        # that avoids the OAuthCredentials class
         try:
+            # Initialize YTMusic with the auth file regardless of type
+            # Let the library figure out the format
             self.ytmusic = YTMusic(auth_file)
-            print(f"Authentication successful using {auth_type} method!")
+            print(f"Authentication successful with {auth_type} method!")
         except Exception as e:
             print(f"Error during authentication: {e}")
+            print(
+                "Try regenerating your authentication file with setup_oauth.py or direct_auth.py"
+            )
             raise
 
         self.cache = {}  # Cache: {path: {'data': ..., 'time': ...}}
@@ -38,7 +43,7 @@ class YouTubeMusicFS(Operations):
     def _refresh_auth_if_needed(self):
         """Attempt to refresh authentication if available"""
         try:
-            # Simply re-initialize the API with the auth file
+            # Re-initialize YTMusic with the auth file
             self.ytmusic = YTMusic(self.auth_file)
             return True
         except Exception as e:
