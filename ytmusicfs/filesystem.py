@@ -177,7 +177,13 @@ class YouTubeMusicFS(Operations):
                     liked_songs = self.ytmusic.get_liked_songs()
                     self._set_cache("/liked_songs", liked_songs)
 
+                # Process the raw liked songs data
+                self.logger.debug(
+                    f"Processing raw liked songs data: {type(liked_songs)}"
+                )
+
                 # Add the songs to the directory listing
+                processed_tracks = []
                 for song in liked_songs["tracks"]:
                     title = song.get("title", "Unknown Title")
                     artists = ", ".join(
@@ -187,13 +193,24 @@ class YouTubeMusicFS(Operations):
                         ]
                     )
                     filename = f"{artists} - {title}.m4a"
-                    dirents.append(self._sanitize_filename(filename))
+                    sanitized_filename = self._sanitize_filename(filename)
+                    dirents.append(sanitized_filename)
 
-                    # Cache the song metadata with filename mapping
-                    song["filename"] = self._sanitize_filename(filename)
+                    # Create a processed song with the necessary data
+                    processed_song = {
+                        "title": title,
+                        "artists": song.get("artists", []),
+                        "videoId": song.get("videoId"),
+                        "filename": sanitized_filename,
+                        "originalData": song,  # Keep the original data for reference
+                    }
+                    processed_tracks.append(processed_song)
 
-                # Cache the processed song list
-                self._set_cache("/liked_songs_processed", liked_songs["tracks"])
+                # Cache the processed song list with filename mappings
+                self.logger.debug(
+                    f"Caching {len(processed_tracks)} processed tracks for /liked_songs"
+                )
+                self._set_cache("/liked_songs_processed", processed_tracks)
 
             # Extract playlist information
             elif path.startswith("/playlists/"):
@@ -241,10 +258,11 @@ class YouTubeMusicFS(Operations):
                         ]
                     )
                     filename = f"{artists} - {title}.m4a"
-                    dirents.append(self._sanitize_filename(filename))
+                    sanitized_filename = self._sanitize_filename(filename)
+                    dirents.append(sanitized_filename)
 
                     # Add filename to track data for lookups
-                    track["filename"] = self._sanitize_filename(filename)
+                    track["filename"] = sanitized_filename
                     processed_tracks.append(track)
 
                 # Cache the processed track list for this playlist
@@ -509,6 +527,25 @@ class YouTubeMusicFS(Operations):
             attr["st_size"] = 0
             return attr
 
+        # Check if this is a song file (ends with .m4a)
+        if path.lower().endswith(".m4a"):
+            # Check if it's a valid song file by examining its parent directory
+            parent_dir = os.path.dirname(path)
+            filename = os.path.basename(path)
+
+            try:
+                # Get directory listing of parent
+                dirlist = self.readdir(parent_dir, None)
+                if filename in dirlist:
+                    # It's a valid song file
+                    attr["st_mode"] = stat.S_IFREG | 0o644
+                    attr["st_size"] = 10 * 1024 * 1024  # Default size for audio files
+                    return attr
+            except Exception as e:
+                self.logger.debug(f"Error checking file existence: {e}")
+                # Continue to other checks
+                pass
+
         # Check if path is a directory by trying to list it
         try:
             if path.endswith("/"):
@@ -552,30 +589,84 @@ class YouTubeMusicFS(Operations):
         Returns:
             File handle
         """
-        self.logger.debug(f"open: {path}")
+        self.logger.debug(f"open: {path} with flags {flags}")
         if path == "/":
             raise OSError(errno.EISDIR, "Is a directory")
 
         # Extract directory path and filename
         dir_path = os.path.dirname(path)
         filename = os.path.basename(path)
-        songs = self._get_from_cache(dir_path)
+        self.logger.debug(f"Looking for {filename} in {dir_path}")
+
+        # Special handling for liked songs which use a different cache key
+        if dir_path == "/liked_songs":
+            songs = self._get_from_cache("/liked_songs_processed")
+            self.logger.debug(f"Liked songs cache: {'Found' if songs else 'Not found'}")
+        else:
+            songs = self._get_from_cache(dir_path)
+            self.logger.debug(
+                f"Cache status for {dir_path}: {'Found' if songs else 'Not found'}"
+            )
 
         if not songs:
             # Re-fetch if not in cache
+            self.logger.debug(f"Re-fetching directory {dir_path}")
             self.readdir(dir_path, None)
-            songs = self._get_from_cache(dir_path)
+
+            # Try to get from cache again after refetching
+            if dir_path == "/liked_songs":
+                songs = self._get_from_cache("/liked_songs_processed")
+                self.logger.debug(
+                    f"After re-fetch, liked songs cache: {'Found' if songs else 'Not found'}"
+                )
+            else:
+                songs = self._get_from_cache(dir_path)
+                self.logger.debug(
+                    f"After re-fetch, songs: {'Found' if songs else 'Not found'}"
+                )
 
         if not songs:
+            self.logger.error(f"Could not find songs in directory {dir_path}")
             raise OSError(errno.ENOENT, f"File not found: {path}")
 
+        # Handle songs as either list of strings or list of dictionaries
         video_id = None
-        for song in songs:
-            if song.get("filename") == filename:
-                video_id = song.get("videoId")
-                break
+
+        # Check if the cache contains song objects (dictionaries) or just filenames (strings)
+        if isinstance(songs, list) and songs and isinstance(songs[0], str):
+            # Cache contains only filenames
+            self.logger.debug(f"Cache contains string filenames")
+            if filename in songs:
+                # Matched by filename, but we don't have videoId
+                self.logger.error(
+                    f"File found in cache but no videoId available: {filename}"
+                )
+                raise OSError(errno.ENOENT, f"No video ID for file: {path}")
+        else:
+            # Cache contains song dictionaries as expected
+            for song in songs:
+                # Check if song is a dictionary before trying to use .get()
+                if isinstance(song, dict):
+                    self.logger.debug(
+                        f"Checking song: {song.get('filename', 'Unknown')} for match with {filename}"
+                    )
+                    if song.get("filename") == filename:
+                        video_id = song.get("videoId")
+                        self.logger.debug(f"Found matching song, videoId: {video_id}")
+                        break
+                else:
+                    self.logger.debug(
+                        f"Skipping non-dictionary song object: {type(song)}"
+                    )
 
         if not video_id:
+            self.logger.error(f"Could not find videoId for {filename}")
+
+            # Special debug to see what's in the cache
+            self.logger.debug(
+                f"Cache contents for debugging: {songs[:5] if isinstance(songs, list) else songs}"
+            )
+
             raise OSError(errno.ENOENT, f"File not found: {path}")
 
         # Fetch stream URL using yt-dlp
@@ -593,6 +684,7 @@ class YouTubeMusicFS(Operations):
             stream_url = result.stdout.strip()
 
             if not stream_url:
+                self.logger.error("No suitable audio stream found")
                 raise OSError(errno.EIO, "No suitable audio stream found")
 
             self.logger.debug(f"Successfully got stream URL for {video_id}")
@@ -601,6 +693,7 @@ class YouTubeMusicFS(Operations):
             fh = self.next_fh
             self.next_fh += 1
             self.open_files[fh] = {"stream_url": stream_url}
+            self.logger.debug(f"Assigned file handle {fh} to {path}")
             return fh
 
         except subprocess.SubprocessError as e:
@@ -622,18 +715,27 @@ class YouTubeMusicFS(Operations):
         Returns:
             File data as bytes
         """
+        self.logger.debug(f"read: {path}, size={size}, offset={offset}, fh={fh}")
         try:
             if fh not in self.open_files:
+                self.logger.error(f"Bad file descriptor: {fh} not in open_files")
                 raise OSError(errno.EBADF, "Bad file descriptor")
 
             stream_url = self.open_files[fh]["stream_url"]
+            self.logger.debug(f"Using stream URL: {stream_url}")
             headers = {"Range": f"bytes={offset}-{offset + size - 1}"}
+            self.logger.debug(f"Requesting range: {headers['Range']}")
+
             response = requests.get(stream_url, headers=headers, stream=True)
+            self.logger.debug(f"Response status: {response.status_code}")
 
             if response.status_code not in (200, 206):
+                self.logger.error(f"Failed to stream: {response.status_code}")
                 raise RuntimeError(f"Failed to stream: {response.status_code}")
 
-            return response.content
+            content = response.content
+            self.logger.debug(f"Got {len(content)} bytes of content")
+            return content
         except Exception as e:
             self.logger.error(f"Error in read: {e}")
             raise OSError(errno.EIO, f"Failed to read stream: {str(e)}")
