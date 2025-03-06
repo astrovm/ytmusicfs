@@ -2,9 +2,6 @@
 
 YTMusicFS mounts your YouTube Music library as a standard filesystem, allowing you to browse and play your music with any traditional audio player.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python Versions](https://img.shields.io/badge/python-3.7%20%7C%203.8%20%7C%203.9%20%7C%203.10%20%7C%203.11-blue)](https://www.python.org/)
-
 ## Features
 
 - **Filesystem Interface**: Access your YouTube Music library through a standard filesystem
@@ -258,16 +255,6 @@ pip install -e ".[dev]"
 pytest
 ```
 
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- [ytmusicapi](https://github.com/sigma67/ytmusicapi) - Python library for the unofficial YouTube Music API
-- [fusepy](https://github.com/fusepy/fusepy) - Python bindings for FUSE
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) - YouTube downloader
