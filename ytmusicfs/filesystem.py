@@ -260,6 +260,26 @@ class YouTubeMusicFS(Operations):
             elif "duration_seconds" in track:
                 duration_seconds = track.get("duration_seconds")
 
+            # Extract additional metadata
+            track_number = track.get("trackNumber", track.get("index", 0))
+            year = None
+            if "year" in track:
+                year = track.get("year")
+            elif album_obj and isinstance(album_obj, dict) and "year" in album_obj:
+                year = album_obj.get("year")
+
+            # Extract genre information if available
+            genre = "Unknown Genre"
+            if "genre" in track:
+                genre = track.get("genre")
+
+            # Format duration as mm:ss for display
+            duration_formatted = "0:00"
+            if duration_seconds:
+                minutes = duration_seconds // 60
+                seconds = duration_seconds % 60
+                duration_formatted = f"{minutes}:{seconds:02d}"
+
             filename = f"{artists} - {title}.m4a"
             sanitized_filename = self._sanitize_filename(filename)
             filenames.append(sanitized_filename)
@@ -274,6 +294,10 @@ class YouTubeMusicFS(Operations):
                 processed_track["album"] = album
                 processed_track["album_artist"] = album_artist
                 processed_track["duration_seconds"] = duration_seconds
+                processed_track["duration_formatted"] = duration_formatted
+                processed_track["track_number"] = track_number
+                processed_track["year"] = year
+                processed_track["genre"] = genre
                 processed.append(processed_track)
 
         return filenames if not add_filename else processed
@@ -348,6 +372,26 @@ class YouTubeMusicFS(Operations):
                 except (ValueError, IndexError):
                     pass
 
+            # Extract additional metadata
+            track_number = song.get("trackNumber", song.get("index", 0))
+            year = None
+            if "year" in song:
+                year = song.get("year")
+            elif album_obj and isinstance(album_obj, dict) and "year" in album_obj:
+                year = album_obj.get("year")
+
+            # Extract genre information if available
+            genre = "Unknown Genre"
+            if "genre" in song:
+                genre = song.get("genre")
+
+            # Format duration as mm:ss for display
+            duration_formatted = "0:00"
+            if duration_seconds:
+                minutes = duration_seconds // 60
+                seconds = duration_seconds % 60
+                duration_formatted = f"{minutes}:{seconds:02d}"
+
             filename = f"{artists} - {title}.m4a"
             sanitized_filename = self._sanitize_filename(filename)
             filenames.append(sanitized_filename)
@@ -362,6 +406,10 @@ class YouTubeMusicFS(Operations):
                 "videoId": song.get("videoId"),
                 "filename": sanitized_filename,
                 "duration_seconds": duration_seconds,
+                "duration_formatted": duration_formatted,
+                "track_number": track_number,
+                "year": year,
+                "genre": genre,
                 "originalData": song,  # Keep the original data for reference
             }
             processed_tracks.append(processed_song)
@@ -450,6 +498,26 @@ class YouTubeMusicFS(Operations):
                 except (ValueError, IndexError):
                     pass
 
+            # Extract additional metadata
+            track_number = track.get("trackNumber", track.get("index", 0))
+            year = None
+            if "year" in track:
+                year = track.get("year")
+            elif album_obj and isinstance(album_obj, dict) and "year" in album_obj:
+                year = album_obj.get("year")
+
+            # Extract genre information if available
+            genre = "Unknown Genre"
+            if "genre" in track:
+                genre = track.get("genre")
+
+            # Format duration as mm:ss for display
+            duration_formatted = "0:00"
+            if duration_seconds:
+                minutes = duration_seconds // 60
+                seconds = duration_seconds % 60
+                duration_formatted = f"{minutes}:{seconds:02d}"
+
             filename = f"{artists} - {title}.m4a"
             sanitized_filename = self._sanitize_filename(filename)
             filenames.append(sanitized_filename)
@@ -461,6 +529,10 @@ class YouTubeMusicFS(Operations):
             track_copy["album"] = album
             track_copy["album_artist"] = album_artist
             track_copy["duration_seconds"] = duration_seconds
+            track_copy["duration_formatted"] = duration_formatted
+            track_copy["track_number"] = track_number
+            track_copy["year"] = year
+            track_copy["genre"] = genre
             processed_tracks.append(track_copy)
 
         # Cache the processed track list for this playlist
@@ -702,6 +774,31 @@ class YouTubeMusicFS(Operations):
                 except (ValueError, IndexError):
                     pass
 
+            # Determine track number from the track's index in the album if available
+            track_number = track.get("trackNumber")
+            if not track_number and "index" in track:
+                track_number = track.get("index")
+
+            # Use album year if available (already fetched when getting the album)
+            year = None
+            # Try to find the year for this album
+            for album in artist_albums:
+                if self._sanitize_filename(album["title"]) == album_name:
+                    year = album.get("year")
+                    break
+
+            # Extract genre information if available
+            genre = "Unknown Genre"
+            if "genre" in track:
+                genre = track.get("genre")
+
+            # Format duration as mm:ss for display
+            duration_formatted = "0:00"
+            if duration_seconds:
+                minutes = duration_seconds // 60
+                seconds = duration_seconds % 60
+                duration_formatted = f"{minutes}:{seconds:02d}"
+
             filename = f"{artists} - {title}.m4a"
             sanitized_filename = self._sanitize_filename(filename)
             filenames.append(sanitized_filename)
@@ -713,6 +810,10 @@ class YouTubeMusicFS(Operations):
             track_copy["album"] = album_title or "Unknown Album"
             track_copy["album_artist"] = album_artist
             track_copy["duration_seconds"] = duration_seconds
+            track_copy["duration_formatted"] = duration_formatted
+            track_copy["track_number"] = track_number
+            track_copy["year"] = year
+            track_copy["genre"] = genre
             processed_tracks.append(track_copy)
 
         # Cache the processed track list for this album
@@ -1146,19 +1247,35 @@ class YouTubeMusicFS(Operations):
             "user.xdg.tags.artist": "artist",
             "user.xdg.tags.album": "album",
             "user.xdg.tags.album_artist": "album_artist",
+            "user.xdg.tags.track": "track_number",
+            "user.xdg.tags.genre": "genre",
+            "user.xdg.tags.date": "year",
+            "user.xdg.tags.duration": "duration_formatted",
             # Dublin Core attributes
             "user.dublincore.title": "title",
             "user.dublincore.creator": "artist",
             "user.dublincore.publisher": "album_artist",
+            "user.dublincore.date": "year",
+            "user.dublincore.format.duration": "duration_formatted",
             # Generic metadata
             "user.metadata.title": "title",
             "user.metadata.artist": "artist",
             "user.metadata.album": "album",
             "user.metadata.album_artist": "album_artist",
+            "user.metadata.track_number": "track_number",
+            "user.metadata.year": "year",
+            "user.metadata.date": "year",
+            "user.metadata.genre": "genre",
+            "user.metadata.duration": "duration_formatted",
+            "user.metadata.length": "duration_seconds",
             # Audacious specific
             "user.metadata.audacious.title": "title",
             "user.metadata.audacious.artist": "artist",
             "user.metadata.audacious.album": "album",
+            "user.metadata.audacious.track_number": "track_number",
+            "user.metadata.audacious.year": "year",
+            "user.metadata.audacious.genre": "genre",
+            "user.metadata.audacious.length": "duration_seconds",
         }
 
         # Map the attribute name to the song field
@@ -1244,6 +1361,32 @@ class YouTubeMusicFS(Operations):
                 "user.xdg.tags.album_artist",
                 "user.dublincore.publisher",
                 "user.metadata.album_artist",
+            ],
+            "track_number": [
+                "user.xdg.tags.track",
+                "user.metadata.track_number",
+                "user.metadata.audacious.track_number",
+            ],
+            "year": [
+                "user.xdg.tags.date",
+                "user.dublincore.date",
+                "user.metadata.year",
+                "user.metadata.date",
+                "user.metadata.audacious.year",
+            ],
+            "genre": [
+                "user.xdg.tags.genre",
+                "user.metadata.genre",
+                "user.metadata.audacious.genre",
+            ],
+            "duration_seconds": [
+                "user.metadata.length",
+                "user.metadata.audacious.length",
+            ],
+            "duration_formatted": [
+                "user.xdg.tags.duration",
+                "user.dublincore.format.duration",
+                "user.metadata.duration",
             ],
         }
 
