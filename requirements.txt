@@ -1,7 +1,5 @@
 fusepy
 requests
 ytmusicapi
-google-auth
-google-auth-oauthlib
 yt-dlp
 packaging
