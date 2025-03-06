@@ -9,6 +9,7 @@ import logging
 import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, List
+import re
 
 import requests
 from fuse import FUSE, Operations
@@ -604,13 +605,52 @@ class YouTubeMusicFS(Operations):
             parent_dir = os.path.dirname(path)
             filename = os.path.basename(path)
 
+            # Check if we have a cached file size for this path
+            file_size_cache_key = f"filesize:{path}"
+            cached_size = self._get_from_cache(file_size_cache_key)
+
+            if cached_size is not None:
+                self.logger.debug(f"Using cached file size for {path}: {cached_size}")
+                attr["st_mode"] = stat.S_IFREG | 0o644
+                attr["st_size"] = cached_size
+                return attr
+
             try:
                 # Get directory listing of parent
                 dirlist = self.readdir(parent_dir, None)
                 if filename in dirlist:
                     # It's a valid song file
                     attr["st_mode"] = stat.S_IFREG | 0o644
-                    attr["st_size"] = 10 * 1024 * 1024  # Default size for audio files
+
+                    # Get a more accurate file size estimate based on song duration if available
+                    songs = self._get_from_cache(parent_dir)
+                    if (
+                        songs
+                        and isinstance(songs, list)
+                        and songs
+                        and isinstance(songs[0], dict)
+                    ):
+                        for song in songs:
+                            if song.get("filename") == filename:
+                                # If we have duration information, use it to estimate file size
+                                # Average bit rate for M4A: ~192kbps = 24KB/s
+                                if "duration_seconds" in song:
+                                    estimated_size = int(
+                                        song["duration_seconds"] * 24 * 1024
+                                    )
+                                    self.logger.debug(
+                                        f"Estimated size from duration: {estimated_size}"
+                                    )
+                                    # Cache this size estimate
+                                    self._set_cache(file_size_cache_key, estimated_size)
+                                    attr["st_size"] = estimated_size
+                                    return attr
+
+                    # Default size if no duration available
+                    # For YouTube Music, assume average song length is about 4 minutes = 240 seconds
+                    # 240 seconds * 24 KB/s ~= 5.76 MB
+                    estimated_size = 6 * 1024 * 1024
+                    attr["st_size"] = estimated_size
                     return attr
             except Exception as e:
                 self.logger.debug(f"Error checking file existence: {e}")
@@ -643,7 +683,16 @@ class YouTubeMusicFS(Operations):
             if filename in dirlist:
                 # It's a file
                 attr["st_mode"] = stat.S_IFREG | 0o644
-                attr["st_size"] = 10 * 1024 * 1024  # Default size for audio files
+
+                # Same file size estimation logic as above
+                file_size_cache_key = f"filesize:{path}"
+                cached_size = self._get_from_cache(file_size_cache_key)
+
+                if cached_size is not None:
+                    attr["st_size"] = cached_size
+                else:
+                    attr["st_size"] = 6 * 1024 * 1024  # Improved default estimate
+
                 return attr
         except Exception:
             pass
@@ -774,6 +823,17 @@ class YouTubeMusicFS(Operations):
             self.logger.error(f"Unexpected error getting stream URL: {e}")
             raise OSError(errno.EIO, f"Failed to get stream URL: {str(e)}")
 
+    def _update_file_size(self, path: str, size: int) -> None:
+        """Update the file size cache for a given path.
+
+        Args:
+            path: The file path
+            size: The actual file size in bytes
+        """
+        file_size_cache_key = f"filesize:{path}"
+        self._set_cache(file_size_cache_key, size)
+        self.logger.debug(f"Updated file size cache for {path}: {size} bytes")
+
     def read(self, path: str, size: int, offset: int, fh: int) -> bytes:
         """Read data from a file.
 
@@ -794,19 +854,71 @@ class YouTubeMusicFS(Operations):
 
             stream_url = self.open_files[fh]["stream_url"]
             self.logger.debug(f"Using stream URL: {stream_url}")
+
+            # Try with specific range first
             headers = {"Range": f"bytes={offset}-{offset + size - 1}"}
             self.logger.debug(f"Requesting range: {headers['Range']}")
 
             response = requests.get(stream_url, headers=headers, stream=True)
             self.logger.debug(f"Response status: {response.status_code}")
 
-            if response.status_code not in (200, 206):
-                self.logger.error(f"Failed to stream: {response.status_code}")
-                raise RuntimeError(f"Failed to stream: {response.status_code}")
+            # If we get a 416 Range Not Satisfiable error, try alternative approaches
+            if response.status_code == 416:
+                self.logger.debug("Got 416 error, trying alternative range request")
 
-            content = response.content
-            self.logger.debug(f"Got {len(content)} bytes of content")
-            return content
+                # Option 1: Try open-ended range (just specifying start position)
+                headers = {"Range": f"bytes={offset}-"}
+                self.logger.debug(f"Trying open-ended range: {headers['Range']}")
+                response = requests.get(stream_url, headers=headers, stream=True)
+
+                # Option 2: If that still fails, try getting whatever data is available
+                if response.status_code == 416:
+                    self.logger.debug(
+                        "Open-ended range also failed, requesting from beginning"
+                    )
+                    # Try to get content from the beginning and handle offset manually
+                    headers = {}  # No range header
+                    response = requests.get(stream_url, stream=True)
+
+                    # If we get data but need to apply offset manually
+                    if response.status_code == 200:
+                        content = response.content
+
+                        # Update the file size cache with the actual size
+                        self._update_file_size(path, len(content))
+
+                        if offset < len(content):
+                            # Apply offset and size limit manually
+                            return content[offset : offset + size]
+                        else:
+                            # Offset beyond file size
+                            self.logger.debug(
+                                f"Offset {offset} is beyond actual file size {len(content)}"
+                            )
+                            return b""
+
+            # For normal successful responses (200 or 206)
+            if response.status_code in (200, 206):
+                content = response.content
+
+                # If we've received the whole file, update the file size cache
+                if response.status_code == 200:
+                    self._update_file_size(path, len(content))
+                # If we have a Content-Range header, we can extract the total file size
+                elif "Content-Range" in response.headers:
+                    content_range = response.headers.get("Content-Range", "")
+                    match = re.search(r"bytes \d+-\d+/(\d+)", content_range)
+                    if match:
+                        total_size = int(match.group(1))
+                        self._update_file_size(path, total_size)
+
+                self.logger.debug(f"Got {len(content)} bytes of content")
+                return content
+
+            # If we get here, all attempts failed
+            self.logger.error(f"Failed to stream: {response.status_code}")
+            raise RuntimeError(f"Failed to stream: {response.status_code}")
+
         except Exception as e:
             self.logger.error(f"Error in read: {e}")
             raise OSError(errno.EIO, f"Failed to read stream: {str(e)}")
