@@ -243,9 +243,20 @@ class YouTubeMusicFS(Operations):
 
         for track in tracks:
             title = track.get("title", "Unknown Title")
-            artists = ", ".join(
-                [a.get("name", "Unknown Artist") for a in track.get("artists", [])]
-            )
+
+            # Process artists, removing "- Topic" suffixes
+            raw_artists = [
+                a.get("name", "Unknown Artist") for a in track.get("artists", [])
+            ]
+            clean_artists = []
+            for artist in raw_artists:
+                # Remove "- Topic" suffix from artist names
+                if artist.endswith(" - Topic"):
+                    artist = artist[:-8]  # Remove "- Topic" (8 characters)
+                clean_artists.append(artist)
+
+            artists = ", ".join(clean_artists)
+
             # Get album information when available
             album = "Unknown Album"
             album_artist = "Unknown Artist"
@@ -259,16 +270,32 @@ class YouTubeMusicFS(Operations):
                     album_artist_obj = album_obj.get("artist")
                     if album_artist_obj is not None:
                         if isinstance(album_artist_obj, list) and album_artist_obj:
-                            album_artist = album_artist_obj[0].get(
+                            album_artist_name = album_artist_obj[0].get(
                                 "name", "Unknown Artist"
                             )
+                            # Remove "- Topic" from album artist
+                            if album_artist_name.endswith(" - Topic"):
+                                album_artist = album_artist_name[:-8]
+                            else:
+                                album_artist = album_artist_name
                         elif isinstance(album_artist_obj, str):
-                            album_artist = album_artist_obj
+                            # Remove "- Topic" from album artist if it's a string
+                            if album_artist_obj.endswith(" - Topic"):
+                                album_artist = album_artist_obj[:-8]
+                            else:
+                                album_artist = album_artist_obj
                     # Try the 'artists' field if 'artist' wasn't found
                     elif "artists" in album_obj and album_obj["artists"]:
                         artists_obj = album_obj["artists"]
                         if artists_obj and isinstance(artists_obj[0], dict):
-                            album_artist = artists_obj[0].get("name", "Unknown Artist")
+                            album_artist_name = artists_obj[0].get(
+                                "name", "Unknown Artist"
+                            )
+                            # Remove "- Topic" from album artist
+                            if album_artist_name.endswith(" - Topic"):
+                                album_artist = album_artist_name[:-8]
+                            else:
+                                album_artist = album_artist_name
                 elif isinstance(album_obj, str):
                     album = album_obj
 
