@@ -39,15 +39,8 @@ class YouTubeMusicFS(Operations):
             client_id: OAuth client ID (required for OAuth authentication)
             client_secret: OAuth client secret (required for OAuth authentication)
         """
-        # Configure logging
+        # Get the logger (already configured in main())
         self.logger = logging.getLogger("YTMusicFS")
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        handler.setFormatter(formatter)
-        self.logger.addHandler(handler)
-        self.logger.setLevel(logging.INFO)
 
         self.logger.info(f"Initializing YTMusicFS with auth_type={auth_type}")
 
