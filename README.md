@@ -23,7 +23,7 @@ YTMusicFS is a FUSE filesystem that integrates YouTube Music into your Linux env
 1. Clone this repository:
 
    ```
-   git clone https://github.com/yourusername/ytmusicfs.git
+   git clone https://github.com/astrovm/ytmusicfs.git
    cd ytmusicfs
    ```
 
