@@ -154,6 +154,13 @@ class YouTubeMusicFS(Operations):
         """
         self.logger.debug(f"readdir: {path}")
 
+        # Check for hidden files/directories (those starting with a dot)
+        path_parts = path.split("/")
+        for part in path_parts:
+            if part and part.startswith("."):
+                self.logger.debug(f"Ignoring hidden path: {path}")
+                return [".", ".."]  # Return only the standard entries for hidden paths
+
         # Standard entries for all directories
         dirents = [".", ".."]
 
@@ -433,6 +440,11 @@ class YouTubeMusicFS(Operations):
         """
         playlist_name = path.split("/")[2]
 
+        # Early return for hidden files
+        if playlist_name.startswith("."):
+            self.logger.debug(f"Ignoring hidden playlist: {playlist_name}")
+            return []
+
         # Find the playlist ID
         playlists = self._fetch_and_cache(
             "/playlists", self.ytmusic.get_library_playlists, limit=100
@@ -575,6 +587,11 @@ class YouTubeMusicFS(Operations):
         """
         artist_name = path.split("/")[2]
 
+        # Early return for hidden files
+        if artist_name.startswith("."):
+            self.logger.debug(f"Ignoring hidden artist: {artist_name}")
+            return []
+
         # Find the artist ID
         artists = self._fetch_and_cache(
             "/artists", self.ytmusic.get_library_artists, limit=100
@@ -647,6 +664,13 @@ class YouTubeMusicFS(Operations):
         album_id = None
         album_title = None  # Store the album title for metadata
         artist_albums = []  # Initialize as empty list by default
+
+        # Check for hidden files
+        path_parts = path.split("/")
+        for part in path_parts:
+            if part and part.startswith("."):
+                self.logger.debug(f"Ignoring hidden album path: {path}")
+                return []
 
         if is_artist_album:
             parts = path.split("/")
