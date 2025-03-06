@@ -6,30 +6,81 @@ import time
 import errno
 import json
 from fuse import FUSE, Operations
-from ytmusicapi import YTMusic
+from ytmusicapi import YTMusic, OAuthCredentials
 import requests
 import subprocess
+import logging
+
+# Import our adapters
+try:
+    from ytmusicfs_adapter import YTMusicAdapter
+
+    ADAPTER_AVAILABLE = True
+except ImportError:
+    ADAPTER_AVAILABLE = False
+
+try:
+    from ytmusic_oauth_adapter import YTMusicOAuthAdapter
+
+    OAUTH_ADAPTER_AVAILABLE = True
+except ImportError:
+    OAUTH_ADAPTER_AVAILABLE = False
 
 
 class YouTubeMusicFS(Operations):
-    def __init__(self, auth_file, auth_type="browser"):
+    def __init__(
+        self, auth_file, auth_type="browser", client_id=None, client_secret=None
+    ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
         Args:
             auth_file: Path to authentication file
             auth_type: Type of authentication, either 'browser' (cookie-based) or 'oauth'
+            client_id: OAuth client ID (required for OAuth authentication)
+            client_secret: OAuth client secret (required for OAuth authentication)
         """
-        # For version 1.10.2 we're going to use a simplified approach
-        # that avoids the OAuthCredentials class
+        # Configure logging
+        self.logger = logging.getLogger("YTMusicFS")
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        handler.setFormatter(formatter)
+        self.logger.addHandler(handler)
+        self.logger.setLevel(logging.INFO)
+
+        self.logger.info(f"Initializing YTMusicFS with auth_type={auth_type}")
+
         try:
-            # Initialize YTMusic with the auth file regardless of type
-            # Let the library figure out the format
-            self.ytmusic = YTMusic(auth_file)
-            print(f"Authentication successful with {auth_type} method!")
+            # Use our OAuth adapter if available and if using OAuth
+            if OAUTH_ADAPTER_AVAILABLE and auth_type == "oauth":
+                self.logger.info("Using YTMusicOAuthAdapter for enhanced OAuth support")
+                self.ytmusic = YTMusicOAuthAdapter(
+                    auth_file=auth_file,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    logger=self.logger,
+                )
+                self.logger.info(f"Authentication successful with OAuth method!")
+            # Fall back to legacy adapter if available
+            elif ADAPTER_AVAILABLE and auth_type == "oauth":
+                self.logger.info("Using legacy YTMusicAdapter for OAuth support")
+                self.ytmusic = YTMusicAdapter(auth_file, auth_type)
+                self.logger.info(f"Authentication successful with legacy OAuth method!")
+            else:
+                # Fall back to direct initialization
+                if auth_type == "oauth" and not client_id:
+                    self.logger.warning(
+                        "OAuth authentication requires client_id and client_secret. Falling back to browser auth."
+                    )
+                    auth_type = "browser"
+
+                self.ytmusic = YTMusic(auth_file)
+                self.logger.info(f"Authentication successful with {auth_type} method!")
         except Exception as e:
-            print(f"Error during authentication: {e}")
-            print(
-                "Try regenerating your authentication file with setup_oauth.py or direct_auth.py"
+            self.logger.error(f"Error during authentication: {e}")
+            self.logger.error(
+                "Try regenerating your authentication file with oauth_setup_exact.py"
             )
             raise
 
@@ -39,16 +90,34 @@ class YouTubeMusicFS(Operations):
         self.next_fh = 1  # Next file handle to assign
         self.auth_file = auth_file
         self.auth_type = auth_type
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.using_oauth_adapter = OAUTH_ADAPTER_AVAILABLE and auth_type == "oauth"
+        self.using_legacy_adapter = (
+            ADAPTER_AVAILABLE and auth_type == "oauth" and not self.using_oauth_adapter
+        )
 
     def _refresh_auth_if_needed(self):
         """Attempt to refresh authentication if available"""
-        try:
-            # Re-initialize YTMusic with the auth file
-            self.ytmusic = YTMusic(self.auth_file)
-            return True
-        except Exception as e:
-            print(f"Error refreshing authentication: {e}")
-            return False
+        # If using OAuth adapter, let it handle refreshes
+        if self.using_oauth_adapter:
+            try:
+                # The adapter handles token refresh internally
+                return True
+            except Exception as e:
+                self.logger.error(f"Error with OAuth adapter: {e}")
+                return False
+        # If using legacy adapter, let it handle refreshes
+        elif self.using_legacy_adapter:
+            return self.ytmusic.refresh_if_needed()
+        # Otherwise use standard refresh
+        else:
+            try:
+                self.ytmusic = YTMusic(self.auth_file)
+                return True
+            except Exception as e:
+                self.logger.error(f"Error refreshing authentication: {e}")
+                return False
 
     def _get_from_cache(self, path):
         if (
@@ -589,9 +658,22 @@ def main():
         help="Type of authentication to use: browser (cookie-based) or oauth (default: browser)",
     )
     parser.add_argument(
+        "--client-id",
+        help="OAuth client ID (required for OAuth authentication)",
+    )
+    parser.add_argument(
+        "--client-secret",
+        help="OAuth client secret (required for OAuth authentication)",
+    )
+    parser.add_argument(
         "--foreground",
         action="store_true",
         help="Run in the foreground (for debugging)",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging",
     )
 
     args = parser.parse_args()
@@ -599,15 +681,28 @@ def main():
     if not os.path.exists(args.mount_point):
         os.makedirs(args.mount_point)
 
-    print(f"Mounting YouTube Music filesystem at {args.mount_point}")
-    print(f"Using authentication file: {args.auth_file}")
-    print(f"Authentication type: {args.auth_type}")
+    # Configure logging
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    logging.basicConfig(
+        level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    logger = logging.getLogger("YTMusicFS")
+
+    logger.info(f"Mounting YouTube Music filesystem at {args.mount_point}")
+    logger.info(f"Using authentication file: {args.auth_file}")
+    logger.info(f"Authentication type: {args.auth_type}")
+
+    if args.auth_type == "oauth" and (not args.client_id or not args.client_secret):
+        logger.warning("OAuth authentication requires client_id and client_secret.")
+        logger.warning("You can still try to mount, but token refresh may not work.")
 
     if args.foreground:
-        print("Press Ctrl+C to unmount")
+        logger.info("Press Ctrl+C to unmount")
 
     FUSE(
-        YouTubeMusicFS(args.auth_file, args.auth_type),
+        YouTubeMusicFS(
+            args.auth_file, args.auth_type, args.client_id, args.client_secret
+        ),
         args.mount_point,
         foreground=args.foreground,
         nothreads=True,
