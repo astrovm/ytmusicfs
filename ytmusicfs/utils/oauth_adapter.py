@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 
 import os
-import sys
 import json
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 
 from ytmusicapi import YTMusic, OAuthCredentials
 
@@ -36,12 +35,27 @@ class YTMusicOAuthAdapter:
         self.client_secret = client_secret
         self.logger = logger or logging.getLogger(__name__)
         self.ytmusic = None
+        self.auth_data = None
 
         # Validate inputs
         if not os.path.exists(auth_file):
             raise FileNotFoundError(f"Auth file not found: {auth_file}")
 
+        # Try to read client ID and secret from the auth file if not provided
         if not client_id or not client_secret:
+            try:
+                with open(auth_file, "r") as f:
+                    self.auth_data = json.load(f)
+                    self.client_id = client_id or self.auth_data.get("client_id")
+                    self.client_secret = client_secret or self.auth_data.get(
+                        "client_secret"
+                    )
+            except Exception as e:
+                self.logger.warning(
+                    f"Could not read client credentials from auth file: {e}"
+                )
+
+        if not self.client_id or not self.client_secret:
             self.logger.warning(
                 "Client ID and secret not provided. Token refresh may not work."
             )
@@ -64,7 +78,7 @@ class YTMusicOAuthAdapter:
                 auth=self.auth_file, oauth_credentials=oauth_credentials
             )
 
-            # Test connection
+            # Test connection with a lightweight call
             self.ytmusic.get_library_playlists(limit=1)
             self.logger.info(
                 "Successfully authenticated with YouTube Music using OAuth"
@@ -73,6 +87,21 @@ class YTMusicOAuthAdapter:
         except Exception as e:
             self.logger.error(f"Failed to initialize YTMusic with OAuth: {e}")
             raise
+
+    def refresh_token(self) -> bool:
+        """
+        Explicitly refresh the OAuth token.
+
+        Returns:
+            True if token was successfully refreshed, False otherwise
+        """
+        try:
+            # Re-initialize the YTMusic instance which will refresh the token
+            self._initialize_ytmusic()
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to refresh OAuth token: {e}")
+            return False
 
     def __getattr__(self, name: str) -> Any:
         """
@@ -88,42 +117,30 @@ class YTMusicOAuthAdapter:
             raise RuntimeError("YTMusic instance not initialized")
 
         if hasattr(self.ytmusic, name):
-            return getattr(self.ytmusic, name)
+            attr = getattr(self.ytmusic, name)
+
+            # If it's a method, wrap it to handle token refresh
+            if callable(attr):
+
+                def wrapped_method(*args, **kwargs):
+                    try:
+                        return attr(*args, **kwargs)
+                    except Exception as e:
+                        # If there's an error, try refreshing the token and retrying once
+                        if (
+                            "unauthorized" in str(e).lower()
+                            or "authentication" in str(e).lower()
+                        ):
+                            self.logger.info(
+                                "Authentication error, attempting to refresh token"
+                            )
+                            if self.refresh_token():
+                                # Get the method from the new instance and try again
+                                return getattr(self.ytmusic, name)(*args, **kwargs)
+                        # If refresh didn't help or it wasn't an auth error, raise the original exception
+                        raise
+
+                return wrapped_method
+            return attr
 
         raise AttributeError(f"'{self.__class__.__name__}' has no attribute '{name}'")
-
-
-# Example usage
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Test YTMusic OAuth Adapter")
-    parser.add_argument("--auth-file", required=True, help="Path to OAuth token file")
-    parser.add_argument("--client-id", help="OAuth client ID")
-    parser.add_argument("--client-secret", help="OAuth client secret")
-
-    args = parser.parse_args()
-
-    # Configure logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-
-    try:
-        # Initialize adapter
-        adapter = YTMusicOAuthAdapter(
-            auth_file=args.auth_file,
-            client_id=args.client_id,
-            client_secret=args.client_secret,
-        )
-
-        # Test getting playlists
-        playlists = adapter.get_library_playlists(limit=5)
-        print(f"Success! Found {len(playlists)} playlists")
-        for i, playlist in enumerate(playlists[:5], 1):
-            print(f"  {i}. {playlist['title']}")
-
-    except Exception as e:
-        print(f"Error: {e}")
-        sys.exit(1)

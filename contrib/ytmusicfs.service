@@ -1,0 +1,16 @@
+[Unit]
+Description=YouTube Music Filesystem
+After=network.target
+Documentation=https://github.com/astrovm/ytmusicfs
+
+[Service]
+Type=simple
+User=%i
+ExecStart=/usr/bin/ytmusicfs --mount-point %h/Music/ytmusic
+ExecStop=/usr/bin/fusermount -u %h/Music/ytmusic
+Restart=on-failure
+RestartSec=5
+Environment="LANG=en_US.UTF-8"
+
+[Install]
+WantedBy=default.target

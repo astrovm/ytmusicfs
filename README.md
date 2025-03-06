@@ -1,41 +1,66 @@
 # YTMusicFS - YouTube Music FUSE Filesystem
 
-YTMusicFS is a FUSE filesystem that integrates YouTube Music into your Linux environment, allowing traditional music players like Audacious to access and play your songs and playlists as if they were local files.
+YTMusicFS mounts your YouTube Music library as a standard filesystem, allowing you to browse and play your music with any traditional audio player.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python Versions](https://img.shields.io/badge/python-3.7%20%7C%203.8%20%7C%203.9%20%7C%203.10%20%7C%203.11-blue)](https://www.python.org/)
 
 ## Features
 
-- Access your YouTube Music library through a standard filesystem interface
-- Browse and play your playlists, liked songs, artists, and albums
-- Compatible with any music player that can read files from the filesystem
-- Streams audio on-demand from YouTube Music servers
-- Caches metadata to improve performance
-- Uses OAuth authentication for reliable, long-lasting sessions
+- **Filesystem Interface**: Access your YouTube Music library through a standard filesystem
+- **Traditional Player Support**: Play songs with any audio player that can read files
+- **Complete Library Access**: Browse playlists, liked songs, artists, and albums
+- **Persistent Authentication**: Uses OAuth for reliable, long-lasting sessions
+- **Disk Caching**: Caches metadata to improve browsing performance
+- **On-Demand Streaming**: Streams audio directly from YouTube Music servers
 
 ## Requirements
 
-- Python 3.6+
+- Python 3.7+
 - FUSE (Filesystem in Userspace)
 - YouTube Music account
-- Google Cloud Console account
+- Google Cloud Console account (for OAuth credentials)
+- yt-dlp (for audio streaming)
 
 ## Installation
 
-1. Clone this repository:
+### From PyPI (Recommended)
 
-   ```
-   git clone https://github.com/astrovm/ytmusicfs.git
-   cd ytmusicfs
-   ```
+```bash
+pip install ytmusicfs
+```
 
-2. Install the required dependencies:
+### From Source
 
-   ```
-   pip install -r requirements.txt
-   ```
+```bash
+git clone https://github.com/astrovm/ytmusicfs.git
+cd ytmusicfs
+pip install -e .
+```
 
-## OAuth Authentication Setup
+### Dependencies
 
-Setting up OAuth authentication requires a few steps but provides a more reliable and longer-lasting authentication method.
+On Debian/Ubuntu, install required system dependencies:
+
+```bash
+sudo apt-get install fuse libfuse-dev python3-dev
+```
+
+On Fedora/RHEL:
+
+```bash
+sudo dnf install fuse fuse-devel python3-devel
+```
+
+On Arch Linux:
+
+```bash
+sudo pacman -S fuse2 python
+```
+
+## Authentication Setup
+
+YTMusicFS uses OAuth for authentication, which provides better reliability and longer session lifetimes.
 
 ### Step 1: Get OAuth Credentials
 
@@ -50,129 +75,199 @@ Setting up OAuth authentication requires a few steps but provides a more reliabl
    - Click "Create Credentials" > "OAuth client ID"
    - Application type: "TV and Limited Input devices"
    - Name: "YTMusicFS" (or any name you prefer)
-5. Note down your Client ID and Client Secret
+   - Note your Client ID and Client Secret
 
 ### Step 2: Generate OAuth Token
 
-Run the `setup_oauth.py` script to generate an OAuth token:
+Run the setup utility with your OAuth credentials:
 
-```
-python setup_oauth.py --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET --output oauth.json
+```bash
+ytmusicfs-oauth --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET
 ```
 
 This will:
 
 1. Open a browser window for you to authorize the application
-2. Generate an OAuth token file (`oauth.json`)
+2. Generate and store an OAuth token in `~/.config/ytmusicfs/oauth.json`
 
 ## Usage
 
-1. Create a mount point:
+### Mount the Filesystem
 
-   ```
-   sudo mkdir -p /mnt/ytmusic
-   sudo chown $USER:$USER /mnt/ytmusic
-   ```
+Create a mount point (if it doesn't exist) and mount the filesystem:
 
-2. Mount the filesystem:
+```bash
+mkdir -p ~/Music/ytmusic
+ytmusicfs --mount-point ~/Music/ytmusic
+```
 
-   ```
-   python ytmusicfs.py --auth-file oauth.json --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET --mount-point /mnt/ytmusic
-   ```
+Or with custom options:
 
-   For debugging, add the `--foreground` and `--debug` flags:
+```bash
+ytmusicfs \
+  --mount-point ~/Music/ytmusic \
+  --auth-file /path/to/oauth.json \
+  --cache-timeout 600 \
+  --foreground \
+  --debug
+```
 
-   ```
-   python ytmusicfs.py --auth-file oauth.json --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET --mount-point /mnt/ytmusic --foreground --debug
-   ```
+### Environment Variables
 
-3. Browse your music:
+You can set environment variables instead of command-line options:
 
-   ```
-   ls /mnt/ytmusic
-   ls /mnt/ytmusic/playlists
-   ls /mnt/ytmusic/liked_songs
-   ```
+```bash
+export YTMUSICFS_CLIENT_ID="your_client_id"
+export YTMUSICFS_CLIENT_SECRET="your_client_secret"
+ytmusicfs --mount-point ~/Music/ytmusic
+```
 
-4. Play music with your favorite player:
+### Browse and Play Music
 
-   ```
-   audacious /mnt/ytmusic/playlists/MyFavorites/Song.m4a
-   ```
+Once mounted, you can browse the filesystem with your file manager:
 
-5. To unmount:
-   ```
-   fusermount -u /mnt/ytmusic
-   ```
+```bash
+ls ~/Music/ytmusic
+ls ~/Music/ytmusic/playlists
+ls ~/Music/ytmusic/liked_songs
+```
+
+Play music with any audio player:
+
+```bash
+audacious ~/Music/ytmusic/playlists/MyFavorites/Song.m4a
+mpv ~/Music/ytmusic/liked_songs/Artist\ -\ Song.m4a
+```
+
+### Unmount
+
+When you're done, unmount the filesystem:
+
+```bash
+fusermount -u ~/Music/ytmusic
+```
 
 ## Filesystem Structure
 
-- `/playlists/` - Contains subdirectories for each of your playlists
-- `/liked_songs/` - Contains your liked songs
-- `/artists/` - Contains subdirectories for each artist in your library
-- `/albums/` - Contains subdirectories for each album in your library
+- `/playlists/` - Your YouTube Music playlists
+- `/liked_songs/` - Your liked songs
+- `/artists/` - Artists in your library
+- `/albums/` - Albums in your library
+
+## Command Line Options
+
+### ytmusicfs
+
+```
+usage: ytmusicfs [-h] --mount-point MOUNT_POINT [--auth-file AUTH_FILE]
+                 [--client-id CLIENT_ID] [--client-secret CLIENT_SECRET]
+                 [--cache-dir CACHE_DIR] [--cache-timeout CACHE_TIMEOUT]
+                 [--foreground] [--debug] [--version]
+
+Mount YouTube Music as a filesystem
+
+Options:
+  -h, --help            Show this help message and exit
+  --mount-point, -m MOUNT_POINT
+                        Directory where the filesystem will be mounted
+  --version, -v         Show version and exit
+
+Authentication Options:
+  --auth-file, -a AUTH_FILE
+                        Path to the OAuth token file
+                        (default: ~/.config/ytmusicfs/oauth.json)
+  --client-id, -i CLIENT_ID
+                        OAuth client ID (required for OAuth authentication)
+  --client-secret, -s CLIENT_SECRET
+                        OAuth client secret (required for OAuth authentication)
+
+Cache Options:
+  --cache-dir, -c CACHE_DIR
+                        Directory to store cache files
+                        (default: ~/.cache/ytmusicfs)
+  --cache-timeout, -t CACHE_TIMEOUT
+                        Cache timeout in seconds (default: 300)
+
+Operational Options:
+  --foreground, -f      Run in the foreground (for debugging)
+  --debug, -d           Enable debug logging
+```
+
+### ytmusicfs-oauth
+
+```
+usage: ytmusicfs-oauth [-h] [--client-id CLIENT_ID]
+                       [--client-secret CLIENT_SECRET] [--output OUTPUT]
+                       [--open-browser] [--no-open-browser] [--debug]
+
+Set up OAuth authentication for YTMusicFS
+
+Options:
+  -h, --help            Show this help message and exit
+  --client-id, -i CLIENT_ID
+                        OAuth Client ID from Google Cloud Console
+  --client-secret, -s CLIENT_SECRET
+                        OAuth Client Secret from Google Cloud Console
+  --output, -o OUTPUT   Output file for the OAuth token
+                        (default: ~/.config/ytmusicfs/oauth.json)
+  --open-browser, -b    Automatically open the browser for authentication
+  --no-open-browser     Do not automatically open the browser for authentication
+  --debug, -d           Enable debug output
+```
 
 ## Limitations
 
 - Stream URLs from YouTube Music expire after some time
-- Seeking within tracks may not be perfectly smooth
-- Metadata (like album art) may not be available to all players
+- Seeking may not be perfectly smooth in all players
+- Metadata like album art may be limited depending on your player
 
 ## Troubleshooting
 
-### Token Refresh Issues
+### Authentication Issues
 
-If you encounter token refresh issues, make sure:
+- Ensure your OAuth token is valid and refresh tokens are working
+- Try regenerating your token with `ytmusicfs-oauth`
+- Check if your Google Cloud project has YouTube Data API enabled
 
-- You're providing the correct Client ID and Client Secret
-- Your OAuth token file is valid
-- The YouTube Data API v3 is enabled in your Google Cloud Console project
+### Playback Issues
 
-### Authentication Errors
+- Make sure yt-dlp is installed and up-to-date
+- Some players may not handle streaming URLs well; try different players
+- If audio stops, the stream URL may have expired; simply restart playback
 
-If you see authentication errors:
+### Performance Issues
 
-1. Try regenerating your OAuth token with `setup_oauth.py`
-2. Check if your token file has the correct format
-3. Verify your Client ID and Client Secret are correct
+- Increase cache timeout with `--cache-timeout` for better performance
+- Reduce network calls by browsing directories fully before playing
 
-### OAuth Token File Format
+## Development
 
-The OAuth token file should contain:
+```bash
+# Clone repository
+git clone https://github.com/astrovm/ytmusicfs.git
+cd ytmusicfs
 
-- `access_token`: Your access token
-- `refresh_token`: Your refresh token
-- `token_expiry`: Expiration timestamp
-- `client_id`: Your client ID
-- `client_secret`: Your client secret
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate
 
-### Other Issues
+# Install in development mode
+pip install -e ".[dev]"
 
-- If you encounter permission issues, make sure your user has write access to the mount point
-- For debugging, run with the `--foreground` flag to see log messages
+# Run tests
+pytest
+```
 
-## Command Line Arguments
+## Contributing
 
-### ytmusicfs.py
-
-- `--mount-point`: Directory where the filesystem will be mounted
-- `--auth-file`: Path to the OAuth token file
-- `--client-id`: OAuth client ID
-- `--client-secret`: OAuth client secret
-- `--foreground`: Run in the foreground (for debugging)
-- `--debug`: Enable debug logging
-
-### setup_oauth.py
-
-- `--client-id`: OAuth client ID
-- `--client-secret`: OAuth client secret
-- `--output`: Output file for the OAuth token
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 
 - [ytmusicapi](https://github.com/sigma67/ytmusicapi) - Python library for the unofficial YouTube Music API
 - [fusepy](https://github.com/fusepy/fusepy) - Python bindings for FUSE
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) - YouTube downloader

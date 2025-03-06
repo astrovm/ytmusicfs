@@ -1,5 +1,6 @@
 # Authentication files
 oauth.json
+**/oauth*.json
 
 # Mount point
 mount/
@@ -13,11 +14,13 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+.eggs/
 
 # Virtual environments
 venv/
 env/
 ENV/
+.env/
 
 # IDE files
 .idea/
@@ -28,3 +31,16 @@ ENV/
 # OS specific files
 .DS_Store
 Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Mypy
+.mypy_cache/
+
+# Local config
+config.ini
+*.local.json
