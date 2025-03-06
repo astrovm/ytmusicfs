@@ -156,337 +156,26 @@ class YouTubeMusicFS(Operations):
         # Standard entries for all directories
         dirents = [".", ".."]
 
-        if path == "/":
-            dirents.extend(["playlists", "liked_songs", "artists", "albums"])
-            return dirents
-
-        # Handle each directory type
         try:
-            if path == "/playlists":
-                playlists = self._get_from_cache("/playlists")
-                if not playlists:
-                    playlists = self.ytmusic.get_library_playlists(limit=100)
-                    self._set_cache("/playlists", playlists)
-
-                for playlist in playlists:
-                    dirents.append(self._sanitize_filename(playlist["title"]))
-
+            # Dispatch to the appropriate handler based on path
+            if path == "/":
+                return dirents + ["playlists", "liked_songs", "artists", "albums"]
+            elif path == "/playlists":
+                return dirents + self._readdir_playlists()
             elif path == "/liked_songs":
-                liked_songs = self._get_from_cache("/liked_songs")
-                if not liked_songs:
-                    liked_songs = self.ytmusic.get_liked_songs()
-                    self._set_cache("/liked_songs", liked_songs)
-
-                # Process the raw liked songs data
-                self.logger.debug(
-                    f"Processing raw liked songs data: {type(liked_songs)}"
-                )
-
-                # Add the songs to the directory listing
-                processed_tracks = []
-                for song in liked_songs["tracks"]:
-                    title = song.get("title", "Unknown Title")
-                    artists = ", ".join(
-                        [
-                            a.get("name", "Unknown Artist")
-                            for a in song.get("artists", [])
-                        ]
-                    )
-                    filename = f"{artists} - {title}.m4a"
-                    sanitized_filename = self._sanitize_filename(filename)
-                    dirents.append(sanitized_filename)
-
-                    # Create a processed song with the necessary data
-                    processed_song = {
-                        "title": title,
-                        "artists": song.get("artists", []),
-                        "videoId": song.get("videoId"),
-                        "filename": sanitized_filename,
-                        "originalData": song,  # Keep the original data for reference
-                    }
-                    processed_tracks.append(processed_song)
-
-                # Cache the processed song list with filename mappings
-                self.logger.debug(
-                    f"Caching {len(processed_tracks)} processed tracks for /liked_songs"
-                )
-                self._set_cache("/liked_songs_processed", processed_tracks)
-
-            # Extract playlist information
-            elif path.startswith("/playlists/"):
-                playlist_name = path.split("/")[2]
-
-                # Find the playlist ID
-                playlists = self._get_from_cache("/playlists")
-                if not playlists:
-                    playlists = self.ytmusic.get_library_playlists(limit=100)
-                    self._set_cache("/playlists", playlists)
-
-                playlist_id = None
-                for playlist in playlists:
-                    if self._sanitize_filename(playlist["title"]) == playlist_name:
-                        playlist_id = playlist["playlistId"]
-                        break
-
-                if not playlist_id:
-                    self.logger.error(f"Could not find playlist ID for {playlist_name}")
-                    return dirents
-
-                # Get the playlist tracks
-                playlist_cache_key = f"/playlist/{playlist_id}"
-                playlist_tracks = self._get_from_cache(playlist_cache_key)
-
-                if not playlist_tracks:
-                    try:
-                        playlist_data = self.ytmusic.get_playlist(
-                            playlist_id, limit=500
-                        )
-                        playlist_tracks = playlist_data.get("tracks", [])
-                        self._set_cache(playlist_cache_key, playlist_tracks)
-                    except Exception as e:
-                        self.logger.error(f"Error fetching playlist {playlist_id}: {e}")
-                        return dirents
-
-                # Add the songs to the directory listing
-                processed_tracks = []
-                for track in playlist_tracks:
-                    title = track.get("title", "Unknown Title")
-                    artists = ", ".join(
-                        [
-                            a.get("name", "Unknown Artist")
-                            for a in track.get("artists", [])
-                        ]
-                    )
-                    filename = f"{artists} - {title}.m4a"
-                    sanitized_filename = self._sanitize_filename(filename)
-                    dirents.append(sanitized_filename)
-
-                    # Add filename to track data for lookups
-                    track["filename"] = sanitized_filename
-                    processed_tracks.append(track)
-
-                # Cache the processed track list for this playlist
-                self._set_cache(path, processed_tracks)
-
+                return dirents + self._readdir_liked_songs()
             elif path == "/artists":
-                artists = self._get_from_cache("/artists")
-                if not artists:
-                    artists = self.ytmusic.get_library_artists(limit=100)
-                    self._set_cache("/artists", artists)
-
-                for artist in artists:
-                    dirents.append(self._sanitize_filename(artist["artist"]))
-
+                return dirents + self._readdir_artists()
             elif path == "/albums":
-                albums = self._get_from_cache("/albums")
-                if not albums:
-                    albums = self.ytmusic.get_library_albums(limit=100)
-                    self._set_cache("/albums", albums)
-
-                for album in albums:
-                    dirents.append(self._sanitize_filename(album["title"]))
-
-            # Extract artist information
-            elif path.startswith("/artists/"):
-                artist_name = path.split("/")[2]
-
-                # Find the artist ID
-                artists = self._get_from_cache("/artists")
-                if not artists:
-                    artists = self.ytmusic.get_library_artists(limit=100)
-                    self._set_cache("/artists", artists)
-
-                artist_id = None
-                for artist in artists:
-                    if self._sanitize_filename(artist["artist"]) == artist_name:
-                        artist_id = artist["artistId"]
-                        if not artist_id:
-                            artist_id = artist["browseId"]
-                        break
-
-                if not artist_id:
-                    self.logger.error(f"Could not find artist ID for {artist_name}")
-                    return dirents
-
-                # Get the artist's albums and singles
-                artist_cache_key = f"/artist/{artist_id}"
-                artist_albums = self._get_from_cache(artist_cache_key)
-
-                if not artist_albums:
-                    try:
-                        artist_data = self.ytmusic.get_artist(artist_id)
-                        artist_albums = []
-
-                        # Get albums
-                        if "albums" in artist_data:
-                            for album in artist_data["albums"]["results"]:
-                                artist_albums.append(
-                                    {
-                                        "title": album.get("title", "Unknown Album"),
-                                        "year": album.get("year", ""),
-                                        "type": "album",
-                                        "browseId": album.get("browseId"),
-                                    }
-                                )
-
-                        # Get singles
-                        if "singles" in artist_data:
-                            for single in artist_data["singles"]["results"]:
-                                artist_albums.append(
-                                    {
-                                        "title": single.get("title", "Unknown Single"),
-                                        "year": single.get("year", ""),
-                                        "type": "single",
-                                        "browseId": single.get("browseId"),
-                                    }
-                                )
-
-                        self._set_cache(artist_cache_key, artist_albums)
-                    except Exception as e:
-                        self.logger.error(f"Error fetching artist {artist_id}: {e}")
-                        return dirents
-
-                # Add the albums to the directory listing
-                for item in artist_albums:
-                    dirents.append(self._sanitize_filename(item["title"]))
-
-            # Extract album information
-            elif (
-                path.startswith("/albums/")
-                or path.startswith("/artists/")
-                and path.count("/") >= 3
+                return dirents + self._readdir_albums()
+            elif path.startswith("/playlists/"):
+                return dirents + self._readdir_playlist_content(path)
+            elif path.startswith("/artists/") and path.count("/") == 2:
+                return dirents + self._readdir_artist_content(path)
+            elif path.startswith("/albums/") or (
+                path.startswith("/artists/") and path.count("/") >= 3
             ):
-                # Determine if this is an artist's album or a library album
-                is_artist_album = path.startswith("/artists/")
-
-                if is_artist_album:
-                    parts = path.split("/")
-                    artist_name = parts[2]
-                    album_name = parts[3]
-
-                    # Find the artist ID
-                    artists = self._get_from_cache("/artists")
-                    if not artists:
-                        artists = self.ytmusic.get_library_artists(limit=100)
-                        self._set_cache("/artists", artists)
-
-                    artist_id = None
-                    for artist in artists:
-                        if self._sanitize_filename(artist["artist"]) == artist_name:
-                            artist_id = artist["artistId"]
-                            if not artist_id:
-                                artist_id = artist["browseId"]
-                            break
-
-                    if not artist_id:
-                        self.logger.error(f"Could not find artist ID for {artist_name}")
-                        return dirents
-
-                    # Get the artist's albums
-                    artist_cache_key = f"/artist/{artist_id}"
-                    artist_albums = self._get_from_cache(artist_cache_key)
-
-                    if not artist_albums:
-                        try:
-                            artist_data = self.ytmusic.get_artist(artist_id)
-                            artist_albums = []
-
-                            # Get albums
-                            if "albums" in artist_data:
-                                for album in artist_data["albums"]["results"]:
-                                    artist_albums.append(
-                                        {
-                                            "title": album.get(
-                                                "title", "Unknown Album"
-                                            ),
-                                            "year": album.get("year", ""),
-                                            "type": "album",
-                                            "browseId": album.get("browseId"),
-                                        }
-                                    )
-
-                            # Get singles
-                            if "singles" in artist_data:
-                                for single in artist_data["singles"]["results"]:
-                                    artist_albums.append(
-                                        {
-                                            "title": single.get(
-                                                "title", "Unknown Single"
-                                            ),
-                                            "year": single.get("year", ""),
-                                            "type": "single",
-                                            "browseId": single.get("browseId"),
-                                        }
-                                    )
-
-                            self._set_cache(artist_cache_key, artist_albums)
-                        except Exception as e:
-                            self.logger.error(f"Error fetching artist {artist_id}: {e}")
-                            return dirents
-
-                    # Find the album ID
-                    album_id = None
-                    for album in artist_albums:
-                        if self._sanitize_filename(album["title"]) == album_name:
-                            album_id = album["browseId"]
-                            break
-
-                    if not album_id:
-                        self.logger.error(f"Could not find album ID for {album_name}")
-                        return dirents
-                else:
-                    # Regular album path
-                    album_name = path.split("/")[2]
-
-                    # Find the album ID
-                    albums = self._get_from_cache("/albums")
-                    if not albums:
-                        albums = self.ytmusic.get_library_albums(limit=100)
-                        self._set_cache("/albums", albums)
-
-                    album_id = None
-                    for album in albums:
-                        if self._sanitize_filename(album["title"]) == album_name:
-                            album_id = album["browseId"]
-                            break
-
-                    if not album_id:
-                        self.logger.error(f"Could not find album ID for {album_name}")
-                        return dirents
-
-                # Get the album tracks
-                album_cache_key = f"/album/{album_id}"
-                album_tracks = self._get_from_cache(album_cache_key)
-
-                if not album_tracks:
-                    try:
-                        album_data = self.ytmusic.get_album(album_id)
-                        album_tracks = album_data.get("tracks", [])
-                        self._set_cache(album_cache_key, album_tracks)
-                    except Exception as e:
-                        self.logger.error(f"Error fetching album {album_id}: {e}")
-                        return dirents
-
-                # Add the songs to the directory listing
-                processed_tracks = []
-                for track in album_tracks:
-                    title = track.get("title", "Unknown Title")
-                    artists = ", ".join(
-                        [
-                            a.get("name", "Unknown Artist")
-                            for a in track.get("artists", [])
-                        ]
-                    )
-                    filename = f"{artists} - {title}.m4a"
-                    dirents.append(self._sanitize_filename(filename))
-
-                    # Add filename to track data for lookups
-                    track["filename"] = self._sanitize_filename(filename)
-                    processed_tracks.append(track)
-
-                # Cache the processed track list for this album
-                self._set_cache(path, processed_tracks)
-
+                return dirents + self._readdir_album_content(path)
         except Exception as e:
             self.logger.error(f"Error in readdir for {path}: {e}")
             import traceback
@@ -494,6 +183,382 @@ class YouTubeMusicFS(Operations):
             self.logger.error(traceback.format_exc())
 
         return dirents
+
+    def _fetch_and_cache(self, cache_key: str, fetch_func, *args, **kwargs) -> Any:
+        """Fetch data from cache or API and update cache if needed.
+
+        Args:
+            cache_key: The key to use for caching
+            fetch_func: The function to call to fetch data
+            *args, **kwargs: Arguments to pass to fetch_func
+
+        Returns:
+            The fetched or cached data
+        """
+        data = self._get_from_cache(cache_key)
+        if not data:
+            data = fetch_func(*args, **kwargs)
+            self._set_cache(cache_key, data)
+        return data
+
+    def _process_tracks(
+        self, tracks: List[Dict], add_filename: bool = True
+    ) -> List[Dict]:
+        """Process track data into a consistent format with filenames.
+
+        Args:
+            tracks: List of track dictionaries
+            add_filename: Whether to add filename to the tracks
+
+        Returns:
+            List of processed tracks with filenames
+        """
+        processed = []
+        filenames = []
+
+        for track in tracks:
+            title = track.get("title", "Unknown Title")
+            artists = ", ".join(
+                [a.get("name", "Unknown Artist") for a in track.get("artists", [])]
+            )
+            filename = f"{artists} - {title}.m4a"
+            sanitized_filename = self._sanitize_filename(filename)
+            filenames.append(sanitized_filename)
+
+            if add_filename:
+                # Create a shallow copy of the track and add filename
+                processed_track = dict(track)
+                processed_track["filename"] = sanitized_filename
+                processed.append(processed_track)
+
+        return filenames if not add_filename else processed
+
+    def _readdir_playlists(self) -> List[str]:
+        """Handle listing playlist directories.
+
+        Returns:
+            List of playlist names
+        """
+        playlists = self._fetch_and_cache(
+            "/playlists", self.ytmusic.get_library_playlists, limit=100
+        )
+
+        return [self._sanitize_filename(playlist["title"]) for playlist in playlists]
+
+    def _readdir_liked_songs(self) -> List[str]:
+        """Handle listing liked songs.
+
+        Returns:
+            List of liked song filenames
+        """
+        liked_songs = self._fetch_and_cache(
+            "/liked_songs", self.ytmusic.get_liked_songs
+        )
+
+        # Process the raw liked songs data
+        self.logger.debug(f"Processing raw liked songs data: {type(liked_songs)}")
+
+        # Process tracks and create filenames
+        processed_tracks = []
+        filenames = []
+
+        for song in liked_songs["tracks"]:
+            title = song.get("title", "Unknown Title")
+            artists = ", ".join(
+                [a.get("name", "Unknown Artist") for a in song.get("artists", [])]
+            )
+            filename = f"{artists} - {title}.m4a"
+            sanitized_filename = self._sanitize_filename(filename)
+            filenames.append(sanitized_filename)
+
+            # Create a processed song with the necessary data
+            processed_song = {
+                "title": title,
+                "artists": song.get("artists", []),
+                "videoId": song.get("videoId"),
+                "filename": sanitized_filename,
+                "originalData": song,  # Keep the original data for reference
+            }
+            processed_tracks.append(processed_song)
+
+        # Cache the processed song list with filename mappings
+        self.logger.debug(
+            f"Caching {len(processed_tracks)} processed tracks for /liked_songs"
+        )
+        self._set_cache("/liked_songs_processed", processed_tracks)
+
+        return filenames
+
+    def _readdir_playlist_content(self, path: str) -> List[str]:
+        """Handle listing contents of a specific playlist.
+
+        Args:
+            path: Playlist path
+
+        Returns:
+            List of track filenames in the playlist
+        """
+        playlist_name = path.split("/")[2]
+
+        # Find the playlist ID
+        playlists = self._fetch_and_cache(
+            "/playlists", self.ytmusic.get_library_playlists, limit=100
+        )
+
+        playlist_id = None
+        for playlist in playlists:
+            if self._sanitize_filename(playlist["title"]) == playlist_name:
+                playlist_id = playlist["playlistId"]
+                break
+
+        if not playlist_id:
+            self.logger.error(f"Could not find playlist ID for {playlist_name}")
+            return []
+
+        # Get the playlist tracks
+        playlist_cache_key = f"/playlist/{playlist_id}"
+        playlist_tracks = self._fetch_and_cache(
+            playlist_cache_key,
+            lambda: self.ytmusic.get_playlist(playlist_id, limit=500).get("tracks", []),
+        )
+
+        # Process tracks and create filenames
+        processed_tracks = []
+        filenames = []
+
+        for track in playlist_tracks:
+            title = track.get("title", "Unknown Title")
+            artists = ", ".join(
+                [a.get("name", "Unknown Artist") for a in track.get("artists", [])]
+            )
+            filename = f"{artists} - {title}.m4a"
+            sanitized_filename = self._sanitize_filename(filename)
+            filenames.append(sanitized_filename)
+
+            # Add filename to track data for lookups
+            track_copy = dict(track)
+            track_copy["filename"] = sanitized_filename
+            processed_tracks.append(track_copy)
+
+        # Cache the processed track list for this playlist
+        self._set_cache(path, processed_tracks)
+
+        return filenames
+
+    def _readdir_artists(self) -> List[str]:
+        """Handle listing artist directories.
+
+        Returns:
+            List of artist names
+        """
+        artists = self._fetch_and_cache(
+            "/artists", self.ytmusic.get_library_artists, limit=100
+        )
+
+        return [self._sanitize_filename(artist["artist"]) for artist in artists]
+
+    def _readdir_albums(self) -> List[str]:
+        """Handle listing album directories.
+
+        Returns:
+            List of album names
+        """
+        albums = self._fetch_and_cache(
+            "/albums", self.ytmusic.get_library_albums, limit=100
+        )
+
+        return [self._sanitize_filename(album["title"]) for album in albums]
+
+    def _readdir_artist_content(self, path: str) -> List[str]:
+        """Handle listing contents of a specific artist directory.
+
+        Args:
+            path: Artist path
+
+        Returns:
+            List of album names by the artist
+        """
+        artist_name = path.split("/")[2]
+
+        # Find the artist ID
+        artists = self._fetch_and_cache(
+            "/artists", self.ytmusic.get_library_artists, limit=100
+        )
+
+        artist_id = None
+        for artist in artists:
+            if self._sanitize_filename(artist["artist"]) == artist_name:
+                artist_id = artist["artistId"]
+                if not artist_id:
+                    artist_id = artist["browseId"]
+                break
+
+        if not artist_id:
+            self.logger.error(f"Could not find artist ID for {artist_name}")
+            return []
+
+        # Get the artist's albums and singles
+        artist_cache_key = f"/artist/{artist_id}"
+
+        def fetch_artist_albums():
+            artist_data = self.ytmusic.get_artist(artist_id)
+            artist_albums = []
+
+            # Get albums
+            if "albums" in artist_data:
+                for album in artist_data["albums"]["results"]:
+                    artist_albums.append(
+                        {
+                            "title": album.get("title", "Unknown Album"),
+                            "year": album.get("year", ""),
+                            "type": "album",
+                            "browseId": album.get("browseId"),
+                        }
+                    )
+
+            # Get singles
+            if "singles" in artist_data:
+                for single in artist_data["singles"]["results"]:
+                    artist_albums.append(
+                        {
+                            "title": single.get("title", "Unknown Single"),
+                            "year": single.get("year", ""),
+                            "type": "single",
+                            "browseId": single.get("browseId"),
+                        }
+                    )
+
+            return artist_albums
+
+        artist_albums = self._fetch_and_cache(artist_cache_key, fetch_artist_albums)
+
+        # Return the albums
+        return [self._sanitize_filename(item["title"]) for item in artist_albums]
+
+    def _readdir_album_content(self, path: str) -> List[str]:
+        """Handle listing contents of a specific album.
+
+        Args:
+            path: Album path
+
+        Returns:
+            List of track filenames in the album
+        """
+        # Determine if this is an artist's album or a library album
+        is_artist_album = path.startswith("/artists/")
+        album_id = None
+
+        if is_artist_album:
+            parts = path.split("/")
+            artist_name = parts[2]
+            album_name = parts[3]
+
+            # Find the artist ID
+            artists = self._fetch_and_cache(
+                "/artists", self.ytmusic.get_library_artists, limit=100
+            )
+
+            artist_id = None
+            for artist in artists:
+                if self._sanitize_filename(artist["artist"]) == artist_name:
+                    artist_id = artist["artistId"]
+                    if not artist_id:
+                        artist_id = artist["browseId"]
+                    break
+
+            if not artist_id:
+                self.logger.error(f"Could not find artist ID for {artist_name}")
+                return []
+
+            # Get the artist's albums
+            artist_cache_key = f"/artist/{artist_id}"
+
+            def fetch_artist_albums():
+                artist_data = self.ytmusic.get_artist(artist_id)
+                artist_albums = []
+
+                # Get albums
+                if "albums" in artist_data:
+                    for album in artist_data["albums"]["results"]:
+                        artist_albums.append(
+                            {
+                                "title": album.get("title", "Unknown Album"),
+                                "year": album.get("year", ""),
+                                "type": "album",
+                                "browseId": album.get("browseId"),
+                            }
+                        )
+
+                # Get singles
+                if "singles" in artist_data:
+                    for single in artist_data["singles"]["results"]:
+                        artist_albums.append(
+                            {
+                                "title": single.get("title", "Unknown Single"),
+                                "year": single.get("year", ""),
+                                "type": "single",
+                                "browseId": single.get("browseId"),
+                            }
+                        )
+
+                return artist_albums
+
+            artist_albums = self._fetch_and_cache(artist_cache_key, fetch_artist_albums)
+
+            # Find the album ID
+            for album in artist_albums:
+                if self._sanitize_filename(album["title"]) == album_name:
+                    album_id = album["browseId"]
+                    break
+        else:
+            # Regular album path
+            album_name = path.split("/")[2]
+
+            # Find the album ID
+            albums = self._fetch_and_cache(
+                "/albums", self.ytmusic.get_library_albums, limit=100
+            )
+
+            for album in albums:
+                if self._sanitize_filename(album["title"]) == album_name:
+                    album_id = album["browseId"]
+                    break
+
+        if not album_id:
+            self.logger.error(f"Could not find album ID for album in path: {path}")
+            return []
+
+        # Get the album tracks
+        album_cache_key = f"/album/{album_id}"
+
+        def fetch_album_tracks():
+            album_data = self.ytmusic.get_album(album_id)
+            return album_data.get("tracks", [])
+
+        album_tracks = self._fetch_and_cache(album_cache_key, fetch_album_tracks)
+
+        # Process tracks and create filenames
+        processed_tracks = []
+        filenames = []
+
+        for track in album_tracks:
+            title = track.get("title", "Unknown Title")
+            artists = ", ".join(
+                [a.get("name", "Unknown Artist") for a in track.get("artists", [])]
+            )
+            filename = f"{artists} - {title}.m4a"
+            sanitized_filename = self._sanitize_filename(filename)
+            filenames.append(sanitized_filename)
+
+            # Add filename to track data for lookups
+            track_copy = dict(track)
+            track_copy["filename"] = sanitized_filename
+            processed_tracks.append(track_copy)
+
+        # Cache the processed track list for this album
+        self._set_cache(path, processed_tracks)
+
+        return filenames
 
     def getattr(self, path: str, fh: Optional[int] = None) -> Dict[str, Any]:
         """Get file attributes.
