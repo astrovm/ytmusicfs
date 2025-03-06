@@ -222,14 +222,58 @@ class YouTubeMusicFS(Operations):
             artists = ", ".join(
                 [a.get("name", "Unknown Artist") for a in track.get("artists", [])]
             )
+            # Get album information when available
+            album = "Unknown Album"
+            album_artist = "Unknown Artist"
+
+            # Handle album which could be None, a string, or a dictionary
+            album_obj = track.get("album")
+            if album_obj is not None:
+                if isinstance(album_obj, dict):
+                    album = album_obj.get("name", "Unknown Album")
+                    album_artist_obj = album_obj.get("artist")
+                    if album_artist_obj is not None:
+                        if isinstance(album_artist_obj, list) and album_artist_obj:
+                            album_artist = album_artist_obj[0].get(
+                                "name", "Unknown Artist"
+                            )
+                        elif isinstance(album_artist_obj, str):
+                            album_artist = album_artist_obj
+                elif isinstance(album_obj, str):
+                    album = album_obj
+
+            # Extract song duration if available
+            duration_seconds = None
+            if "duration" in track:
+                duration_str = track.get("duration", "0:00")
+                try:
+                    # Convert MM:SS to seconds
+                    parts = duration_str.split(":")
+                    if len(parts) == 2:
+                        duration_seconds = int(parts[0]) * 60 + int(parts[1])
+                    elif len(parts) == 3:
+                        duration_seconds = (
+                            int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+                        )
+                except (ValueError, IndexError):
+                    pass
+            elif "duration_seconds" in track:
+                duration_seconds = track.get("duration_seconds")
+
             filename = f"{artists} - {title}.m4a"
             sanitized_filename = self._sanitize_filename(filename)
             filenames.append(sanitized_filename)
 
             if add_filename:
-                # Create a shallow copy of the track and add filename
+                # Create a shallow copy of the track and add filename and metadata
                 processed_track = dict(track)
                 processed_track["filename"] = sanitized_filename
+                processed_track["artist"] = (
+                    artists  # Flattened artist string for metadata
+                )
+                processed_track["album"] = album
+                processed_track["album_artist"] = album_artist
+                processed_track["duration_seconds"] = duration_seconds
                 processed.append(processed_track)
 
         return filenames if not add_filename else processed
@@ -268,6 +312,42 @@ class YouTubeMusicFS(Operations):
             artists = ", ".join(
                 [a.get("name", "Unknown Artist") for a in song.get("artists", [])]
             )
+            # Get album information when available
+            album = "Unknown Album"
+            album_artist = "Unknown Artist"
+
+            # Handle album which could be None, a string, or a dictionary
+            album_obj = song.get("album")
+            if album_obj is not None:
+                if isinstance(album_obj, dict):
+                    album = album_obj.get("name", "Unknown Album")
+                    album_artist_obj = album_obj.get("artist")
+                    if album_artist_obj is not None:
+                        if isinstance(album_artist_obj, list) and album_artist_obj:
+                            album_artist = album_artist_obj[0].get(
+                                "name", "Unknown Artist"
+                            )
+                        elif isinstance(album_artist_obj, str):
+                            album_artist = album_artist_obj
+                elif isinstance(album_obj, str):
+                    album = album_obj
+
+            # Extract song duration if available
+            duration_seconds = None
+            if "duration" in song:
+                duration_str = song.get("duration", "0:00")
+                try:
+                    # Convert MM:SS to seconds
+                    parts = duration_str.split(":")
+                    if len(parts) == 2:
+                        duration_seconds = int(parts[0]) * 60 + int(parts[1])
+                    elif len(parts) == 3:
+                        duration_seconds = (
+                            int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+                        )
+                except (ValueError, IndexError):
+                    pass
+
             filename = f"{artists} - {title}.m4a"
             sanitized_filename = self._sanitize_filename(filename)
             filenames.append(sanitized_filename)
@@ -276,8 +356,12 @@ class YouTubeMusicFS(Operations):
             processed_song = {
                 "title": title,
                 "artists": song.get("artists", []),
+                "artist": artists,  # Flattened artist string for metadata
+                "album": album,
+                "album_artist": album_artist,
                 "videoId": song.get("videoId"),
                 "filename": sanitized_filename,
+                "duration_seconds": duration_seconds,
                 "originalData": song,  # Keep the original data for reference
             }
             processed_tracks.append(processed_song)
@@ -332,13 +416,51 @@ class YouTubeMusicFS(Operations):
             artists = ", ".join(
                 [a.get("name", "Unknown Artist") for a in track.get("artists", [])]
             )
+
+            # Get album information when available
+            album = "Unknown Album"
+            album_artist = "Unknown Artist"
+
+            # Handle album which could be None, a string, or a dictionary
+            album_obj = track.get("album")
+            if album_obj is not None:
+                if isinstance(album_obj, dict):
+                    album = album_obj.get("name", "Unknown Album")
+                    # Handle album artist
+                    if "artists" in album_obj and album_obj["artists"]:
+                        artists_obj = album_obj["artists"]
+                        if artists_obj and isinstance(artists_obj[0], dict):
+                            album_artist = artists_obj[0].get("name", "Unknown Artist")
+                elif isinstance(album_obj, str):
+                    album = album_obj
+
+            # Extract song duration if available
+            duration_seconds = None
+            if "duration" in track:
+                duration_str = track.get("duration", "0:00")
+                try:
+                    # Convert MM:SS to seconds
+                    parts = duration_str.split(":")
+                    if len(parts) == 2:
+                        duration_seconds = int(parts[0]) * 60 + int(parts[1])
+                    elif len(parts) == 3:
+                        duration_seconds = (
+                            int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+                        )
+                except (ValueError, IndexError):
+                    pass
+
             filename = f"{artists} - {title}.m4a"
             sanitized_filename = self._sanitize_filename(filename)
             filenames.append(sanitized_filename)
 
-            # Add filename to track data for lookups
+            # Add enhanced metadata to track data for lookups
             track_copy = dict(track)
             track_copy["filename"] = sanitized_filename
+            track_copy["artist"] = artists  # Flattened artist string for metadata
+            track_copy["album"] = album
+            track_copy["album_artist"] = album_artist
+            track_copy["duration_seconds"] = duration_seconds
             processed_tracks.append(track_copy)
 
         # Cache the processed track list for this playlist
@@ -451,6 +573,7 @@ class YouTubeMusicFS(Operations):
         # Determine if this is an artist's album or a library album
         is_artist_album = path.startswith("/artists/")
         album_id = None
+        album_title = None  # Store the album title for metadata
 
         if is_artist_album:
             parts = path.split("/")
@@ -516,6 +639,7 @@ class YouTubeMusicFS(Operations):
             for album in artist_albums:
                 if self._sanitize_filename(album["title"]) == album_name:
                     album_id = album["browseId"]
+                    album_title = album["title"]
                     break
         else:
             # Regular album path
@@ -529,6 +653,7 @@ class YouTubeMusicFS(Operations):
             for album in albums:
                 if self._sanitize_filename(album["title"]) == album_name:
                     album_id = album["browseId"]
+                    album_title = album["title"]
                     break
 
         if not album_id:
@@ -548,18 +673,46 @@ class YouTubeMusicFS(Operations):
         processed_tracks = []
         filenames = []
 
+        # Extract album artist from the first track if available
+        album_artist = "Unknown Artist"
+        if album_tracks and "artists" in album_tracks[0]:
+            artists_data = album_tracks[0].get("artists", [])
+            if artists_data and isinstance(artists_data[0], dict):
+                album_artist = artists_data[0].get("name", "Unknown Artist")
+
         for track in album_tracks:
             title = track.get("title", "Unknown Title")
             artists = ", ".join(
                 [a.get("name", "Unknown Artist") for a in track.get("artists", [])]
             )
+
+            # Extract song duration if available
+            duration_seconds = None
+            if "duration" in track:
+                duration_str = track.get("duration", "0:00")
+                try:
+                    # Convert MM:SS to seconds
+                    parts = duration_str.split(":")
+                    if len(parts) == 2:
+                        duration_seconds = int(parts[0]) * 60 + int(parts[1])
+                    elif len(parts) == 3:
+                        duration_seconds = (
+                            int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+                        )
+                except (ValueError, IndexError):
+                    pass
+
             filename = f"{artists} - {title}.m4a"
             sanitized_filename = self._sanitize_filename(filename)
             filenames.append(sanitized_filename)
 
-            # Add filename to track data for lookups
+            # Add enhanced metadata to track data for lookups
             track_copy = dict(track)
             track_copy["filename"] = sanitized_filename
+            track_copy["artist"] = artists  # Flattened artist string for metadata
+            track_copy["album"] = album_title or "Unknown Album"
+            track_copy["album_artist"] = album_artist
+            track_copy["duration_seconds"] = duration_seconds
             processed_tracks.append(track_copy)
 
         # Cache the processed track list for this album
@@ -936,6 +1089,170 @@ class YouTubeMusicFS(Operations):
         if fh in self.open_files:
             del self.open_files[fh]
         return 0
+
+    def getxattr(self, path: str, name: str, position: int = 0) -> bytes:
+        """Get extended attribute value.
+
+        Args:
+            path: The file path
+            name: The attribute name
+            position: The attribute position (unused)
+
+        Returns:
+            Attribute value
+        """
+        self.logger.debug(f"getxattr: {path}, {name}")
+
+        # Skip if this is not a music file
+        if not path.lower().endswith(".m4a"):
+            raise OSError(errno.ENOATTR, "No such attribute")
+
+        # Get file metadata based on path
+        parent_dir = os.path.dirname(path)
+        filename = os.path.basename(path)
+
+        # Skip if not in a music directory
+        if parent_dir == "/":
+            raise OSError(errno.ENOATTR, "No such attribute")
+
+        # Get metadata from cache
+        cache_key = parent_dir
+        if parent_dir == "/liked_songs":
+            cache_key = "/liked_songs_processed"
+
+        songs = self._get_from_cache(cache_key)
+        if not songs:
+            raise OSError(errno.ENOATTR, "No such attribute")
+
+        # Find the song in the cached data
+        song = None
+        for s in songs:
+            if isinstance(s, dict) and s.get("filename") == filename:
+                song = s
+                break
+
+        if not song:
+            raise OSError(errno.ENOATTR, "No such attribute")
+
+        # Map the xattr name to the appropriate song field
+        # Common xattr namespaces for media metadata:
+        # - user.xdg.tags (freedesktop)
+        # - user.dublincore (Dublin Core)
+        # - user.metadata (generic)
+
+        xattr_map = {
+            # XDG/Freedesktop attributes
+            "user.xdg.tags.title": "title",
+            "user.xdg.tags.artist": "artist",
+            "user.xdg.tags.album": "album",
+            "user.xdg.tags.album_artist": "album_artist",
+            # Dublin Core attributes
+            "user.dublincore.title": "title",
+            "user.dublincore.creator": "artist",
+            "user.dublincore.publisher": "album_artist",
+            # Generic metadata
+            "user.metadata.title": "title",
+            "user.metadata.artist": "artist",
+            "user.metadata.album": "album",
+            "user.metadata.album_artist": "album_artist",
+            # Audacious specific
+            "user.metadata.audacious.title": "title",
+            "user.metadata.audacious.artist": "artist",
+            "user.metadata.audacious.album": "album",
+        }
+
+        # Map the attribute name to the song field
+        field = xattr_map.get(name)
+        if not field or field not in song:
+            raise OSError(errno.ENOATTR, "No such attribute")
+
+        # Return the attribute value as bytes
+        value = song[field]
+        if isinstance(value, list):
+            if all(isinstance(item, dict) for item in value):
+                value = ", ".join([item.get("name", "") for item in value])
+            else:
+                value = ", ".join(value)
+
+        return str(value).encode("utf-8")
+
+    def listxattr(self, path: str) -> List[str]:
+        """List extended attributes available for the path.
+
+        Args:
+            path: The file path
+
+        Returns:
+            List of attribute names
+        """
+        self.logger.debug(f"listxattr: {path}")
+
+        # Skip if this is not a music file
+        if not path.lower().endswith(".m4a"):
+            return []
+
+        # Get file metadata based on path
+        parent_dir = os.path.dirname(path)
+        filename = os.path.basename(path)
+
+        # Skip if not in a music directory
+        if parent_dir == "/":
+            return []
+
+        # Get metadata from cache
+        cache_key = parent_dir
+        if parent_dir == "/liked_songs":
+            cache_key = "/liked_songs_processed"
+
+        songs = self._get_from_cache(cache_key)
+        if not songs:
+            return []
+
+        # Find the song in the cached data
+        song = None
+        for s in songs:
+            if isinstance(s, dict) and s.get("filename") == filename:
+                song = s
+                break
+
+        if not song:
+            return []
+
+        # Return the available attributes for this file
+        attributes = []
+
+        # Check which metadata fields are available
+        metadata_map = {
+            "title": [
+                "user.xdg.tags.title",
+                "user.dublincore.title",
+                "user.metadata.title",
+                "user.metadata.audacious.title",
+            ],
+            "artist": [
+                "user.xdg.tags.artist",
+                "user.dublincore.creator",
+                "user.metadata.artist",
+                "user.metadata.audacious.artist",
+            ],
+            "album": [
+                "user.xdg.tags.album",
+                "user.metadata.album",
+                "user.metadata.audacious.album",
+            ],
+            "album_artist": [
+                "user.xdg.tags.album_artist",
+                "user.dublincore.publisher",
+                "user.metadata.album_artist",
+            ],
+        }
+
+        # Add available attributes based on song data
+        for field, attrs in metadata_map.items():
+            if field in song and song[field]:
+                attributes.extend(attrs)
+
+        return attributes
 
 
 def mount_ytmusicfs(
