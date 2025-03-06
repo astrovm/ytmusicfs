@@ -378,7 +378,7 @@ class YouTubeMusicFS(Operations):
             List of liked song filenames
         """
         liked_songs = self._fetch_and_cache(
-            "/liked_songs", self.ytmusic.get_liked_songs
+            "/liked_songs", self.ytmusic.get_liked_songs, limit=10000
         )
 
         # Process the raw liked songs data
