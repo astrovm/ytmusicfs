@@ -11,6 +11,22 @@ from ytmusicfs import __version__
 from ytmusicfs.filesystem import mount_ytmusicfs
 
 
+def load_credentials(config_dir):
+    """Load client credentials from a separate file."""
+    cred_file = Path(config_dir) / "credentials.json"
+
+    if not cred_file.exists():
+        return None, None
+
+    try:
+        with open(cred_file, "r") as f:
+            credentials = json.load(f)
+
+        return credentials.get("client_id"), credentials.get("client_secret")
+    except Exception:
+        return None, None
+
+
 def main():
     """Command-line entry point for YTMusicFS."""
     parser = argparse.ArgumentParser(
@@ -130,7 +146,17 @@ def main():
     client_id = args.client_id or os.environ.get("YTMUSICFS_CLIENT_ID")
     client_secret = args.client_secret or os.environ.get("YTMUSICFS_CLIENT_SECRET")
 
-    # Check for client credentials in auth file if not provided
+    # If not provided, try to load from separate credentials file
+    if not client_id or not client_secret:
+        config_dir = auth_file.parent
+        loaded_id, loaded_secret = load_credentials(config_dir)
+
+        if loaded_id and loaded_secret:
+            client_id = loaded_id
+            client_secret = loaded_secret
+            logger.info("Using client credentials from credentials file")
+
+    # Check for client credentials in auth file if not provided (backward compatibility)
     if not client_id or not client_secret:
         try:
             with open(auth_file, "r") as f:
@@ -175,7 +201,9 @@ def main():
         logger.error(
             "2. Set YTMUSICFS_CLIENT_ID and YTMUSICFS_CLIENT_SECRET environment variables"
         )
-        logger.error("3. Make sure they are included in your OAuth token file")
+        logger.error(
+            "3. Use ytmusicfs-oauth to set up authentication with your credentials"
+        )
         logger.error("")
         logger.error("To regenerate your OAuth token with credentials:")
         logger.error(

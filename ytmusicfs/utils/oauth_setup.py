@@ -17,6 +17,17 @@ def ensure_dir(path):
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def save_credentials(client_id, client_secret, config_dir):
+    """Save client credentials to a separate file."""
+    cred_file = Path(config_dir) / "credentials.json"
+    credentials = {"client_id": client_id, "client_secret": client_secret}
+
+    with open(cred_file, "w") as f:
+        json.dump(credentials, f, indent=2)
+
+    return str(cred_file)
+
+
 def main():
     """Command-line entry point for YTMusicFS OAuth setup."""
     parser = argparse.ArgumentParser(
@@ -151,6 +162,10 @@ def main():
             # Save the cleaned oauth data file
             with open(output_file, "w") as f:
                 json.dump(oauth_data, f, indent=2)
+
+            # Save credentials to a separate file
+            cred_file = save_credentials(client_id, client_secret, output_file.parent)
+            logger.info(f"Saved credentials to separate file: {cred_file}")
 
             # Keep the client credentials in memory for the OAuthCredentials object
             logger.info(
