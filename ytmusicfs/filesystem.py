@@ -10,6 +10,8 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from fuse import FUSE, Operations
@@ -27,6 +29,7 @@ class YouTubeMusicFS(Operations):
         client_secret: Optional[str] = None,
         cache_dir: Optional[str] = None,
         cache_timeout: int = 2592000,
+        max_workers: int = 4,
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
@@ -34,17 +37,19 @@ class YouTubeMusicFS(Operations):
             auth_file: Path to authentication file (OAuth token)
             client_id: OAuth client ID (required for OAuth authentication)
             client_secret: OAuth client secret (required for OAuth authentication)
-            cache_dir: Directory to store cache files (defaults to ~/.cache/ytmusicfs)
-            cache_timeout: Cache timeout in seconds (default: 30 days)
+            cache_dir: Directory for persistent cache (optional)
+            cache_timeout: Time in seconds before cached data expires (default: 30 days)
+            max_workers: Maximum number of worker threads (default: 4)
         """
         # Get the logger
         self.logger = logging.getLogger("YTMusicFS")
 
         # Set up cache directory
-        if cache_dir is None:
-            cache_dir = os.path.expanduser("~/.cache/ytmusicfs")
-        self.cache_dir = Path(cache_dir)
-        os.makedirs(self.cache_dir, exist_ok=True)
+        if cache_dir:
+            self.cache_dir = Path(cache_dir)
+        else:
+            self.cache_dir = Path.home() / ".cache" / "ytmusicfs"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.logger.info(f"Using cache directory: {self.cache_dir}")
 
         self.logger.info(f"Initializing YTMusicFS with OAuth authentication")
@@ -73,6 +78,12 @@ class YouTubeMusicFS(Operations):
         self.client_id = client_id
         self.client_secret = client_secret
 
+        # Thread-related objects
+        self.cache_lock = threading.RLock()  # Lock for cache access
+        self.file_handle_lock = threading.RLock()  # Lock for file handle operations
+        self.thread_pool = ThreadPoolExecutor(max_workers=max_workers)
+        self.logger.info(f"Thread pool initialized with {max_workers} workers")
+
     def _get_from_cache(self, path: str) -> Optional[Any]:
         """Get data from cache if it's still valid.
 
@@ -83,12 +94,13 @@ class YouTubeMusicFS(Operations):
             The cached data if valid, None otherwise
         """
         # First check memory cache
-        if (
-            path in self.cache
-            and time.time() - self.cache[path]["time"] < self.cache_timeout
-        ):
-            self.logger.debug(f"Cache hit (memory) for {path}")
-            return self.cache[path]["data"]
+        with self.cache_lock:
+            if (
+                path in self.cache
+                and time.time() - self.cache[path]["time"] < self.cache_timeout
+            ):
+                self.logger.debug(f"Cache hit (memory) for {path}")
+                return self.cache[path]["data"]
 
         # Then check disk cache
         cache_file = self.cache_dir / f"{path.replace('/', '_')}.json"
@@ -100,7 +112,8 @@ class YouTubeMusicFS(Operations):
                 if time.time() - cache_data["time"] < self.cache_timeout:
                     self.logger.debug(f"Cache hit (disk) for {path}")
                     # Also update memory cache
-                    self.cache[path] = cache_data
+                    with self.cache_lock:
+                        self.cache[path] = cache_data
                     return cache_data["data"]
             except Exception as e:
                 self.logger.debug(f"Failed to read disk cache for {path}: {e}")
@@ -116,8 +129,9 @@ class YouTubeMusicFS(Operations):
         """
         cache_entry = {"data": data, "time": time.time()}
 
-        # Update memory cache
-        self.cache[path] = cache_entry
+        # Update memory cache (with lock)
+        with self.cache_lock:
+            self.cache[path] = cache_entry
 
         # Update disk cache
         try:
@@ -205,7 +219,10 @@ class YouTubeMusicFS(Operations):
         """
         data = self._get_from_cache(cache_key)
         if not data:
-            data = fetch_func(*args, **kwargs)
+            # Use thread pool for fetching data
+            self.logger.debug(f"Fetching data for {cache_key}")
+            future = self.thread_pool.submit(fetch_func, *args, **kwargs)
+            data = future.result()
             self._set_cache(cache_key, data)
         return data
 
@@ -1089,12 +1106,13 @@ class YouTubeMusicFS(Operations):
 
             self.logger.debug(f"Successfully got stream URL for {video_id}")
 
-            # Store the stream URL and return a file handle
-            fh = self.next_fh
-            self.next_fh += 1
-            self.open_files[fh] = {"stream_url": stream_url}
-            self.logger.debug(f"Assigned file handle {fh} to {path}")
-            return fh
+            # Use thread-safe file handle assignment
+            with self.file_handle_lock:
+                fh = self.next_fh
+                self.next_fh += 1
+                self.open_files[fh] = {"stream_url": stream_url}
+                self.logger.debug(f"Assigned file handle {fh} to {path}")
+                return fh
 
         except subprocess.SubprocessError as e:
             self.logger.error(f"Error running yt-dlp: {e}")
@@ -1213,8 +1231,9 @@ class YouTubeMusicFS(Operations):
         Returns:
             0 on success
         """
-        if fh in self.open_files:
-            del self.open_files[fh]
+        with self.file_handle_lock:
+            if fh in self.open_files:
+                del self.open_files[fh]
         return 0
 
     def getxattr(self, path: str, name: str, position: int = 0) -> bytes:
@@ -1433,6 +1452,7 @@ def mount_ytmusicfs(
     debug: bool = False,
     cache_dir: Optional[str] = None,
     cache_timeout: int = 2592000,
+    max_workers: int = 4,
 ) -> None:
     """Mount the YouTube Music filesystem.
 
@@ -1445,6 +1465,7 @@ def mount_ytmusicfs(
         debug: Enable debug logging
         cache_dir: Directory to store cache files
         cache_timeout: Cache timeout in seconds
+        max_workers: Maximum number of worker threads
     """
     FUSE(
         YouTubeMusicFS(
@@ -1453,8 +1474,9 @@ def mount_ytmusicfs(
             client_secret=client_secret,
             cache_dir=cache_dir,
             cache_timeout=cache_timeout,
+            max_workers=max_workers,
         ),
         mount_point,
         foreground=foreground,
-        nothreads=True,
+        nothreads=False,
     )
