@@ -1281,7 +1281,7 @@ class YouTubeMusicFS(Operations):
         # Map the attribute name to the song field
         field = xattr_map.get(name)
         if not field or field not in song:
-            raise OSError(errno.ENOATTR, "No such attribute")
+            raise OSError(errno.ENODATA, "No such attribute")
 
         # Return the attribute value as bytes
         value = song[field]
