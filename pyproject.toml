@@ -30,7 +30,7 @@ dependencies = [
   "requests>=2.31.0",
   "google-auth>=2.22.0",
   "google-auth-oauthlib>=1.0.0",
-  "yt-dlp>=2023.3.4",
+  "yt-dlp>=2024.2.28",
   "packaging>=23.0",
 ]
 requires-python = ">=3.7"
