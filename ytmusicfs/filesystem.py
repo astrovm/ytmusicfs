@@ -236,7 +236,7 @@ class YouTubeMusicFS(Operations):
             add_filename: Whether to add filename to the tracks
 
         Returns:
-            List of processed tracks with filenames
+            List of processed tracks with filenames and a list of just the filenames
         """
         processed = []
         filenames = []
@@ -255,6 +255,7 @@ class YouTubeMusicFS(Operations):
             if album_obj is not None:
                 if isinstance(album_obj, dict):
                     album = album_obj.get("name", "Unknown Album")
+                    # Handle album artist - could be direct 'artist' or in 'artists' list
                     album_artist_obj = album_obj.get("artist")
                     if album_artist_obj is not None:
                         if isinstance(album_artist_obj, list) and album_artist_obj:
@@ -263,6 +264,11 @@ class YouTubeMusicFS(Operations):
                             )
                         elif isinstance(album_artist_obj, str):
                             album_artist = album_artist_obj
+                    # Try the 'artists' field if 'artist' wasn't found
+                    elif "artists" in album_obj and album_obj["artists"]:
+                        artists_obj = album_obj["artists"]
+                        if artists_obj and isinstance(artists_obj[0], dict):
+                            album_artist = artists_obj[0].get("name", "Unknown Artist")
                 elif isinstance(album_obj, str):
                     album = album_obj
 
@@ -324,7 +330,7 @@ class YouTubeMusicFS(Operations):
                 processed_track["genre"] = genre
                 processed.append(processed_track)
 
-        return filenames if not add_filename else processed
+        return processed, filenames
 
     def _readdir_playlists(self) -> List[str]:
         """Handle listing playlist directories.
@@ -351,92 +357,8 @@ class YouTubeMusicFS(Operations):
         # Process the raw liked songs data
         self.logger.debug(f"Processing raw liked songs data: {type(liked_songs)}")
 
-        # Process tracks and create filenames
-        processed_tracks = []
-        filenames = []
-
-        for song in liked_songs["tracks"]:
-            title = song.get("title", "Unknown Title")
-            artists = ", ".join(
-                [a.get("name", "Unknown Artist") for a in song.get("artists", [])]
-            )
-            # Get album information when available
-            album = "Unknown Album"
-            album_artist = "Unknown Artist"
-
-            # Handle album which could be None, a string, or a dictionary
-            album_obj = song.get("album")
-            if album_obj is not None:
-                if isinstance(album_obj, dict):
-                    album = album_obj.get("name", "Unknown Album")
-                    album_artist_obj = album_obj.get("artist")
-                    if album_artist_obj is not None:
-                        if isinstance(album_artist_obj, list) and album_artist_obj:
-                            album_artist = album_artist_obj[0].get(
-                                "name", "Unknown Artist"
-                            )
-                        elif isinstance(album_artist_obj, str):
-                            album_artist = album_artist_obj
-                elif isinstance(album_obj, str):
-                    album = album_obj
-
-            # Extract song duration if available
-            duration_seconds = None
-            if "duration" in song:
-                duration_str = song.get("duration", "0:00")
-                try:
-                    # Convert MM:SS to seconds
-                    parts = duration_str.split(":")
-                    if len(parts) == 2:
-                        duration_seconds = int(parts[0]) * 60 + int(parts[1])
-                    elif len(parts) == 3:
-                        duration_seconds = (
-                            int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-                        )
-                except (ValueError, IndexError):
-                    pass
-
-            # Extract additional metadata
-            track_number = song.get("trackNumber", song.get("index", 0))
-            year = None
-            if "year" in song:
-                year = song.get("year")
-            elif album_obj and isinstance(album_obj, dict) and "year" in album_obj:
-                year = album_obj.get("year")
-
-            # Extract genre information if available
-            genre = "Unknown Genre"
-            if "genre" in song:
-                genre = song.get("genre")
-
-            # Format duration as mm:ss for display
-            duration_formatted = "0:00"
-            if duration_seconds:
-                minutes = duration_seconds // 60
-                seconds = duration_seconds % 60
-                duration_formatted = f"{minutes}:{seconds:02d}"
-
-            filename = f"{artists} - {title}.m4a"
-            sanitized_filename = self._sanitize_filename(filename)
-            filenames.append(sanitized_filename)
-
-            # Create a processed song with the necessary data
-            processed_song = {
-                "title": title,
-                "artists": song.get("artists", []),
-                "artist": artists,  # Flattened artist string for metadata
-                "album": album,
-                "album_artist": album_artist,
-                "videoId": song.get("videoId"),
-                "filename": sanitized_filename,
-                "duration_seconds": duration_seconds,
-                "duration_formatted": duration_formatted,
-                "track_number": track_number,
-                "year": year,
-                "genre": genre,
-                "originalData": song,  # Keep the original data for reference
-            }
-            processed_tracks.append(processed_song)
+        # Use the centralized method to process tracks and create filenames
+        processed_tracks, filenames = self._process_tracks(liked_songs["tracks"])
 
         # Cache the processed song list with filename mappings
         self.logger.debug(
@@ -484,88 +406,15 @@ class YouTubeMusicFS(Operations):
             lambda: self.ytmusic.get_playlist(playlist_id, limit=500).get("tracks", []),
         )
 
-        # Process tracks and create filenames
-        processed_tracks = []
-        filenames = []
+        # Process tracks and create filenames using the centralized method
+        processed_tracks, filenames = self._process_tracks(playlist_tracks)
 
-        for track in playlist_tracks:
-            title = track.get("title", "Unknown Title")
-            artists = ", ".join(
-                [a.get("name", "Unknown Artist") for a in track.get("artists", [])]
-            )
-
-            # Get album information when available
-            album = "Unknown Album"
-            album_artist = "Unknown Artist"
-
-            # Handle album which could be None, a string, or a dictionary
-            album_obj = track.get("album")
-            if album_obj is not None:
-                if isinstance(album_obj, dict):
-                    album = album_obj.get("name", "Unknown Album")
-                    # Handle album artist
-                    if "artists" in album_obj and album_obj["artists"]:
-                        artists_obj = album_obj["artists"]
-                        if artists_obj and isinstance(artists_obj[0], dict):
-                            album_artist = artists_obj[0].get("name", "Unknown Artist")
-                elif isinstance(album_obj, str):
-                    album = album_obj
-
-            # Extract song duration if available
-            duration_seconds = None
-            if "duration" in track:
-                duration_str = track.get("duration", "0:00")
-                try:
-                    # Convert MM:SS to seconds
-                    parts = duration_str.split(":")
-                    if len(parts) == 2:
-                        duration_seconds = int(parts[0]) * 60 + int(parts[1])
-                    elif len(parts) == 3:
-                        duration_seconds = (
-                            int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-                        )
-                except (ValueError, IndexError):
-                    pass
-
-            # Extract additional metadata
-            track_number = track.get("trackNumber", track.get("index", 0))
-            year = None
-            if "year" in track:
-                year = track.get("year")
-            elif album_obj and isinstance(album_obj, dict) and "year" in album_obj:
-                year = album_obj.get("year")
-
-            # Extract genre information if available
-            genre = "Unknown Genre"
-            if "genre" in track:
-                genre = track.get("genre")
-
-            # Format duration as mm:ss for display
-            duration_formatted = "0:00"
-            if duration_seconds:
-                minutes = duration_seconds // 60
-                seconds = duration_seconds % 60
-                duration_formatted = f"{minutes}:{seconds:02d}"
-
-            filename = f"{artists} - {title}.m4a"
-            sanitized_filename = self._sanitize_filename(filename)
-            filenames.append(sanitized_filename)
-
-            # Add enhanced metadata to track data for lookups
-            track_copy = dict(track)
-            track_copy["filename"] = sanitized_filename
-            track_copy["artist"] = artists  # Flattened artist string for metadata
-            track_copy["album"] = album
-            track_copy["album_artist"] = album_artist
-            track_copy["duration_seconds"] = duration_seconds
-            track_copy["duration_formatted"] = duration_formatted
-            track_copy["track_number"] = track_number
-            track_copy["year"] = year
-            track_copy["genre"] = genre
-            processed_tracks.append(track_copy)
-
-        # Cache the processed track list for this playlist
-        self._set_cache(path, processed_tracks)
+        # Cache the processed tracks for this playlist
+        processed_cache_key = f"/playlist/{playlist_id}_processed"
+        self.logger.debug(
+            f"Caching {len(processed_tracks)} processed tracks for {playlist_name}"
+        )
+        self._set_cache(processed_cache_key, processed_tracks)
 
         return filenames
 
@@ -783,81 +632,21 @@ class YouTubeMusicFS(Operations):
 
         album_tracks = self._fetch_and_cache(album_cache_key, fetch_album_tracks)
 
-        # Process tracks and create filenames
-        processed_tracks = []
-        filenames = []
+        # Process tracks using the centralized method
+        processed_tracks, filenames = self._process_tracks(album_tracks)
 
-        # Extract album artist from the first track if available
-        album_artist = "Unknown Artist"
-        if album_tracks and "artists" in album_tracks[0]:
-            artists_data = album_tracks[0].get("artists", [])
-            if artists_data and isinstance(artists_data[0], dict):
-                album_artist = artists_data[0].get("name", "Unknown Artist")
+        # Add additional album-specific information
+        for track in processed_tracks:
+            # Override album title with the one from the path
+            if album_title:
+                track["album"] = album_title
 
-        for track in album_tracks:
-            title = track.get("title", "Unknown Title")
-            artists = ", ".join(
-                [a.get("name", "Unknown Artist") for a in track.get("artists", [])]
-            )
-
-            # Extract song duration if available
-            duration_seconds = None
-            if "duration" in track:
-                duration_str = track.get("duration", "0:00")
-                try:
-                    # Convert MM:SS to seconds
-                    parts = duration_str.split(":")
-                    if len(parts) == 2:
-                        duration_seconds = int(parts[0]) * 60 + int(parts[1])
-                    elif len(parts) == 3:
-                        duration_seconds = (
-                            int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-                        )
-                except (ValueError, IndexError):
-                    pass
-
-            # Determine track number from the track's index in the album if available
-            track_number = track.get("trackNumber")
-            if not track_number and "index" in track:
-                track_number = track.get("index")
-
-            # Use album year if available (already fetched when getting the album)
-            year = None
-            # Try to find the year for this album, but only for artist albums
-            if is_artist_album and artist_albums:
+            # For artist albums, try to find the album year if available
+            if is_artist_album and artist_albums and not track.get("year"):
                 for album in artist_albums:
                     if self._sanitize_filename(album["title"]) == album_name:
-                        year = album.get("year")
+                        track["year"] = album.get("year")
                         break
-
-            # Extract genre information if available
-            genre = "Unknown Genre"
-            if "genre" in track:
-                genre = track.get("genre")
-
-            # Format duration as mm:ss for display
-            duration_formatted = "0:00"
-            if duration_seconds:
-                minutes = duration_seconds // 60
-                seconds = duration_seconds % 60
-                duration_formatted = f"{minutes}:{seconds:02d}"
-
-            filename = f"{artists} - {title}.m4a"
-            sanitized_filename = self._sanitize_filename(filename)
-            filenames.append(sanitized_filename)
-
-            # Add enhanced metadata to track data for lookups
-            track_copy = dict(track)
-            track_copy["filename"] = sanitized_filename
-            track_copy["artist"] = artists  # Flattened artist string for metadata
-            track_copy["album"] = album_title or "Unknown Album"
-            track_copy["album_artist"] = album_artist
-            track_copy["duration_seconds"] = duration_seconds
-            track_copy["duration_formatted"] = duration_formatted
-            track_copy["track_number"] = track_number
-            track_copy["year"] = year
-            track_copy["genre"] = genre
-            processed_tracks.append(track_copy)
 
         # Cache the processed track list for this album
         self._set_cache(path, processed_tracks)
@@ -1249,6 +1038,19 @@ class YouTubeMusicFS(Operations):
         """
         self.logger.debug(f"getxattr: {path}, {name}")
 
+        # Common system attributes requested by file managers that we should silently handle
+        system_attrs = [
+            "system.posix_acl_access",
+            "system.posix_acl_default",
+            "security.capability",
+            "system.capability",
+            "user.xattr.s3.encryption",  # Common system xattrs
+        ]
+
+        # Return empty bytes for system attributes to avoid log spam
+        if name.startswith("system.") or name in system_attrs:
+            return b""
+
         # Skip if this is not a music file
         if not path.lower().endswith(".m4a"):
             raise OSError(errno.ENODATA, "No such attribute")
@@ -1265,10 +1067,25 @@ class YouTubeMusicFS(Operations):
         cache_key = parent_dir
         if parent_dir == "/liked_songs":
             cache_key = "/liked_songs_processed"
+        elif parent_dir.startswith("/playlists/"):
+            # Handle playlist paths - use the processed cache if available
+            playlist_name = parent_dir.split("/")[2]
+            # Find the playlist ID
+            playlists = self._get_from_cache("/playlists")
+            if playlists:
+                for playlist in playlists:
+                    if self._sanitize_filename(playlist["title"]) == playlist_name:
+                        playlist_id = playlist.get("playlistId")
+                        if playlist_id:
+                            processed_cache_key = f"/playlist/{playlist_id}_processed"
+                            processed_songs = self._get_from_cache(processed_cache_key)
+                            if processed_songs:
+                                cache_key = processed_cache_key
+                                break
 
         songs = self._get_from_cache(cache_key)
         if not songs:
-            raise OSError(errno.ENODATA, "No such attribute")
+            return b""  # Return empty for attributes we don't have instead of error
 
         # Find the song in the cached data
         song = None
@@ -1278,7 +1095,7 @@ class YouTubeMusicFS(Operations):
                 break
 
         if not song:
-            raise OSError(errno.ENODATA, "No such attribute")
+            return b""  # Return empty for song not found instead of error
 
         # Map the xattr name to the appropriate song field
         # Common xattr namespaces for media metadata:
@@ -1326,7 +1143,7 @@ class YouTubeMusicFS(Operations):
         # Map the attribute name to the song field
         field = xattr_map.get(name)
         if not field or field not in song:
-            raise OSError(errno.ENODATA, "No such attribute")
+            return b""  # Return empty for unknown attributes instead of error
 
         # Return the attribute value as bytes
         value = song[field]
@@ -1365,6 +1182,21 @@ class YouTubeMusicFS(Operations):
         cache_key = parent_dir
         if parent_dir == "/liked_songs":
             cache_key = "/liked_songs_processed"
+        elif parent_dir.startswith("/playlists/"):
+            # Handle playlist paths - use the processed cache if available
+            playlist_name = parent_dir.split("/")[2]
+            # Find the playlist ID
+            playlists = self._get_from_cache("/playlists")
+            if playlists:
+                for playlist in playlists:
+                    if self._sanitize_filename(playlist["title"]) == playlist_name:
+                        playlist_id = playlist.get("playlistId")
+                        if playlist_id:
+                            processed_cache_key = f"/playlist/{playlist_id}_processed"
+                            processed_songs = self._get_from_cache(processed_cache_key)
+                            if processed_songs:
+                                cache_key = processed_cache_key
+                                break
 
         songs = self._get_from_cache(cache_key)
         if not songs:
