@@ -646,6 +646,7 @@ class YouTubeMusicFS(Operations):
         is_artist_album = path.startswith("/artists/")
         album_id = None
         album_title = None  # Store the album title for metadata
+        artist_albums = []  # Initialize as empty list by default
 
         if is_artist_album:
             parts = path.split("/")
@@ -781,11 +782,12 @@ class YouTubeMusicFS(Operations):
 
             # Use album year if available (already fetched when getting the album)
             year = None
-            # Try to find the year for this album
-            for album in artist_albums:
-                if self._sanitize_filename(album["title"]) == album_name:
-                    year = album.get("year")
-                    break
+            # Try to find the year for this album, but only for artist albums
+            if is_artist_album and artist_albums:
+                for album in artist_albums:
+                    if self._sanitize_filename(album["title"]) == album_name:
+                        year = album.get("year")
+                        break
 
             # Extract genre information if available
             genre = "Unknown Genre"
