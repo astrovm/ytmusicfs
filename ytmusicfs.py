@@ -41,7 +41,7 @@ class YouTubeMusicFS(Operations):
         except Exception as e:
             self.logger.error(f"Error during authentication: {e}")
             self.logger.error(
-                "Try regenerating your authentication file with oauth_setup_exact.py"
+                "Try regenerating your authentication file with setup_oauth.py"
             )
             raise
 

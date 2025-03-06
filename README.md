@@ -54,10 +54,10 @@ Setting up OAuth authentication requires a few steps but provides a more reliabl
 
 ### Step 2: Generate OAuth Token
 
-Run the `oauth_setup_exact.py` script to generate an OAuth token:
+Run the `setup_oauth.py` script to generate an OAuth token:
 
 ```
-python oauth_setup_exact.py --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET --output oauth.json
+python setup_oauth.py --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET --output oauth.json
 ```
 
 This will:
@@ -132,7 +132,7 @@ If you encounter token refresh issues, make sure:
 
 If you see authentication errors:
 
-1. Try regenerating your OAuth token with `oauth_setup_exact.py`
+1. Try regenerating your OAuth token with `setup_oauth.py`
 2. Check if your token file has the correct format
 3. Verify your Client ID and Client Secret are correct
 
@@ -162,7 +162,7 @@ The OAuth token file should contain:
 - `--foreground`: Run in the foreground (for debugging)
 - `--debug`: Enable debug logging
 
-### oauth_setup_exact.py
+### setup_oauth.py
 
 - `--client-id`: OAuth client ID
 - `--client-secret`: OAuth client secret
