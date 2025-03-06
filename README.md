@@ -2,6 +2,8 @@
 
 YTMusicFS mounts your YouTube Music library as a standard filesystem, allowing you to browse and play your music with any traditional audio player.
 
+![Audacious with Winamp skin](https://github.com/user-attachments/assets/f148ef9e-90b1-4eca-86fd-02973209ff88)
+
 ## Features
 
 - **Filesystem Interface**: Access your YouTube Music library through a standard filesystem
@@ -220,22 +222,3 @@ Options:
 
 - Increase cache timeout with `--cache-timeout` for better performance
 - Reduce network calls by browsing directories fully before playing
-
-## Development
-
-```bash
-# Clone repository
-git clone https://github.com/astrovm/ytmusicfs.git
-cd ytmusicfs
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate
-
-# Install in development mode
-pip install -e ".[dev]"
-```
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
