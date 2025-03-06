@@ -1,5 +1,5 @@
 # Authentication files
-headers_auth.json
+oauth.json
 
 # Mount point
 mount/
