@@ -29,7 +29,7 @@ class YouTubeMusicFS(Operations):
         client_secret: Optional[str] = None,
         cache_dir: Optional[str] = None,
         cache_timeout: int = 2592000,
-        max_workers: int = 4,
+        max_workers: int = 8,
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
@@ -39,7 +39,7 @@ class YouTubeMusicFS(Operations):
             client_secret: OAuth client secret (required for OAuth authentication)
             cache_dir: Directory for persistent cache (optional)
             cache_timeout: Time in seconds before cached data expires (default: 30 days)
-            max_workers: Maximum number of worker threads (default: 4)
+            max_workers: Maximum number of worker threads (default: 8)
         """
         # Get the logger
         self.logger = logging.getLogger("YTMusicFS")
@@ -377,6 +377,15 @@ class YouTubeMusicFS(Operations):
         Returns:
             List of liked song filenames
         """
+        # First check if we have processed tracks in cache
+        processed_tracks = self._get_from_cache("/liked_songs_processed")
+        if processed_tracks:
+            self.logger.debug(
+                f"Using {len(processed_tracks)} cached processed tracks for /liked_songs"
+            )
+            return [track["filename"] for track in processed_tracks]
+
+        # If no processed tracks in cache, fetch and process raw data
         liked_songs = self._fetch_and_cache(
             "/liked_songs", self.ytmusic.get_liked_songs, limit=10000
         )
@@ -433,6 +442,15 @@ class YouTubeMusicFS(Operations):
             self.logger.error(f"Could not find playlist ID for {playlist_name}")
             return []
 
+        # Check if we have processed tracks in cache
+        processed_cache_key = f"/playlist/{playlist_id}_processed"
+        processed_tracks = self._get_from_cache(processed_cache_key)
+        if processed_tracks:
+            self.logger.debug(
+                f"Using {len(processed_tracks)} cached processed tracks for {playlist_name}"
+            )
+            return [track["filename"] for track in processed_tracks]
+
         # Get the playlist tracks
         playlist_cache_key = f"/playlist/{playlist_id}"
         playlist_tracks = self._fetch_and_cache(
@@ -444,7 +462,6 @@ class YouTubeMusicFS(Operations):
         processed_tracks, filenames = self._process_tracks(playlist_tracks)
 
         # Cache the processed tracks for this playlist
-        processed_cache_key = f"/playlist/{playlist_id}_processed"
         self.logger.debug(
             f"Caching {len(processed_tracks)} processed tracks for {playlist_name}"
         )
@@ -485,6 +502,12 @@ class YouTubeMusicFS(Operations):
         Returns:
             List of album names by the artist
         """
+        # Check for cached processed data first
+        processed_albums = self._get_from_cache(path)
+        if processed_albums:
+            self.logger.debug(f"Using cached albums for {path}")
+            return processed_albums
+
         artist_name = path.split("/")[2]
 
         # Early return for hidden files
@@ -547,8 +570,16 @@ class YouTubeMusicFS(Operations):
 
         artist_albums = self._fetch_and_cache(artist_cache_key, fetch_artist_albums)
 
+        # Create filenames for the albums
+        album_filenames = [
+            self._sanitize_filename(item["title"]) for item in artist_albums
+        ]
+
+        # Cache the result
+        self._set_cache(path, album_filenames)
+
         # Return the albums
-        return [self._sanitize_filename(item["title"]) for item in artist_albums]
+        return album_filenames
 
     def _readdir_album_content(self, path: str) -> List[str]:
         """Handle listing contents of a specific album.
@@ -559,6 +590,14 @@ class YouTubeMusicFS(Operations):
         Returns:
             List of track filenames in the album
         """
+        # Check for cached processed tracks first
+        processed_tracks = self._get_from_cache(path)
+        if processed_tracks:
+            self.logger.debug(
+                f"Using {len(processed_tracks)} cached processed tracks for {path}"
+            )
+            return [track["filename"] for track in processed_tracks]
+
         # Determine if this is an artist's album or a library album
         is_artist_album = path.startswith("/artists/")
         album_id = None
@@ -1318,7 +1357,7 @@ def mount_ytmusicfs(
     debug: bool = False,
     cache_dir: Optional[str] = None,
     cache_timeout: int = 2592000,
-    max_workers: int = 4,
+    max_workers: int = 8,
 ) -> None:
     """Mount the YouTube Music filesystem.
 
