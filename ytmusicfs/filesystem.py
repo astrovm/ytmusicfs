@@ -357,8 +357,15 @@ class YouTubeMusicFS(Operations):
         # Process the raw liked songs data
         self.logger.debug(f"Processing raw liked songs data: {type(liked_songs)}")
 
+        # Handle both possible response formats from the API:
+        # 1. A dictionary with a 'tracks' key containing the list of tracks
+        # 2. A direct list of tracks
+        tracks_to_process = liked_songs
+        if isinstance(liked_songs, dict) and "tracks" in liked_songs:
+            tracks_to_process = liked_songs["tracks"]
+
         # Use the centralized method to process tracks and create filenames
-        processed_tracks, filenames = self._process_tracks(liked_songs["tracks"])
+        processed_tracks, filenames = self._process_tracks(tracks_to_process)
 
         # Cache the processed song list with filename mappings
         self.logger.debug(
