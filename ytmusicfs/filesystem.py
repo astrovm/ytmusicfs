@@ -1206,7 +1206,7 @@ class YouTubeMusicFS(Operations):
 
         # Skip if this is not a music file
         if not path.lower().endswith(".m4a"):
-            raise OSError(errno.ENOATTR, "No such attribute")
+            raise OSError(errno.ENODATA, "No such attribute")
 
         # Get file metadata based on path
         parent_dir = os.path.dirname(path)
@@ -1214,7 +1214,7 @@ class YouTubeMusicFS(Operations):
 
         # Skip if not in a music directory
         if parent_dir == "/":
-            raise OSError(errno.ENOATTR, "No such attribute")
+            raise OSError(errno.ENODATA, "No such attribute")
 
         # Get metadata from cache
         cache_key = parent_dir
@@ -1223,7 +1223,7 @@ class YouTubeMusicFS(Operations):
 
         songs = self._get_from_cache(cache_key)
         if not songs:
-            raise OSError(errno.ENOATTR, "No such attribute")
+            raise OSError(errno.ENODATA, "No such attribute")
 
         # Find the song in the cached data
         song = None
@@ -1233,7 +1233,7 @@ class YouTubeMusicFS(Operations):
                 break
 
         if not song:
-            raise OSError(errno.ENOATTR, "No such attribute")
+            raise OSError(errno.ENODATA, "No such attribute")
 
         # Map the xattr name to the appropriate song field
         # Common xattr namespaces for media metadata:
