@@ -377,6 +377,24 @@ class YouTubeMusicFS(Operations):
         Returns:
             List of liked song filenames
         """
+        # Check when the liked songs cache was last refreshed
+        last_refresh_time = self._get_cache_metadata(
+            "/liked_songs", "last_refresh_time"
+        )
+        current_time = time.time()
+
+        # Automatically refresh if it's been more than 1 hour since last refresh
+        refresh_interval = 3600  # 1 hour in seconds
+
+        if (
+            last_refresh_time is None
+            or (current_time - last_refresh_time) > refresh_interval
+        ):
+            self.logger.info("Auto-refreshing liked songs cache...")
+            self.refresh_liked_songs_cache()
+            # Mark the cache as freshly refreshed
+            self._set_cache_metadata("/liked_songs", "last_refresh_time", current_time)
+
         # First check if we have processed tracks in cache
         processed_tracks = self._get_from_cache("/liked_songs_processed")
         if processed_tracks:
@@ -389,6 +407,9 @@ class YouTubeMusicFS(Operations):
         liked_songs = self._fetch_and_cache(
             "/liked_songs", self.ytmusic.get_liked_songs, limit=10000
         )
+
+        # Mark the cache as freshly refreshed
+        self._set_cache_metadata("/liked_songs", "last_refresh_time", current_time)
 
         # Process the raw liked songs data
         self.logger.debug(f"Processing raw liked songs data: {type(liked_songs)}")
@@ -410,6 +431,35 @@ class YouTubeMusicFS(Operations):
         self._set_cache("/liked_songs_processed", processed_tracks)
 
         return filenames
+
+    def _get_cache_metadata(self, cache_key: str, metadata_key: str) -> Any:
+        """Get metadata associated with a cache key.
+
+        Args:
+            cache_key: The cache key
+            metadata_key: The metadata key
+
+        Returns:
+            The metadata value or None if not found
+        """
+        metadata_cache_key = f"{cache_key}_metadata"
+        metadata = self._get_from_cache(metadata_cache_key) or {}
+        return metadata.get(metadata_key)
+
+    def _set_cache_metadata(
+        self, cache_key: str, metadata_key: str, value: Any
+    ) -> None:
+        """Set metadata associated with a cache key.
+
+        Args:
+            cache_key: The cache key
+            metadata_key: The metadata key
+            value: The metadata value to set
+        """
+        metadata_cache_key = f"{cache_key}_metadata"
+        metadata = self._get_from_cache(metadata_cache_key) or {}
+        metadata[metadata_key] = value
+        self._set_cache(metadata_cache_key, metadata)
 
     def _readdir_playlist_content(self, path: str) -> List[str]:
         """Handle listing contents of a specific playlist.
@@ -1346,6 +1396,124 @@ class YouTubeMusicFS(Operations):
                 attributes.extend(attrs)
 
         return attributes
+
+    def refresh_liked_songs_cache(self) -> None:
+        """Refresh the cache for liked songs.
+
+        This method updates the liked songs cache with any newly liked songs,
+        without deleting the entire cache.
+        """
+        self.logger.info("Refreshing liked songs cache...")
+
+        # Get the existing cached processed tracks
+        existing_processed_tracks = self._get_from_cache("/liked_songs_processed")
+        existing_raw_tracks = self._get_from_cache("/liked_songs")
+
+        # Fetch only the most recent liked songs (the first page)
+        # This is more efficient than refetching the entire library
+        self.logger.debug("Fetching most recent liked songs...")
+        recent_liked_songs = self.ytmusic.get_liked_songs(limit=50)
+
+        if not recent_liked_songs:
+            self.logger.info("No liked songs found or error fetching liked songs")
+            return
+
+        if existing_processed_tracks and existing_raw_tracks:
+            self.logger.info(
+                f"Found {len(existing_processed_tracks)} existing songs in cache"
+            )
+
+            # Determine which tracks are new by checking videoId
+            existing_ids = set()
+            if (
+                isinstance(existing_raw_tracks, dict)
+                and "tracks" in existing_raw_tracks
+            ):
+                existing_ids = {
+                    track.get("videoId")
+                    for track in existing_raw_tracks.get("tracks", [])
+                    if track.get("videoId")  # Only include tracks with videoId
+                }
+
+            # Get the tracks from the recent fetch
+            recent_tracks = []
+            if isinstance(recent_liked_songs, dict) and "tracks" in recent_liked_songs:
+                recent_tracks = recent_liked_songs["tracks"]
+            else:
+                recent_tracks = recent_liked_songs
+
+            # Find new tracks (not in existing_ids)
+            new_tracks = [
+                track
+                for track in recent_tracks
+                if track.get("videoId") and track.get("videoId") not in existing_ids
+            ]
+
+            if new_tracks:
+                self.logger.info(
+                    f"Found {len(new_tracks)} new liked songs to add to cache"
+                )
+
+                # Process the new tracks
+                new_processed_tracks, _ = self._process_tracks(new_tracks)
+
+                # Add new tracks to the raw cache
+                if (
+                    isinstance(existing_raw_tracks, dict)
+                    and "tracks" in existing_raw_tracks
+                ):
+                    # Add to the beginning of the list since newest tracks appear first
+                    existing_raw_tracks["tracks"] = (
+                        new_tracks + existing_raw_tracks["tracks"]
+                    )
+                    self._set_cache("/liked_songs", existing_raw_tracks)
+
+                # Add new processed tracks to the processed cache
+                merged_processed_tracks = (
+                    new_processed_tracks + existing_processed_tracks
+                )
+                self._set_cache("/liked_songs_processed", merged_processed_tracks)
+                self.logger.info(
+                    f"Updated cache with {len(merged_processed_tracks)} total tracks"
+                )
+            else:
+                self.logger.info("No new liked songs found")
+        else:
+            self.logger.info(
+                "No existing cache found, will create cache on next access"
+            )
+
+            # Store just the recent tracks to make next access faster
+            if (
+                isinstance(recent_liked_songs, dict)
+                and "tracks" in recent_liked_songs
+                and recent_liked_songs["tracks"]
+            ):
+                # Process and cache just the recent tracks
+                recent_tracks = recent_liked_songs["tracks"]
+                processed_tracks, _ = self._process_tracks(recent_tracks)
+
+                self.logger.info(
+                    f"Caching {len(processed_tracks)} recent tracks to speed up initial loading"
+                )
+                self._set_cache("/liked_songs", recent_liked_songs)
+                self._set_cache("/liked_songs_processed", processed_tracks)
+            else:
+                # Just clear the cache keys so they'll be refreshed on next access
+                if "/liked_songs" in self.cache:
+                    del self.cache["/liked_songs"]
+                if "/liked_songs_processed" in self.cache:
+                    del self.cache["/liked_songs_processed"]
+
+    def _delete_from_cache(self, path: str) -> None:
+        """Delete data from cache.
+
+        Args:
+            path: The path to delete from cache
+        """
+        with self.cache_lock:
+            if path in self.cache:
+                del self.cache[path]
 
 
 def mount_ytmusicfs(
