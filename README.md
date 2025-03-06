@@ -21,12 +21,6 @@ YTMusicFS mounts your YouTube Music library as a standard filesystem, allowing y
 
 ## Installation
 
-### From PyPI (Recommended)
-
-```bash
-pip install ytmusicfs
-```
-
 ### From Source
 
 ```bash
