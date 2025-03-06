@@ -388,9 +388,12 @@ class YouTubeMusicFS(Operations):
         artist_id = None
         for artist in artists:
             if self._sanitize_filename(artist["artist"]) == artist_name:
-                artist_id = artist["artistId"]
+                # Safely access ID fields with fallbacks
+                artist_id = artist.get("artistId")
                 if not artist_id:
-                    artist_id = artist["browseId"]
+                    artist_id = artist.get("browseId")
+                if not artist_id:
+                    artist_id = artist.get("id")
                 break
 
         if not artist_id:
@@ -461,9 +464,12 @@ class YouTubeMusicFS(Operations):
             artist_id = None
             for artist in artists:
                 if self._sanitize_filename(artist["artist"]) == artist_name:
-                    artist_id = artist["artistId"]
+                    # Safely access ID fields with fallbacks
+                    artist_id = artist.get("artistId")
                     if not artist_id:
-                        artist_id = artist["browseId"]
+                        artist_id = artist.get("browseId")
+                    if not artist_id:
+                        artist_id = artist.get("id")
                     break
 
             if not artist_id:

@@ -3,7 +3,7 @@
 import os
 import json
 import logging
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Any
 
 from ytmusicapi import YTMusic, OAuthCredentials
 
