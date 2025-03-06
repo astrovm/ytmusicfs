@@ -109,16 +109,6 @@ ytmusicfs \
   --debug
 ```
 
-### Environment Variables
-
-You can set environment variables instead of command-line options:
-
-```bash
-export YTMUSICFS_CLIENT_ID="your_client_id"
-export YTMUSICFS_CLIENT_SECRET="your_client_secret"
-ytmusicfs --mount-point ~/Music/ytmusic
-```
-
 ### Browse and Play Music
 
 Once mounted, you can browse the filesystem with your file manager:
@@ -250,9 +240,6 @@ source venv/bin/activate
 
 # Install in development mode
 pip install -e ".[dev]"
-
-# Run tests
-pytest
 ```
 
 ## License

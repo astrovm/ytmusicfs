@@ -142,9 +142,9 @@ def main():
         )
         return 1
 
-    # Get client credentials from environment or command line
-    client_id = args.client_id or os.environ.get("YTMUSICFS_CLIENT_ID")
-    client_secret = args.client_secret or os.environ.get("YTMUSICFS_CLIENT_SECRET")
+    # Get client credentials
+    client_id = args.client_id
+    client_secret = args.client_secret
 
     # If not provided, try to load from separate credentials file
     if not client_id or not client_secret:
