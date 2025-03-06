@@ -26,7 +26,7 @@ class YouTubeMusicFS(Operations):
         client_id: Optional[str] = None,
         client_secret: Optional[str] = None,
         cache_dir: Optional[str] = None,
-        cache_timeout: int = 300,
+        cache_timeout: int = 2592000,
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
@@ -35,7 +35,7 @@ class YouTubeMusicFS(Operations):
             client_id: OAuth client ID (required for OAuth authentication)
             client_secret: OAuth client secret (required for OAuth authentication)
             cache_dir: Directory to store cache files (defaults to ~/.cache/ytmusicfs)
-            cache_timeout: Cache timeout in seconds (default: 5 minutes)
+            cache_timeout: Cache timeout in seconds (default: 30 days)
         """
         # Get the logger
         self.logger = logging.getLogger("YTMusicFS")
@@ -1406,7 +1406,7 @@ def mount_ytmusicfs(
     foreground: bool = False,
     debug: bool = False,
     cache_dir: Optional[str] = None,
-    cache_timeout: int = 300,
+    cache_timeout: int = 2592000,
 ) -> None:
     """Mount the YouTube Music filesystem.
 

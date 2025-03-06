@@ -71,8 +71,8 @@ def main():
         "--cache-timeout",
         "-t",
         type=int,
-        default=300,
-        help="Cache timeout in seconds (default: 300)",
+        default=2592000,
+        help="Cache timeout in seconds (default: 2592000)",
     )
 
     # Operational options
