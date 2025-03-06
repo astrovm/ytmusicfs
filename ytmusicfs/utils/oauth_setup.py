@@ -141,16 +141,23 @@ def main():
             with open(output_file, "r") as f:
                 oauth_data = json.load(f)
 
-            # Add client credentials to oauth data if not present
-            if "client_id" not in oauth_data or "client_secret" not in oauth_data:
-                oauth_data["client_id"] = client_id
-                oauth_data["client_secret"] = client_secret
+            # Remove client credentials from the token file itself to avoid conflicts
+            # They should only be passed via the OAuthCredentials object
+            if "client_id" in oauth_data:
+                del oauth_data["client_id"]
+            if "client_secret" in oauth_data:
+                del oauth_data["client_secret"]
 
-                with open(output_file, "w") as f:
-                    json.dump(oauth_data, f, indent=2)
-                logger.info("Added client credentials to OAuth token file")
+            # Save the cleaned oauth data file
+            with open(output_file, "w") as f:
+                json.dump(oauth_data, f, indent=2)
+
+            # Keep the client credentials in memory for the OAuthCredentials object
+            logger.info(
+                "Removed client credentials from OAuth token file to avoid conflicts"
+            )
         except Exception as e:
-            logger.warning(f"Failed to update OAuth file with client credentials: {e}")
+            logger.warning(f"Failed to update OAuth file: {e}")
             # Continue anyway, as the setup was successful
 
         logger.info(f"OAuth setup completed successfully!")
@@ -161,14 +168,12 @@ def main():
 
         # Create a small test to verify the OAuth token works
         try:
-            from ytmusicapi import YTMusic, OAuthCredentials
-
             # Create OAuth credentials object
             oauth_credentials = OAuthCredentials(
                 client_id=client_id, client_secret=client_secret
             )
 
-            # Initialize YTMusic with OAuth credentials
+            # Initialize YTMusic with OAuth credentials as a separate parameter
             ytmusic = YTMusic(
                 auth=str(output_file), oauth_credentials=oauth_credentials
             )

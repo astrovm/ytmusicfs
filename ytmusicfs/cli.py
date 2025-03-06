@@ -135,8 +135,32 @@ def main():
         try:
             with open(auth_file, "r") as f:
                 auth_data = json.load(f)
-                client_id = client_id or auth_data.get("client_id")
-                client_secret = client_secret or auth_data.get("client_secret")
+
+                # We should no longer store these in the auth file, but check for backward compatibility
+                if "client_id" in auth_data or "client_secret" in auth_data:
+                    logger.warning(
+                        "Found client credentials in OAuth token file - this is not recommended"
+                    )
+                    logger.warning(
+                        "Credentials should be provided via command line or environment variables"
+                    )
+
+                    # Still use them if needed
+                    client_id = client_id or auth_data.get("client_id")
+                    client_secret = client_secret or auth_data.get("client_secret")
+
+                    # Clean up the file by removing credentials
+                    if "client_id" in auth_data:
+                        del auth_data["client_id"]
+                    if "client_secret" in auth_data:
+                        del auth_data["client_secret"]
+
+                    # Save the cleaned file
+                    with open(auth_file, "w") as f:
+                        json.dump(auth_data, f, indent=2)
+                    logger.info(
+                        "Removed client credentials from OAuth token file for security"
+                    )
 
                 if client_id and client_secret:
                     logger.info("Using client credentials from OAuth token file")

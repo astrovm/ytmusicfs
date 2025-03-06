@@ -72,11 +72,39 @@ class YTMusicOAuthAdapter:
                 oauth_credentials = OAuthCredentials(
                     client_id=self.client_id, client_secret=self.client_secret
                 )
+                self.logger.debug("Created OAuth credentials object")
+            else:
+                self.logger.warning("Missing client_id or client_secret for OAuth")
+                raise ValueError(
+                    "Client ID and Client Secret are required for OAuth authentication"
+                )
 
             # Initialize YTMusic with OAuth
             self.ytmusic = YTMusic(
                 auth=self.auth_file, oauth_credentials=oauth_credentials
             )
+
+            # Check if client credentials exist in the auth file and remove them if needed
+            try:
+                with open(self.auth_file, "r") as f:
+                    auth_data = json.load(f)
+
+                # Remove client_id and client_secret from the auth file if present
+                modified = False
+                if "client_id" in auth_data:
+                    del auth_data["client_id"]
+                    modified = True
+                if "client_secret" in auth_data:
+                    del auth_data["client_secret"]
+                    modified = True
+
+                # Save the modified auth file if changes were made
+                if modified:
+                    with open(self.auth_file, "w") as f:
+                        json.dump(auth_data, f, indent=2)
+                    self.logger.debug("Removed client credentials from auth file")
+            except Exception as e:
+                self.logger.warning(f"Error checking auth file for credentials: {e}")
 
             # Test connection with a lightweight call
             self.ytmusic.get_library_playlists(limit=1)
