@@ -9,13 +9,14 @@ YTMusicFS is a FUSE filesystem that integrates YouTube Music into your Linux env
 - Compatible with any music player that can read files from the filesystem
 - Streams audio on-demand from YouTube Music servers
 - Caches metadata to improve performance
-- Supports two authentication methods: browser-based (cookies) and OAuth (longer lasting)
+- Uses OAuth authentication for reliable, long-lasting sessions
 
 ## Requirements
 
 - Python 3.6+
 - FUSE (Filesystem in Userspace)
 - YouTube Music account
+- Google Cloud Console account
 
 ## Installation
 
@@ -32,45 +33,37 @@ YTMusicFS is a FUSE filesystem that integrates YouTube Music into your Linux env
    pip install -r requirements.txt
    ```
 
-3. Set up YouTube Music authentication:
+## OAuth Authentication Setup
 
-   **Option 1: Cookie-based authentication (standard method):**
+Setting up OAuth authentication requires a few steps but provides a more reliable and longer-lasting authentication method.
 
-   ```
-   python setup_auth.py
-   ```
+### Step 1: Get OAuth Credentials
 
-   Follow the prompts to log into YouTube Music via a browser and save the resulting JSON file as `headers_auth.json` in the project directory.
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project or select an existing one
+3. Enable the YouTube Data API v3:
+   - Go to "APIs & Services" > "Library"
+   - Search for "YouTube Data API v3"
+   - Click "Enable"
+4. Create OAuth credentials:
+   - Go to "APIs & Services" > "Credentials"
+   - Click "Create Credentials" > "OAuth client ID"
+   - Application type: "TV and Limited Input devices"
+   - Name: "YTMusicFS" (or any name you prefer)
+5. Note down your Client ID and Client Secret
 
-   **Option 2: OAuth authentication (recommended for longer sessions):**
+### Step 2: Generate OAuth Token
 
-   First, you need to obtain OAuth 2.0 credentials from Google:
+Run the `oauth_setup_exact.py` script to generate an OAuth token:
 
-   1. Go to the [Google Cloud Console](https://console.cloud.google.com/)
-   2. Create a new project (or select an existing one)
-   3. Enable the YouTube Data API v3:
-      - Go to "APIs & Services" > "Library"
-      - Search for "YouTube Data API v3"
-      - Click "Enable"
-   4. Create OAuth credentials:
-      - Go to "APIs & Services" > "Credentials"
-      - Click "Create Credentials" > "OAuth client ID"
-      - Application type: "Desktop app"
-      - Name: "YTMusicFS" (or any name you prefer)
-      - Click "Create"
-      - Download the credentials JSON file
+```
+python oauth_setup_exact.py --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET --output oauth.json
+```
 
-   Then run the OAuth setup script:
+This will:
 
-   ```
-   # Using the downloaded credentials file
-   python setup_oauth.py --credentials-file path/to/credentials.json
-
-   # OR specifying client ID and secret directly
-   python setup_oauth.py --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET
-   ```
-
-   Follow the prompts to authorize the application in your browser. This will create an `oauth_auth.json` file with your OAuth tokens.
+1. Open a browser window for you to authorize the application
+2. Generate an OAuth token file (`oauth.json`)
 
 ## Usage
 
@@ -83,22 +76,14 @@ YTMusicFS is a FUSE filesystem that integrates YouTube Music into your Linux env
 
 2. Mount the filesystem:
 
-   **Using cookie-based authentication:**
-
    ```
-   python ytmusicfs.py --auth-file headers_auth.json --mount-point /mnt/ytmusic
+   python ytmusicfs.py --auth-file oauth.json --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET --mount-point /mnt/ytmusic
    ```
 
-   **Using OAuth authentication (recommended for longer sessions):**
+   For debugging, add the `--foreground` and `--debug` flags:
 
    ```
-   python ytmusicfs.py --auth-file oauth_auth.json --auth-type oauth --mount-point /mnt/ytmusic
-   ```
-
-   For debugging, add the `--foreground` flag:
-
-   ```
-   python ytmusicfs.py --auth-file oauth_auth.json --auth-type oauth --mount-point /mnt/ytmusic --foreground
+   python ytmusicfs.py --auth-file oauth.json --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET --mount-point /mnt/ytmusic --foreground --debug
    ```
 
 3. Browse your music:
@@ -127,15 +112,6 @@ YTMusicFS is a FUSE filesystem that integrates YouTube Music into your Linux env
 - `/artists/` - Contains subdirectories for each artist in your library
 - `/albums/` - Contains subdirectories for each album in your library
 
-## Authentication Methods
-
-YTMusicFS supports two types of authentication:
-
-1. **Browser-based (cookie) authentication** - The standard method using browser cookies, but requires more frequent re-authentication (typically every few hours to days).
-2. **OAuth authentication** - A more persistent authentication method that typically lasts much longer (weeks to months) and can refresh automatically.
-
-If you find your authentication expiring too quickly with the browser-based method, we recommend switching to OAuth authentication.
-
 ## Limitations
 
 - Stream URLs from YouTube Music expire after some time
@@ -144,11 +120,53 @@ If you find your authentication expiring too quickly with the browser-based meth
 
 ## Troubleshooting
 
+### Token Refresh Issues
+
+If you encounter token refresh issues, make sure:
+
+- You're providing the correct Client ID and Client Secret
+- Your OAuth token file is valid
+- The YouTube Data API v3 is enabled in your Google Cloud Console project
+
+### Authentication Errors
+
+If you see authentication errors:
+
+1. Try regenerating your OAuth token with `oauth_setup_exact.py`
+2. Check if your token file has the correct format
+3. Verify your Client ID and Client Secret are correct
+
+### OAuth Token File Format
+
+The OAuth token file should contain:
+
+- `access_token`: Your access token
+- `refresh_token`: Your refresh token
+- `token_expiry`: Expiration timestamp
+- `client_id`: Your client ID
+- `client_secret`: Your client secret
+
+### Other Issues
+
 - If you encounter permission issues, make sure your user has write access to the mount point
-- If authentication fails, regenerate the auth file using the appropriate setup script
-- If using cookie-based authentication and it expires too quickly, switch to OAuth authentication
 - For debugging, run with the `--foreground` flag to see log messages
-- If you have issues with OAuth setup, make sure YouTube Data API v3 is enabled in your Google Cloud project
+
+## Command Line Arguments
+
+### ytmusicfs.py
+
+- `--mount-point`: Directory where the filesystem will be mounted
+- `--auth-file`: Path to the OAuth token file
+- `--client-id`: OAuth client ID
+- `--client-secret`: OAuth client secret
+- `--foreground`: Run in the foreground (for debugging)
+- `--debug`: Enable debug logging
+
+### oauth_setup_exact.py
+
+- `--client-id`: OAuth client ID
+- `--client-secret`: OAuth client secret
+- `--output`: Output file for the OAuth token
 
 ## License
 

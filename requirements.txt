@@ -1,3 +1,5 @@
-fusepy==3.0.1
-requests==2.31.0
-ytmusicapi==1.10.2
+fusepy>=3.0.1
+requests>=2.31.0
+ytmusicapi>=1.10.2
+google-auth>=2.22.0
+google-auth-oauthlib>=1.0.0
