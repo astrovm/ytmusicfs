@@ -2,4 +2,3 @@ fusepy
 requests
 ytmusicapi
 yt-dlp
-packaging

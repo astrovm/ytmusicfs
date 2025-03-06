@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ytmusicfs"
+version = "0.1.0"
+description = "YouTube Music FUSE Filesystem"
+readme = "README.md"
+authors = [{ name = "astrovm" }]
+license = { file = "LICENSE" }
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+requires-python = ">=3.7"
+dependencies = ["fusepy", "requests", "ytmusicapi", "yt-dlp"]
+
+[project.scripts]
+ytmusicfs = "ytmusicfs.cli:main"
+ytmusicfs-oauth = "ytmusicfs.utils.oauth_setup:main"
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov", "black", "isort", "flake8"]
+
+[tool.setuptools]
+packages = ["ytmusicfs", "ytmusicfs.utils"]
+
+[tool.black]
+line-length = 88
+target-version = ['py37']
+
+[tool.isort]
+profile = "black"
+line_length = 88
