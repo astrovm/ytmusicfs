@@ -26,7 +26,7 @@ YTMusicFS mounts your YouTube Music library as a standard filesystem, allowing y
 ### From Source
 
 ```bash
-git clone https://github.com/astrovm/ytmusicfs.git
+git clone https://github.com/astrovm/ytmusicfs
 cd ytmusicfs
 pip install -e .
 ```
