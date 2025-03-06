@@ -9,6 +9,7 @@ from pathlib import Path
 
 import ytmusicapi
 from ytmusicapi import setup_oauth as ytmusic_setup_oauth
+from ytmusicapi import YTMusic, OAuthCredentials
 
 
 def ensure_dir(path):
@@ -160,9 +161,18 @@ def main():
 
         # Create a small test to verify the OAuth token works
         try:
-            from ytmusicapi import YTMusic
+            from ytmusicapi import YTMusic, OAuthCredentials
 
-            ytmusic = YTMusic(auth=str(output_file))
+            # Create OAuth credentials object
+            oauth_credentials = OAuthCredentials(
+                client_id=client_id, client_secret=client_secret
+            )
+
+            # Initialize YTMusic with OAuth credentials
+            ytmusic = YTMusic(
+                auth=str(output_file), oauth_credentials=oauth_credentials
+            )
+
             playlists = ytmusic.get_library_playlists(limit=3)
 
             logger.info(f"Success! Found {len(playlists)} playlists in your library")

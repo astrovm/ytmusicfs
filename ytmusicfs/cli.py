@@ -2,6 +2,7 @@
 
 import os
 import sys
+import json
 import argparse
 import logging
 from pathlib import Path
@@ -119,30 +120,42 @@ def main():
     auth_file = Path(args.auth_file)
     if not auth_file.exists():
         logger.error(f"Authentication file not found: {auth_file}")
-        logger.error("Please run ytmusicfs-oauth to set up authentication")
+        logger.error("Please run ytmusicfs-oauth to set up authentication:")
+        logger.error(
+            f"  ytmusicfs-oauth --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET"
+        )
         return 1
 
-    # Get client credentials from environment or config
+    # Get client credentials from environment or command line
     client_id = args.client_id or os.environ.get("YTMUSICFS_CLIENT_ID")
     client_secret = args.client_secret or os.environ.get("YTMUSICFS_CLIENT_SECRET")
 
     # Check for client credentials in auth file if not provided
     if not client_id or not client_secret:
         try:
-            import json
-
             with open(auth_file, "r") as f:
                 auth_data = json.load(f)
                 client_id = client_id or auth_data.get("client_id")
                 client_secret = client_secret or auth_data.get("client_secret")
+
+                if client_id and client_secret:
+                    logger.info("Using client credentials from OAuth token file")
         except Exception as e:
             logger.warning(f"Failed to read client credentials from auth file: {e}")
 
     # Final check for client credentials
     if not client_id or not client_secret:
         logger.error("Client ID and Client Secret are required for authentication")
+        logger.error("Options:")
+        logger.error("1. Provide them with --client-id and --client-secret")
         logger.error(
-            "Provide them with --client-id and --client-secret or set YTMUSICFS_CLIENT_ID and YTMUSICFS_CLIENT_SECRET environment variables"
+            "2. Set YTMUSICFS_CLIENT_ID and YTMUSICFS_CLIENT_SECRET environment variables"
+        )
+        logger.error("3. Make sure they are included in your OAuth token file")
+        logger.error("")
+        logger.error("To regenerate your OAuth token with credentials:")
+        logger.error(
+            f"  ytmusicfs-oauth --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET"
         )
         return 1
 
