@@ -37,7 +37,7 @@ pip install -e .
 On Debian/Ubuntu, install required system dependencies:
 
 ```bash
-sudo apt-get install fuse libfuse-dev python3-dev
+sudo apt-get install libfuse-dev python3-dev
 ```
 
 On Fedora/RHEL:
