@@ -15,7 +15,12 @@ classifiers = [
   "Operating System :: OS Independent",
 ]
 requires-python = ">=3.9"
-dependencies = ["fusepy", "requests", "ytmusicapi", "yt-dlp"]
+dependencies = [
+  "fusepy==3.0.1",
+  "requests==2.31.0",
+  "ytmusicapi==1.10.2",
+  "yt-dlp==2025.2.19",
+]
 
 [project.scripts]
 ytmusicfs = "ytmusicfs.cli:main"
