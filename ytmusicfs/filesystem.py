@@ -129,7 +129,7 @@ class YouTubeMusicFS(Operations):
         cache_timeout: int = 2592000,
         max_workers: int = 8,
         browser: Optional[str] = None,
-        cache_maxsize: int = 1000,
+        cache_maxsize: int = 10000,
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
@@ -141,7 +141,7 @@ class YouTubeMusicFS(Operations):
             cache_timeout: Time in seconds before cached data expires (default: 30 days)
             max_workers: Maximum number of worker threads (default: 8)
             browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
-            cache_maxsize: Maximum number of items to keep in memory cache (default: 1000)
+            cache_maxsize: Maximum number of items to keep in memory cache (default: 10000)
         """
         # Get the logger
         self.logger = logging.getLogger("YTMusicFS")
@@ -1735,7 +1735,7 @@ def mount_ytmusicfs(
     max_workers: int = 8,
     browser: Optional[str] = None,
     credentials_file: Optional[str] = None,
-    cache_maxsize: int = 1000,
+    cache_maxsize: int = 10000,
 ) -> None:
     """Mount the YouTube Music filesystem.
 
