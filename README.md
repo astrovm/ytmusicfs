@@ -83,7 +83,9 @@ ytmusicfs-oauth --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET
 This will:
 
 1. Open a browser window for you to authorize the application
-2. Generate and store an OAuth token in `~/.config/ytmusicfs/oauth.json`
+2. Generate and store two files:
+   - An OAuth token in `~/.config/ytmusicfs/oauth.json`
+   - Your client credentials in `~/.config/ytmusicfs/credentials.json`
 
 ## Usage
 
@@ -102,6 +104,7 @@ Or with custom options:
 ytmusicfs \
   --mount-point ~/Music/ytmusic \
   --auth-file /path/to/oauth.json \
+  --credentials-file /path/to/credentials.json \
   --cache-timeout 600 \
   --foreground \
   --debug
@@ -155,9 +158,10 @@ fusermount -u ~/Music/ytmusic
 
 ```
 usage: ytmusicfs [-h] --mount-point MOUNT_POINT [--auth-file AUTH_FILE]
-                 [--client-id CLIENT_ID] [--client-secret CLIENT_SECRET]
-                 [--cache-dir CACHE_DIR] [--cache-timeout CACHE_TIMEOUT]
-                 [--foreground] [--debug] [--browser BROWSER] [--version]
+                 [--credentials-file CREDENTIALS_FILE] [--client-id CLIENT_ID]
+                 [--client-secret CLIENT_SECRET] [--cache-dir CACHE_DIR]
+                 [--cache-timeout CACHE_TIMEOUT] [--foreground] [--debug]
+                 [--browser BROWSER] [--version]
 
 Mount YouTube Music as a filesystem
 
@@ -171,6 +175,9 @@ Authentication Options:
   --auth-file, -a AUTH_FILE
                         Path to the OAuth token file
                         (default: ~/.config/ytmusicfs/oauth.json)
+  --credentials-file CREDENTIALS_FILE
+                        Path to the client credentials file
+                        (default: same directory as auth-file with name 'credentials.json')
   --client-id, -i CLIENT_ID
                         OAuth client ID (required for OAuth authentication)
   --client-secret, -s CLIENT_SECRET
@@ -194,7 +201,8 @@ Operational Options:
 
 ```
 usage: ytmusicfs-oauth [-h] [--client-id CLIENT_ID]
-                       [--client-secret CLIENT_SECRET] [--output OUTPUT]
+                       [--client-secret CLIENT_SECRET]
+                       [--auth-file AUTH_FILE] [--credentials-file CREDENTIALS_FILE]
                        [--open-browser] [--no-open-browser] [--debug]
 
 Set up OAuth authentication for YTMusicFS
@@ -205,8 +213,12 @@ Options:
                         OAuth Client ID from Google Cloud Console
   --client-secret, -s CLIENT_SECRET
                         OAuth Client Secret from Google Cloud Console
-  --output, -o OUTPUT   Output file for the OAuth token
+  --auth-file, -a AUTH_FILE
+                        Path to the OAuth token file
                         (default: ~/.config/ytmusicfs/oauth.json)
+  --credentials-file, -c CREDENTIALS_FILE
+                        Output file for the client credentials
+                        (default: same directory as auth-file with name 'credentials.json')
   --open-browser, -b    Automatically open the browser for authentication
   --no-open-browser     Do not automatically open the browser for authentication
   --debug, -d           Enable debug output

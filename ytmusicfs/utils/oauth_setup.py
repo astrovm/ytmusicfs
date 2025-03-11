@@ -17,9 +17,16 @@ def ensure_dir(path):
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
-def save_credentials(client_id, client_secret, config_dir):
+def save_credentials(client_id, client_secret, credentials_file=None, config_dir=None):
     """Save client credentials to a separate file."""
-    cred_file = Path(config_dir) / "credentials.json"
+    if credentials_file:
+        cred_file = Path(credentials_file)
+    else:
+        cred_file = Path(config_dir) / "credentials.json"
+
+    # Ensure the directory exists
+    cred_file.parent.mkdir(parents=True, exist_ok=True)
+
     credentials = {"client_id": client_id, "client_secret": client_secret}
 
     with open(cred_file, "w") as f:
@@ -45,9 +52,14 @@ def main():
         help="OAuth Client Secret from Google Cloud Console",
     )
     parser.add_argument(
-        "--output",
-        "-o",
-        help="Output file for the OAuth token (default: ~/.config/ytmusicfs/oauth.json)",
+        "--auth-file",
+        "-a",
+        help="Path to the OAuth token file (default: ~/.config/ytmusicfs/oauth.json)",
+    )
+    parser.add_argument(
+        "--credentials-file",
+        "-c",
+        help="Output file for the client credentials (default: same directory as auth-file with name 'credentials.json')",
     )
     parser.add_argument(
         "--open-browser",
@@ -85,8 +97,8 @@ def main():
     logger.info("")
 
     # Determine output file
-    if args.output:
-        output_file = Path(args.output)
+    if args.auth_file:
+        output_file = Path(args.auth_file)
     else:
         output_file = Path(os.path.expanduser("~/.config/ytmusicfs/oauth.json"))
 
@@ -164,8 +176,13 @@ def main():
                 json.dump(oauth_data, f, indent=2)
 
             # Save credentials to a separate file
-            cred_file = save_credentials(client_id, client_secret, output_file.parent)
-            logger.info(f"Saved credentials to separate file: {cred_file}")
+            cred_file = save_credentials(
+                client_id,
+                client_secret,
+                credentials_file=args.credentials_file,
+                config_dir=output_file.parent,
+            )
+            logger.info(f"Saved credentials to file: {cred_file}")
 
             # Keep the client credentials in memory for the OAuthCredentials object
             logger.info(

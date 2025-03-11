@@ -10,9 +10,12 @@ import os
 import sys
 
 
-def load_credentials(config_dir):
+def load_credentials(config_dir, credentials_file=None):
     """Load client credentials from a separate file."""
-    cred_file = Path(config_dir) / "credentials.json"
+    if credentials_file:
+        cred_file = Path(credentials_file)
+    else:
+        cred_file = Path(config_dir) / "credentials.json"
 
     if not cred_file.exists():
         return None, None
@@ -47,6 +50,10 @@ def main():
         "-a",
         default=os.path.expanduser("~/.config/ytmusicfs/oauth.json"),
         help="Path to the OAuth token file (default: ~/.config/ytmusicfs/oauth.json)",
+    )
+    auth_group.add_argument(
+        "--credentials-file",
+        help="Path to the client credentials file (default: same directory as auth-file with name 'credentials.json')",
     )
     auth_group.add_argument(
         "--client-id",
@@ -153,7 +160,7 @@ def main():
     # If not provided, try to load from separate credentials file
     if not client_id or not client_secret:
         config_dir = auth_file.parent
-        loaded_id, loaded_secret = load_credentials(config_dir)
+        loaded_id, loaded_secret = load_credentials(config_dir, args.credentials_file)
 
         if loaded_id and loaded_secret:
             client_id = loaded_id
@@ -229,6 +236,7 @@ def main():
             cache_dir=args.cache_dir,
             cache_timeout=args.cache_timeout,
             browser=args.browser,
+            credentials_file=args.credentials_file,
         )
 
         return 0

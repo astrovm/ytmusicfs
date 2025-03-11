@@ -1945,6 +1945,7 @@ def mount_ytmusicfs(
     cache_timeout: int = 2592000,
     max_workers: int = 8,
     browser: Optional[str] = None,
+    credentials_file: Optional[str] = None,
 ) -> None:
     """Mount the YouTube Music filesystem.
 
@@ -1955,10 +1956,11 @@ def mount_ytmusicfs(
         client_secret: OAuth client secret
         foreground: Run in the foreground (for debugging)
         debug: Enable debug logging
-        cache_dir: Directory to store cache files
-        cache_timeout: Cache timeout in seconds
-        max_workers: Maximum number of worker threads
-        browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
+        cache_dir: Directory to store cache files (default: ~/.cache/ytmusicfs)
+        cache_timeout: Cache timeout in seconds (default: 2592000)
+        max_workers: Maximum number of worker threads for parallel operations
+        browser: Browser to use for cookies
+        credentials_file: Path to the client credentials file (default: None)
     """
     FUSE(
         YouTubeMusicFS(
