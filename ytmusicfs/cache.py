@@ -8,6 +8,7 @@ import json
 import logging
 import threading
 import time
+import hashlib
 
 
 class CacheManager:
@@ -54,7 +55,24 @@ class CacheManager:
         Returns:
             Sanitized cache key suitable for filesystem storage
         """
-        return path.replace('/', '_')
+        # First replace slashes with underscores for basic path conversion
+        key = path.replace('/', '_')
+
+        # If the key is too long (> 200 chars), hash it to avoid filename length issues
+        # Keep a prefix to make it somewhat readable/debuggable
+        MAX_KEY_LENGTH = 200
+        if len(key) > MAX_KEY_LENGTH:
+            # Get the first 30 chars for readability
+            prefix = key[:30]
+            # Hash the full path for uniqueness
+            path_hash = hashlib.md5(path.encode('utf-8')).hexdigest()
+            # Create a new key with prefix and hash
+            key = f"{prefix}_{path_hash}"
+
+            # Store the mapping for this hash for potential recovery
+            self._store_hash_mapping(key, path)
+
+        return key
 
     def key_to_path(self, key: str) -> str:
         """Convert a cache key back to a filesystem path.
@@ -65,6 +83,15 @@ class CacheManager:
         Returns:
             Original filesystem path
         """
+        # If this is a hashed key, try to look up the original path
+        if '_' in key and len(key) > 30 and key[30:31] == '_' and len(key) - key.rfind('_') == 33:
+            original_path = self.get_original_path(key)
+            if original_path:
+                return original_path
+            self.logger.warning(f"Cannot convert hashed key back to path: {key}")
+            return key  # Return as is if we can't reconstruct the original
+
+        # Regular key - just replace underscores with slashes
         return key.replace('_', '/')
 
     def get_cache_file_path(self, path: str) -> Path:
@@ -76,7 +103,19 @@ class CacheManager:
         Returns:
             Path object pointing to the cache file
         """
-        return self.cache_dir / f"{self.path_to_key(path)}.json"
+        # Get the sanitized key
+        key = self.path_to_key(path)
+
+        # If this is a hashed key (for long paths), store it in a 'hashed' subdirectory
+        # to keep the cache organization clean
+        if '_' in key and len(key) > 30 and key[30:31] == '_' and len(key) - key.rfind('_') == 33:
+            # It's a hashed key - create in a hashed subdir for organization
+            hashed_dir = self.cache_dir / "hashed"
+            hashed_dir.mkdir(exist_ok=True)
+            return hashed_dir / f"{key}.json"
+
+        # Regular key
+        return self.cache_dir / f"{key}.json"
 
     def get(self, path: str) -> Optional[Any]:
         """Get data from cache if it's still valid.
@@ -467,3 +506,70 @@ class CacheManager:
                 })
 
             return result
+
+    def _store_hash_mapping(self, hashed_key: str, original_path: str) -> None:
+        """Store a mapping between a hashed key and its original path.
+
+        Args:
+            hashed_key: The hashed key created for a long path
+            original_path: The original path that was hashed
+        """
+        try:
+            # Store in memory for quick lookups
+            with self.cache_lock:
+                if not hasattr(self, 'hash_to_path'):
+                    self.hash_to_path = {}
+                self.hash_to_path[hashed_key] = original_path
+
+            # Also try to store on disk for persistence across restarts
+            hash_map_file = self.cache_dir / "hash_mappings.json"
+
+            # Load existing mappings if file exists
+            mappings = {}
+            if hash_map_file.exists():
+                try:
+                    with open(hash_map_file, "r") as f:
+                        mappings = json.load(f)
+                except json.JSONDecodeError:
+                    # If file is corrupted, start fresh
+                    mappings = {}
+
+            # Add the new mapping and save
+            mappings[hashed_key] = original_path
+            with open(hash_map_file, "w") as f:
+                json.dump(mappings, f)
+
+        except Exception as e:
+            self.logger.warning(f"Failed to store hash mapping: {e}")
+
+    def get_original_path(self, hashed_key: str) -> Optional[str]:
+        """Retrieve the original path for a hashed key.
+
+        Args:
+            hashed_key: The hashed key to look up
+
+        Returns:
+            The original path if found, None otherwise
+        """
+        # First check in-memory cache
+        with self.cache_lock:
+            if hasattr(self, 'hash_to_path') and hashed_key in self.hash_to_path:
+                return self.hash_to_path[hashed_key]
+
+        # Then check on-disk storage
+        try:
+            hash_map_file = self.cache_dir / "hash_mappings.json"
+            if hash_map_file.exists():
+                with open(hash_map_file, "r") as f:
+                    mappings = json.load(f)
+                    if hashed_key in mappings:
+                        # Also update in-memory cache for next time
+                        with self.cache_lock:
+                            if not hasattr(self, 'hash_to_path'):
+                                self.hash_to_path = {}
+                            self.hash_to_path[hashed_key] = mappings[hashed_key]
+                        return mappings[hashed_key]
+        except Exception as e:
+            self.logger.warning(f"Failed to retrieve hash mapping: {e}")
+
+        return None
