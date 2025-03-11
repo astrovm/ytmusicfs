@@ -377,19 +377,8 @@ class YouTubeMusicFS(Operations):
         Returns:
             List of playlist names
         """
-        # Check when the playlists cache was last refreshed
-        last_refresh_time = self._get_cache_metadata("/playlists", "last_refresh_time")
-        current_time = time.time()
-
-        # Automatically refresh if it's been more than 10 minutes since last refresh
-        refresh_interval = 600  # 10 minutes in seconds
-
-        if (
-            last_refresh_time is None
-            or (current_time - last_refresh_time) > refresh_interval
-        ):
-            self.logger.info("Auto-refreshing all caches...")
-            self.refresh_cache()
+        # Use the helper method to handle cache auto-refreshing
+        self._auto_refresh_cache("/playlists")
 
         playlists = self._fetch_and_cache(
             "/playlists", self.ytmusic.get_library_playlists, limit=100
@@ -403,21 +392,8 @@ class YouTubeMusicFS(Operations):
         Returns:
             List of liked song filenames
         """
-        # Check when the liked songs cache was last refreshed
-        last_refresh_time = self._get_cache_metadata(
-            "/liked_songs", "last_refresh_time"
-        )
-        current_time = time.time()
-
-        # Automatically refresh if it's been more than 10 minutes since last refresh
-        refresh_interval = 600  # 10 minutes in seconds
-
-        if (
-            last_refresh_time is None
-            or (current_time - last_refresh_time) > refresh_interval
-        ):
-            self.logger.info("Auto-refreshing all caches...")
-            self.refresh_cache()
+        # Use the helper method to handle cache auto-refreshing
+        self._auto_refresh_cache("/liked_songs")
 
         # First check if we have processed tracks in cache
         processed_tracks = self._get_from_cache("/liked_songs_processed")
@@ -431,9 +407,6 @@ class YouTubeMusicFS(Operations):
         liked_songs = self._fetch_and_cache(
             "/liked_songs", self.ytmusic.get_liked_songs, limit=10000
         )
-
-        # Mark the cache as freshly refreshed
-        self._set_cache_metadata("/liked_songs", "last_refresh_time", current_time)
 
         # Process the raw liked songs data
         self.logger.debug(f"Processing raw liked songs data: {type(liked_songs)}")
@@ -484,6 +457,21 @@ class YouTubeMusicFS(Operations):
         metadata = self._get_from_cache(metadata_cache_key) or {}
         metadata[metadata_key] = value
         self._set_cache(metadata_cache_key, metadata)
+
+    def _auto_refresh_cache(self, cache_key: str, refresh_interval: int = 600) -> None:
+        """Automatically refresh the cache if the last refresh time exceeds the interval.
+
+        Args:
+            cache_key: The cache key to check (e.g., '/playlists').
+            refresh_interval: Time in seconds before triggering a refresh (default: 600).
+        """
+        last_refresh_time = self._get_cache_metadata(cache_key, "last_refresh_time")
+        current_time = time.time()
+        if last_refresh_time is None or (current_time - last_refresh_time) > refresh_interval:
+            self.logger.info(f"Auto-refreshing cache for {cache_key}")
+            self.refresh_cache()
+            # Mark the cache as freshly refreshed
+            self._set_cache_metadata(cache_key, "last_refresh_time", current_time)
 
     def _readdir_playlist_content(self, path: str) -> List[str]:
         """Handle listing contents of a specific playlist.
@@ -551,19 +539,8 @@ class YouTubeMusicFS(Operations):
         Returns:
             List of artist names
         """
-        # Check when the artists cache was last refreshed
-        last_refresh_time = self._get_cache_metadata("/artists", "last_refresh_time")
-        current_time = time.time()
-
-        # Automatically refresh if it's been more than 10 minutes since last refresh
-        refresh_interval = 600  # 10 minutes in seconds
-
-        if (
-            last_refresh_time is None
-            or (current_time - last_refresh_time) > refresh_interval
-        ):
-            self.logger.info("Auto-refreshing all caches...")
-            self.refresh_cache()
+        # Use the helper method to handle cache auto-refreshing
+        self._auto_refresh_cache("/artists")
 
         artists = self._fetch_and_cache("/artists", self.ytmusic.get_library_artists)
         return [self._sanitize_filename(artist["artist"]) for artist in artists]
@@ -574,19 +551,8 @@ class YouTubeMusicFS(Operations):
         Returns:
             List of album names
         """
-        # Check when the albums cache was last refreshed
-        last_refresh_time = self._get_cache_metadata("/albums", "last_refresh_time")
-        current_time = time.time()
-
-        # Automatically refresh if it's been more than 10 minutes since last refresh
-        refresh_interval = 600  # 10 minutes in seconds
-
-        if (
-            last_refresh_time is None
-            or (current_time - last_refresh_time) > refresh_interval
-        ):
-            self.logger.info("Auto-refreshing all caches...")
-            self.refresh_cache()
+        # Use the helper method to handle cache auto-refreshing
+        self._auto_refresh_cache("/albums")
 
         albums = self._fetch_and_cache("/albums", self.ytmusic.get_library_albums)
         return [self._sanitize_filename(album["title"]) for album in albums]
