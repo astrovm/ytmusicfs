@@ -422,9 +422,49 @@ class YouTubeMusicFS(Operations):
             return track.get("album").get("year")
         return None
 
+    def _extract_track_info(self, track: Dict) -> Dict:
+        """Extract and format track information.
+
+        Args:
+            track: Track dictionary containing raw track data
+
+        Returns:
+            Dictionary with extracted and formatted track information
+        """
+        title = track.get("title", "Unknown Title")
+
+        # Process artists
+        raw_artists = track.get("artists", [])
+        artists = self._clean_artists(raw_artists)
+
+        # Get album information
+        album, album_artist = self._extract_album_info(track)
+
+        # Extract song duration
+        duration_seconds, duration_formatted = self._parse_duration(track)
+
+        # Extract additional metadata
+        track_number = track.get("trackNumber", track.get("index", 0))
+        year = self._extract_year(track)
+
+        # Extract genre information if available
+        genre = track.get("genre", "Unknown Genre")
+
+        return {
+            "title": title,
+            "artist": artists,  # Flattened artist string for metadata
+            "album": album,
+            "album_artist": album_artist,
+            "duration_seconds": duration_seconds,
+            "duration_formatted": duration_formatted,
+            "track_number": track_number,
+            "year": year,
+            "genre": genre
+        }
+
     def _process_tracks(
         self, tracks: List[Dict], add_filename: bool = True
-    ) -> List[Dict]:
+    ) -> tuple[List[Dict], List[str]]:
         """Process track data into a consistent format with filenames.
 
         Args:
@@ -438,43 +478,19 @@ class YouTubeMusicFS(Operations):
         filenames = []
 
         for track in tracks:
-            title = track.get("title", "Unknown Title")
+            # Extract all track information
+            track_info = self._extract_track_info(track)
 
-            # Process artists
-            raw_artists = track.get("artists", [])
-            artists = self._clean_artists(raw_artists)
-
-            # Get album information
-            album, album_artist = self._extract_album_info(track)
-
-            # Extract song duration
-            duration_seconds, duration_formatted = self._parse_duration(track)
-
-            # Extract additional metadata
-            track_number = track.get("trackNumber", track.get("index", 0))
-            year = self._extract_year(track)
-
-            # Extract genre information if available
-            genre = track.get("genre", "Unknown Genre")
-
-            filename = f"{artists} - {title}.m4a"
+            # Create filename from artist and title
+            filename = f"{track_info['artist']} - {track_info['title']}.m4a"
             sanitized_filename = self._sanitize_filename(filename)
             filenames.append(sanitized_filename)
 
             if add_filename:
-                # Create a shallow copy of the track and add filename and metadata
+                # Create a shallow copy of the track and add track info
                 processed_track = dict(track)
+                processed_track.update(track_info)
                 processed_track["filename"] = sanitized_filename
-                processed_track["artist"] = (
-                    artists  # Flattened artist string for metadata
-                )
-                processed_track["album"] = album
-                processed_track["album_artist"] = album_artist
-                processed_track["duration_seconds"] = duration_seconds
-                processed_track["duration_formatted"] = duration_formatted
-                processed_track["track_number"] = track_number
-                processed_track["year"] = year
-                processed_track["genre"] = genre
                 processed.append(processed_track)
 
         return processed, filenames
