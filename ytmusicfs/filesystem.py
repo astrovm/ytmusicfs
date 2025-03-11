@@ -84,6 +84,10 @@ class YouTubeMusicFS(Operations):
         self.thread_pool = ThreadPoolExecutor(max_workers=max_workers)
         self.logger.info(f"Thread pool initialized with {max_workers} workers")
 
+        self.download_progress = (
+            {}
+        )  # Track download progress: {video_id: bytes_downloaded or status}
+
     def _get_from_cache(self, path: str) -> Optional[Any]:
         """Get data from cache if it's still valid.
 
@@ -998,7 +1002,27 @@ class YouTubeMusicFS(Operations):
 
             raise OSError(errno.ENOENT, f"File not found: {path}")
 
-        # Fetch stream URL using yt-dlp
+        # First check if the audio is already cached
+        cache_path = Path(self.cache_dir / "audio" / f"{video_id}.m4a")
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Set up the file handle first with just the video_id and cache_path
+        with self.file_handle_lock:
+            fh = self.next_fh
+            self.next_fh += 1
+            self.open_files[fh] = {
+                "cache_path": str(cache_path),
+                "video_id": video_id,
+                "stream_url": None,  # Will be populated only if needed
+            }
+            self.logger.debug(f"Assigned file handle {fh} to {path}")
+
+        # Check if the audio file is already cached completely
+        if self._check_cached_audio(video_id):
+            self.logger.debug(f"Found complete cached audio for {video_id}")
+            return fh
+
+        # If not cached, fetch stream URL using yt-dlp
         try:
             # Use yt-dlp to get the audio stream URL
             cmd = [
@@ -1018,13 +1042,17 @@ class YouTubeMusicFS(Operations):
 
             self.logger.debug(f"Successfully got stream URL for {video_id}")
 
-            # Use thread-safe file handle assignment
+            # Update the file handle with the stream URL
             with self.file_handle_lock:
-                fh = self.next_fh
-                self.next_fh += 1
-                self.open_files[fh] = {"stream_url": stream_url}
-                self.logger.debug(f"Assigned file handle {fh} to {path}")
-                return fh
+                self.open_files[fh]["stream_url"] = stream_url
+
+            # Initialize download status and start the download
+            with self.cache_lock:
+                if video_id not in self.download_progress:
+                    self.download_progress[video_id] = 0
+                    self._start_background_download(video_id, stream_url, cache_path)
+
+            return fh
 
         except subprocess.SubprocessError as e:
             self.logger.error(f"Error running yt-dlp: {e}")
@@ -1045,93 +1073,35 @@ class YouTubeMusicFS(Operations):
         self.logger.debug(f"Updated file size cache for {path}: {size} bytes")
 
     def read(self, path: str, size: int, offset: int, fh: int) -> bytes:
-        """Read data from a file.
+        """Read data that might be partially downloaded."""
+        if fh not in self.open_files:
+            raise OSError(errno.EBADF, "Bad file descriptor")
 
-        Args:
-            path: The file path
-            size: Number of bytes to read
-            offset: Offset in bytes
-            fh: File handle
+        file_info = self.open_files[fh]
+        cache_path = file_info["cache_path"]
+        video_id = file_info["video_id"]
+        stream_url = file_info["stream_url"]
 
-        Returns:
-            File data as bytes
-        """
-        self.logger.debug(f"read: {path}, size={size}, offset={offset}, fh={fh}")
-        try:
-            if fh not in self.open_files:
-                self.logger.error(f"Bad file descriptor: {fh} not in open_files")
-                raise OSError(errno.EBADF, "Bad file descriptor")
+        with self.cache_lock:
+            status = self.download_progress.get(video_id)
 
-            stream_url = self.open_files[fh]["stream_url"]
-            self.logger.debug(f"Using stream URL: {stream_url}")
+            # If download is complete, read from cache
+            if status == "complete":
+                with open(cache_path, "rb") as f:
+                    f.seek(offset)
+                    return f.read(size)
 
-            # Try with specific range first
-            headers = {"Range": f"bytes={offset}-{offset + size - 1}"}
-            self.logger.debug(f"Requesting range: {headers['Range']}")
+            # If we have enough of the file downloaded, read from cache
+            if isinstance(status, int) and status > offset + size:
+                with open(cache_path, "rb") as f:
+                    f.seek(offset)
+                    return f.read(size)
 
-            response = requests.get(stream_url, headers=headers, stream=True)
-            self.logger.debug(f"Response status: {response.status_code}")
-
-            # If we get a 416 Range Not Satisfiable error, try alternative approaches
-            if response.status_code == 416:
-                self.logger.debug("Got 416 error, trying alternative range request")
-
-                # Option 1: Try open-ended range (just specifying start position)
-                headers = {"Range": f"bytes={offset}-"}
-                self.logger.debug(f"Trying open-ended range: {headers['Range']}")
-                response = requests.get(stream_url, headers=headers, stream=True)
-
-                # Option 2: If that still fails, try getting whatever data is available
-                if response.status_code == 416:
-                    self.logger.debug(
-                        "Open-ended range also failed, requesting from beginning"
-                    )
-                    # Try to get content from the beginning and handle offset manually
-                    headers = {}  # No range header
-                    response = requests.get(stream_url, stream=True)
-
-                    # If we get data but need to apply offset manually
-                    if response.status_code == 200:
-                        content = response.content
-
-                        # Update the file size cache with the actual size
-                        self._update_file_size(path, len(content))
-
-                        if offset < len(content):
-                            # Apply offset and size limit manually
-                            return content[offset : offset + size]
-                        else:
-                            # Offset beyond file size
-                            self.logger.debug(
-                                f"Offset {offset} is beyond actual file size {len(content)}"
-                            )
-                            return b""
-
-            # For normal successful responses (200 or 206)
-            if response.status_code in (200, 206):
-                content = response.content
-
-                # If we've received the whole file, update the file size cache
-                if response.status_code == 200:
-                    self._update_file_size(path, len(content))
-                # If we have a Content-Range header, we can extract the total file size
-                elif "Content-Range" in response.headers:
-                    content_range = response.headers.get("Content-Range", "")
-                    match = re.search(r"bytes \d+-\d+/(\d+)", content_range)
-                    if match:
-                        total_size = int(match.group(1))
-                        self._update_file_size(path, total_size)
-
-                self.logger.debug(f"Got {len(content)} bytes of content")
-                return content
-
-            # If we get here, all attempts failed
-            self.logger.error(f"Failed to stream: {response.status_code}")
-            raise RuntimeError(f"Failed to stream: {response.status_code}")
-
-        except Exception as e:
-            self.logger.error(f"Error in read: {e}")
-            raise OSError(errno.EIO, f"Failed to read stream: {str(e)}")
+        # Otherwise, stream directly - no waiting
+        self.logger.debug(
+            f"Requested range not cached yet, streaming directly: offset={offset}, size={size}"
+        )
+        return self._stream_content(stream_url, offset, size)
 
     def release(self, path: str, fh: int) -> int:
         """Release (close) a file handle.
@@ -1514,6 +1484,93 @@ class YouTubeMusicFS(Operations):
         with self.cache_lock:
             if path in self.cache:
                 del self.cache[path]
+
+    def _start_background_download(self, video_id, stream_url, cache_path):
+        """Start downloading a file in the background and track progress."""
+
+        def download_task():
+            try:
+                self.logger.debug(f"Starting background download for {video_id}")
+                with requests.get(stream_url, stream=True) as response:
+                    with open(cache_path, "wb") as f:
+                        for chunk in response.iter_content(chunk_size=4096):
+                            f.write(chunk)
+                            # Update download progress
+                            with self.cache_lock:
+                                self.download_progress[video_id] = f.tell()
+
+                # Mark download as complete
+                with self.cache_lock:
+                    self.download_progress[video_id] = "complete"
+
+                self.logger.debug(f"Download task completed for {video_id}")
+
+                # When a download completes:
+                status_path = self.cache_dir / "audio" / f"{video_id}.status"
+                with open(status_path, "w") as f:
+                    f.write("complete")
+
+            except Exception as e:
+                self.logger.error(f"Error downloading {video_id}: {e}")
+                # Mark download as failed
+                with self.cache_lock:
+                    self.download_progress[video_id] = "failed"
+
+        # Start the download in a background thread
+        self.thread_pool.submit(download_task)
+
+    def _stream_content(self, stream_url, offset, size):
+        """Stream content directly from URL (fallback if download is too slow)."""
+        headers = {"Range": f"bytes={offset}-{offset + size - 1}"}
+        response = requests.get(stream_url, headers=headers, stream=False)
+
+        if response.status_code in (200, 206):
+            return response.content
+        else:
+            self.logger.error(f"Failed to stream: {response.status_code}")
+            raise OSError(errno.EIO, "Failed to read stream")
+
+    def _check_cached_audio(self, video_id):
+        """Check if an audio file is already cached completely."""
+        cache_path = self.cache_dir / "audio" / f"{video_id}.m4a"
+        status_path = self.cache_dir / "audio" / f"{video_id}.status"
+
+        # First check for status file (most reliable)
+        if status_path.exists():
+            try:
+                with open(status_path, "r") as f:
+                    status = f.read().strip()
+                if status == "complete":
+                    self.logger.debug(
+                        f"Found status file indicating {video_id} is complete"
+                    )
+                    with self.cache_lock:
+                        self.download_progress[video_id] = "complete"
+                    return True
+            except Exception as e:
+                self.logger.debug(f"Error reading status file for {video_id}: {e}")
+
+        # Fall back to checking if the file exists and has content
+        if cache_path.exists() and cache_path.stat().st_size > 0:
+            self.logger.debug(
+                f"Found existing audio file for {video_id}, marking as complete"
+            )
+            with self.cache_lock:
+                self.download_progress[video_id] = "complete"
+
+            # If file exists but status doesn't, create the status file
+            if not status_path.exists():
+                try:
+                    with open(status_path, "w") as f:
+                        f.write("complete")
+                except Exception as e:
+                    self.logger.debug(
+                        f"Failed to create status file for {video_id}: {e}"
+                    )
+
+            return True
+
+        return False
 
 
 def mount_ytmusicfs(
