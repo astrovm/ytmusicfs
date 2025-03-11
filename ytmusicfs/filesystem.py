@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
 
-import os
-import stat
-import time
+from concurrent.futures import ThreadPoolExecutor
+from fuse import FUSE, Operations
+from pathlib import Path
+from typing import Dict, Any, Optional, List
+from ytmusicfs.utils.oauth_adapter import YTMusicOAuthAdapter
 import errno
 import json
 import logging
-import subprocess
-from pathlib import Path
-from typing import Dict, Any, Optional, List
-import threading
-from concurrent.futures import ThreadPoolExecutor
-
+import os
 import requests
-from fuse import FUSE, Operations
-
-from ytmusicfs.utils.oauth_adapter import YTMusicOAuthAdapter
+import stat
+import subprocess
+import threading
+import time
 
 
 class YouTubeMusicFS(Operations):
