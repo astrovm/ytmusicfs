@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from fuse import FUSE, Operations
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Callable
+from yt_dlp import YoutubeDL
 from ytmusicfs.utils.oauth_adapter import YTMusicOAuthAdapter
 import errno
 import json
@@ -11,7 +12,6 @@ import logging
 import os
 import requests
 import stat
-import subprocess
 import threading
 import time
 
@@ -1101,29 +1101,26 @@ class YouTubeMusicFS(Operations):
         # If not cached, fetch stream URL using yt-dlp
         try:
             # Use yt-dlp to get the audio stream URL
-            cmd = [
-                "yt-dlp",
-                "-f",
-                "141/bestaudio[ext=m4a]",
-            ]
+            ydl_opts = {
+                "format": "141/bestaudio[ext=m4a]",
+                "extractor_args": {
+                    "youtube": {
+                        "formats": ["missing_pot"],
+                    },
+                },
+            }
 
             # Add browser cookies if a browser is specified
             if self.browser:
-                cmd.extend(["--cookies-from-browser", self.browser])
+                ydl_opts["cookiesfrombrowser"] = (self.browser,)
                 self.logger.debug(f"Using cookies from browser: {self.browser}")
 
-            cmd.extend(
-                [
-                    "--extractor-args",
-                    "youtube:formats=missing_pot",
-                    "-g",
-                    f"https://music.youtube.com/watch?v={video_id}",
-                ]
-            )
+            url = f"https://music.youtube.com/watch?v={video_id}"
+            self.logger.debug(f"Extracting stream URL for {url}")
 
-            self.logger.debug(f"Running command: {' '.join(cmd)}")
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            stream_url = result.stdout.strip()
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                stream_url = info["url"]
 
             if not stream_url:
                 self.logger.error("No suitable audio stream found")
@@ -1164,11 +1161,8 @@ class YouTubeMusicFS(Operations):
 
             return fh
 
-        except subprocess.SubprocessError as e:
-            self.logger.error(f"Error running yt-dlp: {e}")
-            raise OSError(errno.EIO, f"Failed to get stream URL: {str(e)}")
         except Exception as e:
-            self.logger.error(f"Unexpected error getting stream URL: {e}")
+            self.logger.error(f"Error getting stream URL: {e}")
             raise OSError(errno.EIO, f"Failed to get stream URL: {str(e)}")
 
     def _update_file_size(self, path: str, size: int) -> None:
