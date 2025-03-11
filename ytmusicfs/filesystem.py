@@ -71,6 +71,7 @@ class YouTubeMusicFS(Operations):
         self.cache_timeout = cache_timeout
         self.open_files = {}  # Store file handles: {handle: {'stream_url': ...}}
         self.next_fh = 1  # Next file handle to assign
+        self.path_to_fh = {}  # Store path to file handle mapping
         self.auth_file = auth_file
         self.client_id = client_id
         self.client_secret = client_secret
@@ -842,21 +843,32 @@ class YouTubeMusicFS(Operations):
                     ):
                         for song in songs:
                             if song.get("filename") == filename:
-                                # If we have duration information, use it to estimate file size
-                                # Average bit rate for M4A: ~192kbps = 24KB/s
-                                if "duration_seconds" in song:
+                                # First check if we have an actual file size in cache
+                                file_size_cache_key = f"filesize:{path}"
+                                cached_size = self._get_from_cache(file_size_cache_key)
+
+                                if cached_size is not None:
+                                    self.logger.debug(
+                                        f"Using cached actual file size for {path}: {cached_size}"
+                                    )
+                                    attr["st_size"] = cached_size
+                                    return attr
+
+                                # Fall back to estimating size from duration if needed
+                                elif "duration_seconds" in song:
+                                    # This is now a fallback method when we don't have an actual size
                                     estimated_size = int(
                                         song["duration_seconds"] * 24 * 1024
                                     )
                                     self.logger.debug(
-                                        f"Estimated size from duration: {estimated_size}"
+                                        f"Fallback: Estimated size from duration: {estimated_size}"
                                     )
-                                    # Cache this size estimate
+                                    # Cache this size estimate, but it will be replaced when we get the real size
                                     self._set_cache(file_size_cache_key, estimated_size)
                                     attr["st_size"] = estimated_size
                                     return attr
 
-                    # Default size if no duration available
+                    # Default size if no duration available or caching failed
                     # For YouTube Music, assume average song length is about 4 minutes = 240 seconds
                     # 240 seconds * 24 KB/s ~= 5.76 MB
                     estimated_size = 6 * 1024 * 1024
@@ -1012,6 +1024,7 @@ class YouTubeMusicFS(Operations):
                 "video_id": video_id,
                 "stream_url": None,  # Will be populated only if needed
             }
+            self.path_to_fh[path] = fh
             self.logger.debug(f"Assigned file handle {fh} to {path}")
 
         # Check if the audio file is already cached completely
@@ -1042,6 +1055,27 @@ class YouTubeMusicFS(Operations):
                 raise OSError(errno.EIO, "No suitable audio stream found")
 
             self.logger.debug(f"Successfully got stream URL for {video_id}")
+
+            # Get the actual file size using a HEAD request
+            try:
+                head_response = requests.head(stream_url, timeout=10)
+                if (
+                    head_response.status_code == 200
+                    and "content-length" in head_response.headers
+                ):
+                    actual_size = int(head_response.headers["content-length"])
+                    self.logger.debug(
+                        f"Got actual file size for {video_id}: {actual_size} bytes"
+                    )
+                    # Update the file size cache
+                    self._update_file_size(path, actual_size)
+                else:
+                    self.logger.warning(
+                        f"Couldn't get file size from HEAD request for {video_id}"
+                    )
+            except Exception as e:
+                self.logger.warning(f"Error getting file size for {video_id}: {str(e)}")
+                # Continue even if we can't get the file size
 
             # Update the file handle with the stream URL
             with self.file_handle_lock:
@@ -1117,6 +1151,9 @@ class YouTubeMusicFS(Operations):
         with self.file_handle_lock:
             if fh in self.open_files:
                 del self.open_files[fh]
+                # Remove path_to_fh entry for this path
+                if path in self.path_to_fh and self.path_to_fh[path] == fh:
+                    del self.path_to_fh[path]
         return 0
 
     def getxattr(self, path: str, name: str, position: int = 0) -> bytes:
@@ -1493,6 +1530,22 @@ class YouTubeMusicFS(Operations):
             try:
                 self.logger.debug(f"Starting background download for {video_id}")
                 with requests.get(stream_url, stream=True) as response:
+                    # Update file size from content-length if available
+                    if "content-length" in response.headers:
+                        actual_size = int(response.headers["content-length"])
+                        # Find all paths that use this video_id to update their file sizes
+                        with self.file_handle_lock:
+                            for handle, info in self.open_files.items():
+                                if info.get("video_id") == video_id:
+                                    # Get the path from handle
+                                    for path in self.path_to_fh:
+                                        if self.path_to_fh[path] == handle:
+                                            self._update_file_size(path, actual_size)
+                                            self.logger.debug(
+                                                f"Updated size for {path} to {actual_size} from download response"
+                                            )
+                                            break
+
                     with open(cache_path, "wb") as f:
                         for chunk in response.iter_content(chunk_size=4096):
                             f.write(chunk)
