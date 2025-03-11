@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
 from fuse import FUSE, Operations
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Callable
 from yt_dlp import YoutubeDL
-from ytmusicfs.utils.oauth_adapter import YTMusicOAuthAdapter
-from cachetools import LRUCache
+from ytmusicfs.cache import CacheManager
+from ytmusicfs.client import YouTubeMusicClient
+from ytmusicfs.processor import TrackProcessor
 import errno
-import json
 import logging
 import os
 import requests
@@ -72,10 +71,12 @@ class PathRouter:
         import re
 
         # Escape special regex characters except * which we'll handle specially
-        regex_pattern = re.escape(pattern).replace('\\*\\*', '(.+)').replace('\\*', '([^/]+)')
+        regex_pattern = (
+            re.escape(pattern).replace("\\*\\*", "(.+)").replace("\\*", "([^/]+)")
+        )
 
         # Add start and end anchors
-        regex_pattern = f'^{regex_pattern}$'
+        regex_pattern = f"^{regex_pattern}$"
 
         # Match the path against the pattern
         match = re.match(regex_pattern, path)
@@ -144,45 +145,41 @@ class YouTubeMusicFS(Operations):
         # Get the logger
         self.logger = logging.getLogger("YTMusicFS")
 
-        # Set up cache directory
-        if cache_dir:
-            self.cache_dir = Path(cache_dir)
-        else:
-            self.cache_dir = Path.home() / ".cache" / "ytmusicfs"
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.logger.info(f"Using cache directory: {self.cache_dir}")
+        # Initialize the client component
+        self.client = YouTubeMusicClient(
+            auth_file=auth_file,
+            client_id=client_id,
+            client_secret=client_secret,
+            browser=browser,
+            logger=self.logger,
+        )
 
-        self.logger.info(f"Initializing YTMusicFS with OAuth authentication")
+        # Initialize the cache component
+        self.cache = CacheManager(
+            cache_dir=cache_dir,
+            cache_timeout=cache_timeout,
+            maxsize=cache_maxsize,
+            logger=self.logger,
+        )
 
-        try:
-            # Use YTMusicOAuthAdapter for OAuth support
-            self.ytmusic = YTMusicOAuthAdapter(
-                auth_file=auth_file,
-                client_id=client_id,
-                client_secret=client_secret,
-                logger=self.logger,
-                browser=browser,
-            )
-            self.logger.info(f"Authentication successful with OAuth method!")
-        except Exception as e:
-            self.logger.error(f"Error during authentication: {e}")
-            self.logger.error(
-                "Try regenerating your authentication file with ytmusicfs-oauth"
-            )
-            raise
+        # Initialize the track processor component
+        self.processor = TrackProcessor(logger=self.logger)
 
-        self.cache = LRUCache(maxsize=cache_maxsize)  # In-memory cache with LRU eviction strategy: {path: {'data': ..., 'time': ...}}
-        self.cache_timeout = cache_timeout
-        self.open_files = {}  # Store file handles: {handle: {'stream_url': ...}}
-        self.next_fh = 1  # Next file handle to assign
-        self.path_to_fh = {}  # Store path to file handle mapping
+        # Initialize the path router
+        self.router = PathRouter()
+
+        # Store parameters for future reference
         self.auth_file = auth_file
         self.client_id = client_id
         self.client_secret = client_secret
         self.browser = browser
 
+        # File handling state
+        self.open_files = {}  # Store file handles: {handle: {'stream_url': ...}}
+        self.next_fh = 1  # Next file handle to assign
+        self.path_to_fh = {}  # Store path to file handle mapping
+
         # Thread-related objects
-        self.cache_lock = threading.RLock()  # Lock for cache access
         self.file_handle_lock = threading.RLock()  # Lock for file handle operations
         self.thread_pool = ThreadPoolExecutor(max_workers=max_workers)
         self.logger.info(f"Thread pool initialized with {max_workers} workers")
@@ -190,9 +187,6 @@ class YouTubeMusicFS(Operations):
         self.download_progress = (
             {}
         )  # Track download progress: {video_id: bytes_downloaded or status}
-
-        # Initialize the path router
-        self.router = PathRouter()
 
         # Register exact path handlers
         self.router.register(
@@ -214,18 +208,17 @@ class YouTubeMusicFS(Operations):
         )
         self.router.register_dynamic(
             "/artists/*",
-            lambda path, *args: [".", ".."] + self._readdir_artist_content(path)
+            lambda path, *args: [".", ".."] + self._readdir_artist_content(path),
         )
         self.router.register_dynamic(
             "/artists/*/*",
-            lambda path, *args: [".", ".."] + self._readdir_album_content(path)
+            lambda path, *args: [".", ".."] + self._readdir_album_content(path),
         )
         self.router.register_dynamic(
             "/albums/*",
-            lambda path, *args: [".", ".."] + self._readdir_album_content(path)
+            lambda path, *args: [".", ".."] + self._readdir_album_content(path),
         )
 
-    @contextmanager
     def cached_data(self, cache_key: str, fetch_func: Callable, *args, **kwargs):
         """Manage cache fetching and updating.
 
@@ -237,84 +230,12 @@ class YouTubeMusicFS(Operations):
         Yields:
             The cached or freshly fetched data.
         """
-        data = self._get_from_cache(cache_key)
+        data = self.cache.get(cache_key)
         if data is None:
             self.logger.debug(f"Cache miss for {cache_key}, fetching data")
             data = fetch_func(*args, **kwargs)
-            self._set_cache(cache_key, data)
+            self.cache.set(cache_key, data)
         yield data
-
-    def _get_from_cache(self, path: str) -> Optional[Any]:
-        """Get data from cache if it's still valid.
-
-        Args:
-            path: The path to retrieve from cache
-
-        Returns:
-            The cached data if valid, None otherwise
-        """
-        # First check memory cache
-        with self.cache_lock:
-            if (
-                path in self.cache
-                and time.time() - self.cache[path]["time"] < self.cache_timeout
-            ):
-                self.logger.debug(f"Cache hit (memory) for {path}")
-                return self.cache[path]["data"]
-
-        # Then check disk cache
-        cache_file = self.cache_dir / f"{path.replace('/', '_')}.json"
-        if cache_file.exists():
-            try:
-                with open(cache_file, "r") as f:
-                    cache_data = json.load(f)
-
-                if time.time() - cache_data["time"] < self.cache_timeout:
-                    self.logger.debug(f"Cache hit (disk) for {path}")
-                    # Also update memory cache
-                    with self.cache_lock:
-                        self.cache[path] = cache_data
-                    return cache_data["data"]
-            except Exception as e:
-                self.logger.debug(f"Failed to read disk cache for {path}: {e}")
-
-        return None
-
-    def _set_cache(self, path: str, data: Any) -> None:
-        """Set data in both memory and disk cache.
-
-        Args:
-            path: The path to cache
-            data: The data to cache
-        """
-        cache_entry = {"data": data, "time": time.time()}
-
-        # Update memory cache (with lock)
-        with self.cache_lock:
-            self.cache[path] = cache_entry
-
-        # Update disk cache
-        try:
-            cache_file = self.cache_dir / f"{path.replace('/', '_')}.json"
-            with open(cache_file, "w") as f:
-                json.dump(cache_entry, f)
-        except Exception as e:
-            self.logger.warning(f"Failed to write disk cache for {path}: {e}")
-
-    def _sanitize_filename(self, name: str) -> str:
-        """Sanitize a string to be used as a filename.
-
-        Args:
-            name: The filename to sanitize
-
-        Returns:
-            A sanitized filename
-        """
-        # Replace problematic characters
-        sanitized = name.replace("/", "-").replace("\\", "-").replace(":", "-")
-        sanitized = sanitized.replace("*", "-").replace("?", "-").replace('"', "-")
-        sanitized = sanitized.replace("<", "-").replace(">", "-").replace("|", "-")
-        return sanitized
 
     def readdir(self, path: str, fh: Optional[int] = None) -> List[str]:
         """Read directory contents.
@@ -357,202 +278,6 @@ class YouTubeMusicFS(Operations):
         with self.cached_data(cache_key, fetch_func, *args, **kwargs) as data:
             return data
 
-    def _clean_artists(self, raw_artists: List[Dict]) -> str:
-        """Clean and format artist names from a list of artist dictionaries.
-
-        Args:
-            raw_artists: List of artist dictionaries with 'name' keys.
-
-        Returns:
-            A comma-separated string of cleaned artist names.
-        """
-        clean_artists = []
-        for artist in raw_artists:
-            name = artist.get("name", "Unknown Artist")
-            # Remove "- Topic" suffix from artist names
-            if name.endswith(" - Topic"):
-                name = name[:-8]  # Remove "- Topic" (8 characters)
-            clean_artists.append(name)
-        return ", ".join(clean_artists)
-
-    def _parse_duration(self, track: Dict) -> tuple[Optional[int], str]:
-        """Parse track duration into seconds and formatted string.
-
-        Args:
-            track: Track dictionary that may contain duration information
-
-        Returns:
-            Tuple of (duration_seconds, duration_formatted)
-        """
-        duration_seconds = None
-        duration_formatted = "0:00"
-
-        if "duration" in track:
-            duration_str = track.get("duration", "0:00")
-            try:
-                # Convert MM:SS to seconds
-                parts = duration_str.split(":")
-                if len(parts) == 2:
-                    duration_seconds = int(parts[0]) * 60 + int(parts[1])
-                elif len(parts) == 3:
-                    duration_seconds = (
-                        int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-                    )
-            except (ValueError, IndexError):
-                pass
-        elif "duration_seconds" in track:
-            duration_seconds = track.get("duration_seconds")
-
-        # Format duration as mm:ss for display
-        if duration_seconds:
-            minutes = duration_seconds // 60
-            seconds = duration_seconds % 60
-            duration_formatted = f"{minutes}:{seconds:02d}"
-
-        return duration_seconds, duration_formatted
-
-    def _extract_album_info(self, track: Dict) -> tuple[str, str]:
-        """Extract album name and album artist from track data.
-
-        Args:
-            track: Track dictionary that may contain album information
-
-        Returns:
-            Tuple of (album_name, album_artist)
-        """
-        album = "Unknown Album"
-        album_artist = "Unknown Artist"
-
-        # Handle album which could be None, a string, or a dictionary
-        album_obj = track.get("album")
-        if album_obj is not None:
-            if isinstance(album_obj, dict):
-                album = album_obj.get("name", "Unknown Album")
-                # Handle album artist - could be direct 'artist' or in 'artists' list
-                album_artist_obj = album_obj.get("artist")
-                if album_artist_obj is not None:
-                    if isinstance(album_artist_obj, list) and album_artist_obj:
-                        album_artist_name = album_artist_obj[0].get(
-                            "name", "Unknown Artist"
-                        )
-                        # Remove "- Topic" from album artist
-                        if album_artist_name.endswith(" - Topic"):
-                            album_artist = album_artist_name[:-8]
-                        else:
-                            album_artist = album_artist_name
-                    elif isinstance(album_artist_obj, str):
-                        # Remove "- Topic" from album artist if it's a string
-                        if album_artist_obj.endswith(" - Topic"):
-                            album_artist = album_artist_obj[:-8]
-                        else:
-                            album_artist = album_artist_obj
-                # Try the 'artists' field if 'artist' wasn't found
-                elif "artists" in album_obj and album_obj["artists"]:
-                    artists_obj = album_obj["artists"]
-                    if artists_obj and isinstance(artists_obj[0], dict):
-                        album_artist_name = artists_obj[0].get("name", "Unknown Artist")
-                        # Remove "- Topic" from album artist
-                        if album_artist_name.endswith(" - Topic"):
-                            album_artist = album_artist_name[:-8]
-                        else:
-                            album_artist = album_artist_name
-            elif isinstance(album_obj, str):
-                album = album_obj
-
-        return album, album_artist
-
-    def _extract_year(self, track: Dict) -> Optional[int]:
-        """Extract the year from track or album data.
-
-        Args:
-            track: Track dictionary that may contain year information
-
-        Returns:
-            Year as int or None if not available
-        """
-        if "year" in track:
-            return track.get("year")
-        elif (
-            track.get("album")
-            and isinstance(track.get("album"), dict)
-            and "year" in track.get("album")
-        ):
-            return track.get("album").get("year")
-        return None
-
-    def _extract_track_info(self, track: Dict) -> Dict:
-        """Extract and format track information.
-
-        Args:
-            track: Track dictionary containing raw track data
-
-        Returns:
-            Dictionary with extracted and formatted track information
-        """
-        title = track.get("title", "Unknown Title")
-
-        # Process artists
-        raw_artists = track.get("artists", [])
-        artists = self._clean_artists(raw_artists)
-
-        # Get album information
-        album, album_artist = self._extract_album_info(track)
-
-        # Extract song duration
-        duration_seconds, duration_formatted = self._parse_duration(track)
-
-        # Extract additional metadata
-        track_number = track.get("trackNumber", track.get("index", 0))
-        year = self._extract_year(track)
-
-        # Extract genre information if available
-        genre = track.get("genre", "Unknown Genre")
-
-        return {
-            "title": title,
-            "artist": artists,  # Flattened artist string for metadata
-            "album": album,
-            "album_artist": album_artist,
-            "duration_seconds": duration_seconds,
-            "duration_formatted": duration_formatted,
-            "track_number": track_number,
-            "year": year,
-            "genre": genre
-        }
-
-    def _process_tracks(
-        self, tracks: List[Dict], add_filename: bool = True
-    ) -> tuple[List[Dict], List[str]]:
-        """Process track data into a consistent format with filenames.
-
-        Args:
-            tracks: List of track dictionaries
-            add_filename: Whether to add filename to the tracks
-
-        Returns:
-            List of processed tracks with filenames and a list of just the filenames
-        """
-        processed = []
-        filenames = []
-
-        for track in tracks:
-            # Extract all track information
-            track_info = self._extract_track_info(track)
-
-            # Create filename from artist and title
-            filename = f"{track_info['artist']} - {track_info['title']}.m4a"
-            sanitized_filename = self._sanitize_filename(filename)
-            filenames.append(sanitized_filename)
-
-            if add_filename:
-                # Create a shallow copy of the track and add track info
-                processed_track = dict(track)
-                processed_track.update(track_info)
-                processed_track["filename"] = sanitized_filename
-                processed.append(processed_track)
-
-        return processed, filenames
-
     def _readdir_playlists(self) -> List[str]:
         """Handle listing playlists.
 
@@ -562,11 +287,12 @@ class YouTubeMusicFS(Operations):
         # Use the helper method to handle cache auto-refreshing
         self._auto_refresh_cache("/playlists")
 
-        with self.cached_data(
-            "/playlists", self.ytmusic.get_library_playlists, limit=100
+        with self.cache.cached_data(
+            "/playlists", self.client.get_library_playlists, limit=100
         ) as playlists:
             return [
-                self._sanitize_filename(playlist["title"]) for playlist in playlists
+                self.processor.sanitize_filename(playlist["title"])
+                for playlist in playlists
             ]
 
     def _readdir_liked_songs(self) -> List[str]:
@@ -579,7 +305,7 @@ class YouTubeMusicFS(Operations):
         self._auto_refresh_cache("/liked_songs")
 
         # First check if we have processed tracks in cache
-        processed_tracks = self._get_from_cache("/liked_songs_processed")
+        processed_tracks = self.cache.get("/liked_songs_processed")
         if processed_tracks:
             self.logger.debug(
                 f"Using {len(processed_tracks)} cached processed tracks for /liked_songs"
@@ -587,8 +313,8 @@ class YouTubeMusicFS(Operations):
             return [track["filename"] for track in processed_tracks]
 
         # If no processed tracks in cache, fetch and process raw data
-        with self.cached_data(
-            "/liked_songs", self.ytmusic.get_liked_songs, limit=10000
+        with self.cache.cached_data(
+            "/liked_songs", self.client.get_liked_songs, limit=10000
         ) as liked_songs:
             # Process the raw liked songs data
             self.logger.debug(f"Processing raw liked songs data: {type(liked_songs)}")
@@ -600,14 +326,16 @@ class YouTubeMusicFS(Operations):
             if isinstance(liked_songs, dict) and "tracks" in liked_songs:
                 tracks_to_process = liked_songs["tracks"]
 
-            # Use the centralized method to process tracks and create filenames
-            processed_tracks, filenames = self._process_tracks(tracks_to_process)
+            # Use the track processor to process tracks and create filenames
+            processed_tracks, filenames = self.processor.process_tracks(
+                tracks_to_process
+            )
 
             # Cache the processed song list with filename mappings
             self.logger.debug(
                 f"Caching {len(processed_tracks)} processed tracks for /liked_songs"
             )
-            self._set_cache("/liked_songs_processed", processed_tracks)
+            self.cache.set("/liked_songs_processed", processed_tracks)
 
             return filenames
 
@@ -622,7 +350,7 @@ class YouTubeMusicFS(Operations):
             The metadata value or None if not found
         """
         metadata_cache_key = f"{cache_key}_metadata"
-        metadata = self._get_from_cache(metadata_cache_key) or {}
+        metadata = self.cache.get(metadata_cache_key) or {}
         return metadata.get(metadata_key)
 
     def _set_cache_metadata(
@@ -636,9 +364,9 @@ class YouTubeMusicFS(Operations):
             value: The metadata value to set
         """
         metadata_cache_key = f"{cache_key}_metadata"
-        metadata = self._get_from_cache(metadata_cache_key) or {}
+        metadata = self.cache.get(metadata_cache_key) or {}
         metadata[metadata_key] = value
-        self._set_cache(metadata_cache_key, metadata)
+        self.cache.set(metadata_cache_key, metadata)
 
     def _auto_refresh_cache(self, cache_key: str, refresh_interval: int = 600) -> None:
         """Automatically refresh the cache if the last refresh time exceeds the interval.
@@ -647,7 +375,7 @@ class YouTubeMusicFS(Operations):
             cache_key: The cache key to check (e.g., '/playlists').
             refresh_interval: Time in seconds before triggering a refresh (default: 600).
         """
-        last_refresh_time = self._get_cache_metadata(cache_key, "last_refresh_time")
+        last_refresh_time = self.cache.get_metadata(cache_key, "last_refresh_time")
         current_time = time.time()
         if (
             last_refresh_time is None
@@ -656,7 +384,7 @@ class YouTubeMusicFS(Operations):
             self.logger.info(f"Auto-refreshing cache for {cache_key}")
             self.refresh_cache()
             # Mark the cache as freshly refreshed
-            self._set_cache_metadata(cache_key, "last_refresh_time", current_time)
+            self.cache.set_metadata(cache_key, "last_refresh_time", current_time)
 
     def _readdir_playlist_content(self, path: str) -> List[str]:
         """Handle listing contents of a specific playlist.
@@ -675,12 +403,12 @@ class YouTubeMusicFS(Operations):
             return []
 
         # Find the playlist ID
-        with self.cached_data(
-            "/playlists", self.ytmusic.get_library_playlists, limit=10000
+        with self.cache.cached_data(
+            "/playlists", self.client.get_library_playlists, limit=10000
         ) as playlists:
             playlist_id = None
             for playlist in playlists:
-                if self._sanitize_filename(playlist["title"]) == playlist_name:
+                if self.processor.sanitize_filename(playlist["title"]) == playlist_name:
                     playlist_id = playlist["playlistId"]
                     break
 
@@ -690,7 +418,7 @@ class YouTubeMusicFS(Operations):
 
         # Check if we have processed tracks in cache
         processed_cache_key = f"/playlist/{playlist_id}_processed"
-        processed_tracks = self._get_from_cache(processed_cache_key)
+        processed_tracks = self.cache.get(processed_cache_key)
         if processed_tracks:
             self.logger.debug(
                 f"Using {len(processed_tracks)} cached processed tracks for {playlist_name}"
@@ -701,19 +429,19 @@ class YouTubeMusicFS(Operations):
         playlist_cache_key = f"/playlist/{playlist_id}"
 
         def fetch_playlist_tracks():
-            return self.ytmusic.get_playlist(playlist_id, limit=10000).get("tracks", [])
+            return self.client.get_playlist(playlist_id, limit=10000).get("tracks", [])
 
-        with self.cached_data(
+        with self.cache.cached_data(
             playlist_cache_key, fetch_playlist_tracks
         ) as playlist_tracks:
-            # Process tracks and create filenames using the centralized method
-            processed_tracks, filenames = self._process_tracks(playlist_tracks)
+            # Process tracks and create filenames using the processor
+            processed_tracks, filenames = self.processor.process_tracks(playlist_tracks)
 
             # Cache the processed tracks for this playlist
             self.logger.debug(
                 f"Caching {len(processed_tracks)} processed tracks for {playlist_name}"
             )
-            self._set_cache(processed_cache_key, processed_tracks)
+            self.cache.set(processed_cache_key, processed_tracks)
 
             return filenames
 
@@ -726,8 +454,12 @@ class YouTubeMusicFS(Operations):
         # Use the helper method to handle cache auto-refreshing
         self._auto_refresh_cache("/artists")
 
-        with self.cached_data("/artists", self.ytmusic.get_library_artists) as artists:
-            return [self._sanitize_filename(artist["artist"]) for artist in artists]
+        with self.cache.cached_data(
+            "/artists", self.client.get_library_artists
+        ) as artists:
+            return [
+                self.processor.sanitize_filename(artist["artist"]) for artist in artists
+            ]
 
     def _readdir_albums(self) -> List[str]:
         """Handle listing albums.
@@ -738,8 +470,12 @@ class YouTubeMusicFS(Operations):
         # Use the helper method to handle cache auto-refreshing
         self._auto_refresh_cache("/albums")
 
-        with self.cached_data("/albums", self.ytmusic.get_library_albums) as albums:
-            return [self._sanitize_filename(album["title"]) for album in albums]
+        with self.cache.cached_data(
+            "/albums", self.client.get_library_albums
+        ) as albums:
+            return [
+                self.processor.sanitize_filename(album["title"]) for album in albums
+            ]
 
     def _readdir_artist_content(self, path: str) -> List[str]:
         """Handle listing contents of a specific artist directory.
@@ -751,7 +487,7 @@ class YouTubeMusicFS(Operations):
             List of album names by the artist
         """
         # Check for cached processed data first
-        processed_albums = self._get_from_cache(path)
+        processed_albums = self.cache.get(path)
         if processed_albums:
             self.logger.debug(f"Using cached albums for {path}")
             return processed_albums
@@ -764,12 +500,12 @@ class YouTubeMusicFS(Operations):
             return []
 
         # Find the artist ID
-        with self.cached_data(
-            "/artists", self.ytmusic.get_library_artists, limit=10000
+        with self.cache.cached_data(
+            "/artists", self.client.get_library_artists, limit=10000
         ) as artists:
             artist_id = None
             for artist in artists:
-                if self._sanitize_filename(artist["artist"]) == artist_name:
+                if self.processor.sanitize_filename(artist["artist"]) == artist_name:
                     # Safely access ID fields with fallbacks
                     artist_id = artist.get("artistId")
                     if not artist_id:
@@ -786,7 +522,7 @@ class YouTubeMusicFS(Operations):
         artist_cache_key = f"/artist/{artist_id}"
 
         def fetch_artist_albums():
-            artist_data = self.ytmusic.get_artist(artist_id)
+            artist_data = self.client.get_artist(artist_id)
             artist_albums = []
 
             # Get albums
@@ -815,14 +551,17 @@ class YouTubeMusicFS(Operations):
 
             return artist_albums
 
-        with self.cached_data(artist_cache_key, fetch_artist_albums) as artist_albums:
+        with self.cache.cached_data(
+            artist_cache_key, fetch_artist_albums
+        ) as artist_albums:
             # Create filenames for the albums
             album_filenames = [
-                self._sanitize_filename(item["title"]) for item in artist_albums
+                self.processor.sanitize_filename(item["title"])
+                for item in artist_albums
             ]
 
             # Cache the result
-            self._set_cache(path, album_filenames)
+            self.cache.set(path, album_filenames)
 
             # Return the albums
             return album_filenames
@@ -837,7 +576,7 @@ class YouTubeMusicFS(Operations):
             List of track filenames in the album
         """
         # Check for cached processed tracks first
-        processed_tracks = self._get_from_cache(path)
+        processed_tracks = self.cache.get(path)
         if processed_tracks:
             self.logger.debug(
                 f"Using {len(processed_tracks)} cached processed tracks for {path}"
@@ -863,12 +602,15 @@ class YouTubeMusicFS(Operations):
             album_name = parts[3]
 
             # Find the artist ID
-            with self.cached_data(
-                "/artists", self.ytmusic.get_library_artists, limit=10000
+            with self.cache.cached_data(
+                "/artists", self.client.get_library_artists, limit=10000
             ) as artists:
                 artist_id = None
                 for artist in artists:
-                    if self._sanitize_filename(artist["artist"]) == artist_name:
+                    if (
+                        self.processor.sanitize_filename(artist["artist"])
+                        == artist_name
+                    ):
                         # Safely access ID fields with fallbacks
                         artist_id = artist.get("artistId")
                         if not artist_id:
@@ -885,7 +627,7 @@ class YouTubeMusicFS(Operations):
             artist_cache_key = f"/artist/{artist_id}"
 
             def fetch_artist_albums():
-                artist_data = self.ytmusic.get_artist(artist_id)
+                artist_data = self.client.get_artist(artist_id)
                 artist_albums = []
 
                 # Get albums
@@ -914,12 +656,12 @@ class YouTubeMusicFS(Operations):
 
                 return artist_albums
 
-            with self.cached_data(
+            with self.cache.cached_data(
                 artist_cache_key, fetch_artist_albums
             ) as artist_albums:
                 # Find the album ID
                 for album in artist_albums:
-                    if self._sanitize_filename(album["title"]) == album_name:
+                    if self.processor.sanitize_filename(album["title"]) == album_name:
                         album_id = album["browseId"]
                         album_title = album["title"]
                         break
@@ -928,11 +670,11 @@ class YouTubeMusicFS(Operations):
             album_name = path.split("/")[2]
 
             # Find the album ID
-            with self.cached_data(
-                "/albums", self.ytmusic.get_library_albums, limit=10000
+            with self.cache.cached_data(
+                "/albums", self.client.get_library_albums, limit=10000
             ) as albums:
                 for album in albums:
-                    if self._sanitize_filename(album["title"]) == album_name:
+                    if self.processor.sanitize_filename(album["title"]) == album_name:
                         album_id = album["browseId"]
                         album_title = album["title"]
                         break
@@ -945,12 +687,14 @@ class YouTubeMusicFS(Operations):
         album_cache_key = f"/album/{album_id}"
 
         def fetch_album_tracks():
-            album_data = self.ytmusic.get_album(album_id)
+            album_data = self.client.get_album(album_id)
             return album_data.get("tracks", [])
 
-        with self.cached_data(album_cache_key, fetch_album_tracks) as album_tracks:
-            # Process tracks using the centralized method
-            processed_tracks, filenames = self._process_tracks(album_tracks)
+        with self.cache.cached_data(
+            album_cache_key, fetch_album_tracks
+        ) as album_tracks:
+            # Process tracks using the processor
+            processed_tracks, filenames = self.processor.process_tracks(album_tracks)
 
             # Add additional album-specific information
             for track in processed_tracks:
@@ -961,12 +705,15 @@ class YouTubeMusicFS(Operations):
                 # For artist albums, try to find the album year if available
                 if is_artist_album and artist_albums and not track.get("year"):
                     for album in artist_albums:
-                        if self._sanitize_filename(album["title"]) == album_name:
+                        if (
+                            self.processor.sanitize_filename(album["title"])
+                            == album_name
+                        ):
                             track["year"] = album.get("year")
                             break
 
             # Cache the processed track list for this album
-            self._set_cache(path, processed_tracks)
+            self.cache.set(path, processed_tracks)
 
             return filenames
 
@@ -1010,7 +757,7 @@ class YouTubeMusicFS(Operations):
 
             # Check if we have a cached file size for this path
             file_size_cache_key = f"filesize:{path}"
-            cached_size = self._get_from_cache(file_size_cache_key)
+            cached_size = self.cache.get(file_size_cache_key)
 
             if cached_size is not None:
                 self.logger.debug(f"Using cached file size for {path}: {cached_size}")
@@ -1026,7 +773,7 @@ class YouTubeMusicFS(Operations):
                     attr["st_mode"] = stat.S_IFREG | 0o644
 
                     # Get a more accurate file size estimate based on song duration if available
-                    songs = self._get_from_cache(parent_dir)
+                    songs = self.cache.get(parent_dir)
                     if (
                         songs
                         and isinstance(songs, list)
@@ -1037,7 +784,7 @@ class YouTubeMusicFS(Operations):
                             if song.get("filename") == filename:
                                 # Check if we have an actual file size in cache
                                 file_size_cache_key = f"filesize:{path}"
-                                cached_size = self._get_from_cache(file_size_cache_key)
+                                cached_size = self.cache.get(file_size_cache_key)
 
                                 if cached_size is not None:
                                     self.logger.debug(
@@ -1088,7 +835,7 @@ class YouTubeMusicFS(Operations):
 
                 # Same but for other file paths - no estimation
                 file_size_cache_key = f"filesize:{path}"
-                cached_size = self._get_from_cache(file_size_cache_key)
+                cached_size = self.cache.get(file_size_cache_key)
 
                 if cached_size is not None:
                     attr["st_size"] = cached_size
@@ -1126,28 +873,31 @@ class YouTubeMusicFS(Operations):
 
         # Special handling for liked songs which use a different cache key
         if dir_path == "/liked_songs":
-            songs = self._get_from_cache("/liked_songs_processed")
+            songs = self.cache.get("/liked_songs_processed")
             self.logger.debug(f"Liked songs cache: {'Found' if songs else 'Not found'}")
         # Special handling for playlists which need to use the playlist ID in the cache key
         elif dir_path.startswith("/playlists/"):
             playlist_name = dir_path.split("/")[2]
             # Find the playlist ID
-            playlists = self._get_from_cache("/playlists")
+            playlists = self.cache.get("/playlists")
             if playlists:
                 playlist_id = None
                 for playlist in playlists:
-                    if self._sanitize_filename(playlist["title"]) == playlist_name:
+                    if (
+                        self.processor.sanitize_filename(playlist["title"])
+                        == playlist_name
+                    ):
                         playlist_id = playlist["playlistId"]
                         break
 
                 if playlist_id:
                     processed_cache_key = f"/playlist/{playlist_id}_processed"
-                    songs = self._get_from_cache(processed_cache_key)
+                    songs = self.cache.get(processed_cache_key)
                     self.logger.debug(
                         f"Playlist songs cache ({processed_cache_key}): {'Found' if songs else 'Not found'}"
                     )
         else:
-            songs = self._get_from_cache(dir_path)
+            songs = self.cache.get(dir_path)
             self.logger.debug(
                 f"Cache status for {dir_path}: {'Found' if songs else 'Not found'}"
             )
@@ -1159,28 +909,31 @@ class YouTubeMusicFS(Operations):
 
             # Try to get from cache again after refetching
             if dir_path == "/liked_songs":
-                songs = self._get_from_cache("/liked_songs_processed")
+                songs = self.cache.get("/liked_songs_processed")
                 self.logger.debug(
                     f"After re-fetch, liked songs cache: {'Found' if songs else 'Not found'}"
                 )
             elif dir_path.startswith("/playlists/"):
                 playlist_name = dir_path.split("/")[2]
-                playlists = self._get_from_cache("/playlists")
+                playlists = self.cache.get("/playlists")
                 if playlists:
                     playlist_id = None
                     for playlist in playlists:
-                        if self._sanitize_filename(playlist["title"]) == playlist_name:
+                        if (
+                            self.processor.sanitize_filename(playlist["title"])
+                            == playlist_name
+                        ):
                             playlist_id = playlist["playlistId"]
                             break
 
                     if playlist_id:
                         processed_cache_key = f"/playlist/{playlist_id}_processed"
-                        songs = self._get_from_cache(processed_cache_key)
+                        songs = self.cache.get(processed_cache_key)
                         self.logger.debug(
                             f"After re-fetch, playlist songs cache ({processed_cache_key}): {'Found' if songs else 'Not found'}"
                         )
             else:
-                songs = self._get_from_cache(dir_path)
+                songs = self.cache.get(dir_path)
                 self.logger.debug(
                     f"After re-fetch, songs: {'Found' if songs else 'Not found'}"
                 )
@@ -1230,7 +983,7 @@ class YouTubeMusicFS(Operations):
             raise OSError(errno.ENOENT, f"File not found: {path}")
 
         # First check if the audio is already cached
-        cache_path = Path(self.cache_dir / "audio" / f"{video_id}.m4a")
+        cache_path = Path(self.cache.cache_dir / "audio" / f"{video_id}.m4a")
         cache_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Set up the file handle first with just the video_id and cache_path
@@ -1306,10 +1059,9 @@ class YouTubeMusicFS(Operations):
                 self.open_files[fh]["stream_url"] = stream_url
 
             # Initialize download status and start the download
-            with self.cache_lock:
-                if video_id not in self.download_progress:
-                    self.download_progress[video_id] = 0
-                    self._start_background_download(video_id, stream_url, cache_path)
+            if video_id not in self.download_progress:
+                self.download_progress[video_id] = 0
+                self._start_background_download(video_id, stream_url, cache_path)
 
             return fh
 
@@ -1325,7 +1077,7 @@ class YouTubeMusicFS(Operations):
             size: The actual file size in bytes
         """
         file_size_cache_key = f"filesize:{path}"
-        self._set_cache(file_size_cache_key, size)
+        self.cache.set(file_size_cache_key, size)
         self.logger.debug(f"Updated file size cache for {path}: {size} bytes")
 
     def read(self, path: str, size: int, offset: int, fh: int) -> bytes:
@@ -1338,20 +1090,19 @@ class YouTubeMusicFS(Operations):
         video_id = file_info["video_id"]
         stream_url = file_info["stream_url"]
 
-        with self.cache_lock:
-            status = self.download_progress.get(video_id)
+        status = self.download_progress.get(video_id)
 
-            # If download is complete, read from cache
-            if status == "complete":
-                with open(cache_path, "rb") as f:
-                    f.seek(offset)
-                    return f.read(size)
+        # If download is complete, read from cache
+        if status == "complete":
+            with open(cache_path, "rb") as f:
+                f.seek(offset)
+                return f.read(size)
 
-            # If we have enough of the file downloaded, read from cache
-            if isinstance(status, int) and status > offset + size:
-                with open(cache_path, "rb") as f:
-                    f.seek(offset)
-                    return f.read(size)
+        # If we have enough of the file downloaded, read from cache
+        if isinstance(status, int) and status > offset + size:
+            with open(cache_path, "rb") as f:
+                f.seek(offset)
+                return f.read(size)
 
         # Otherwise, stream directly - no waiting
         self.logger.debug(
@@ -1423,19 +1174,22 @@ class YouTubeMusicFS(Operations):
             # Handle playlist paths - use the processed cache if available
             playlist_name = parent_dir.split("/")[2]
             # Find the playlist ID
-            playlists = self._get_from_cache("/playlists")
+            playlists = self.cache.get("/playlists")
             if playlists:
                 for playlist in playlists:
-                    if self._sanitize_filename(playlist["title"]) == playlist_name:
+                    if (
+                        self.processor.sanitize_filename(playlist["title"])
+                        == playlist_name
+                    ):
                         playlist_id = playlist.get("playlistId")
                         if playlist_id:
                             processed_cache_key = f"/playlist/{playlist_id}_processed"
-                            processed_songs = self._get_from_cache(processed_cache_key)
+                            processed_songs = self.cache.get(processed_cache_key)
                             if processed_songs:
                                 cache_key = processed_cache_key
                                 break
 
-        songs = self._get_from_cache(cache_key)
+        songs = self.cache.get(cache_key)
         if not songs:
             return b""  # Return empty for attributes we don't have instead of error
 
@@ -1538,19 +1292,22 @@ class YouTubeMusicFS(Operations):
             # Handle playlist paths - use the processed cache if available
             playlist_name = parent_dir.split("/")[2]
             # Find the playlist ID
-            playlists = self._get_from_cache("/playlists")
+            playlists = self.cache.get("/playlists")
             if playlists:
                 for playlist in playlists:
-                    if self._sanitize_filename(playlist["title"]) == playlist_name:
+                    if (
+                        self.processor.sanitize_filename(playlist["title"])
+                        == playlist_name
+                    ):
                         playlist_id = playlist.get("playlistId")
                         if playlist_id:
                             processed_cache_key = f"/playlist/{playlist_id}_processed"
-                            processed_songs = self._get_from_cache(processed_cache_key)
+                            processed_songs = self.cache.get(processed_cache_key)
                             if processed_songs:
                                 cache_key = processed_cache_key
                                 break
 
-        songs = self._get_from_cache(cache_key)
+        songs = self.cache.get(cache_key)
         if not songs:
             return []
 
@@ -1893,7 +1650,7 @@ class YouTubeMusicFS(Operations):
         """
         self._refresh_cache_data(
             cache_key="/liked_songs",
-            fetch_func=self.ytmusic.get_liked_songs,
+            fetch_func=self.client.get_liked_songs,
             id_fields=["videoId"],
             fetch_args={"limit": 100},
             process_items=True,
@@ -1910,7 +1667,7 @@ class YouTubeMusicFS(Operations):
         """
         self._refresh_cache_data(
             cache_key="/playlists",
-            fetch_func=self.ytmusic.get_library_playlists,
+            fetch_func=self.client.get_library_playlists,
             id_fields=["playlistId"],
             check_updates=True,
             update_field="title",
@@ -1928,7 +1685,7 @@ class YouTubeMusicFS(Operations):
         """
         self._refresh_cache_data(
             cache_key="/artists",
-            fetch_func=self.ytmusic.get_library_artists,
+            fetch_func=self.client.get_library_artists,
             id_fields=["artistId", "browseId", "id"],
         )
 
@@ -1940,7 +1697,7 @@ class YouTubeMusicFS(Operations):
         """
         self._refresh_cache_data(
             cache_key="/albums",
-            fetch_func=self.ytmusic.get_library_albums,
+            fetch_func=self.client.get_library_albums,
             id_fields=["albumId", "browseId", "id"],
         )
 
@@ -1963,10 +1720,10 @@ class YouTubeMusicFS(Operations):
         current_time = time.time()
 
         # Mark all caches as freshly refreshed
-        self._set_cache_metadata("/liked_songs", "last_refresh_time", current_time)
-        self._set_cache_metadata("/playlists", "last_refresh_time", current_time)
-        self._set_cache_metadata("/artists", "last_refresh_time", current_time)
-        self._set_cache_metadata("/albums", "last_refresh_time", current_time)
+        self.cache.set_metadata("/liked_songs", "last_refresh_time", current_time)
+        self.cache.set_metadata("/playlists", "last_refresh_time", current_time)
+        self.cache.set_metadata("/artists", "last_refresh_time", current_time)
+        self.cache.set_metadata("/albums", "last_refresh_time", current_time)
 
         self.logger.info("All caches refreshed successfully")
 
@@ -1976,9 +1733,7 @@ class YouTubeMusicFS(Operations):
         Args:
             path: The path to delete from cache
         """
-        with self.cache_lock:
-            if path in self.cache:
-                del self.cache[path]
+        self.cache.delete(path)
 
     def _start_background_download(self, video_id, stream_url, cache_path):
         """Start downloading a file in the background and track progress."""
@@ -2007,25 +1762,22 @@ class YouTubeMusicFS(Operations):
                         for chunk in response.iter_content(chunk_size=4096):
                             f.write(chunk)
                             # Update download progress
-                            with self.cache_lock:
-                                self.download_progress[video_id] = f.tell()
+                            self.download_progress[video_id] = f.tell()
 
                 # Mark download as complete
-                with self.cache_lock:
-                    self.download_progress[video_id] = "complete"
+                self.download_progress[video_id] = "complete"
 
                 self.logger.debug(f"Download task completed for {video_id}")
 
                 # When a download completes:
-                status_path = self.cache_dir / "audio" / f"{video_id}.status"
+                status_path = self.cache.cache_dir / "audio" / f"{video_id}.status"
                 with open(status_path, "w") as f:
                     f.write("complete")
 
             except Exception as e:
                 self.logger.error(f"Error downloading {video_id}: {e}")
                 # Mark download as failed
-                with self.cache_lock:
-                    self.download_progress[video_id] = "failed"
+                self.download_progress[video_id] = "failed"
 
         # Start the download in a background thread
         self.thread_pool.submit(download_task)
@@ -2043,8 +1795,8 @@ class YouTubeMusicFS(Operations):
 
     def _check_cached_audio(self, video_id):
         """Check if an audio file is already cached completely."""
-        cache_path = self.cache_dir / "audio" / f"{video_id}.m4a"
-        status_path = self.cache_dir / "audio" / f"{video_id}.status"
+        cache_path = self.cache.cache_dir / "audio" / f"{video_id}.m4a"
+        status_path = self.cache.cache_dir / "audio" / f"{video_id}.status"
 
         # First check for status file (most reliable)
         if status_path.exists():
@@ -2055,8 +1807,7 @@ class YouTubeMusicFS(Operations):
                     self.logger.debug(
                         f"Found status file indicating {video_id} is complete"
                     )
-                    with self.cache_lock:
-                        self.download_progress[video_id] = "complete"
+                    self.download_progress[video_id] = "complete"
                     return True
             except Exception as e:
                 self.logger.debug(f"Error reading status file for {video_id}: {e}")
@@ -2066,8 +1817,7 @@ class YouTubeMusicFS(Operations):
             self.logger.debug(
                 f"Found existing audio file for {video_id}, marking as complete"
             )
-            with self.cache_lock:
-                self.download_progress[video_id] = "complete"
+            self.download_progress[video_id] = "complete"
 
             # If file exists but status doesn't, create the status file
             if not status_path.exists():
