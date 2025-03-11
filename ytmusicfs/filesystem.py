@@ -27,6 +27,7 @@ class YouTubeMusicFS(Operations):
         cache_dir: Optional[str] = None,
         cache_timeout: int = 2592000,
         max_workers: int = 8,
+        browser: Optional[str] = None,
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
@@ -37,6 +38,7 @@ class YouTubeMusicFS(Operations):
             cache_dir: Directory for persistent cache (optional)
             cache_timeout: Time in seconds before cached data expires (default: 30 days)
             max_workers: Maximum number of worker threads (default: 8)
+            browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
         """
         # Get the logger
         self.logger = logging.getLogger("YTMusicFS")
@@ -58,6 +60,7 @@ class YouTubeMusicFS(Operations):
                 client_id=client_id,
                 client_secret=client_secret,
                 logger=self.logger,
+                browser=browser,
             )
             self.logger.info(f"Authentication successful with OAuth method!")
         except Exception as e:
@@ -75,6 +78,7 @@ class YouTubeMusicFS(Operations):
         self.auth_file = auth_file
         self.client_id = client_id
         self.client_secret = client_secret
+        self.browser = browser
 
         # Thread-related objects
         self.cache_lock = threading.RLock()  # Lock for cache access
@@ -1029,13 +1033,22 @@ class YouTubeMusicFS(Operations):
                 "yt-dlp",
                 "-f",
                 "141/bestaudio[ext=m4a]",
-                "--cookies-from-browser",
-                "brave",
-                "--extractor-args",
-                "youtube:formats=missing_pot",
-                "-g",
-                f"https://music.youtube.com/watch?v={video_id}",
             ]
+
+            # Add browser cookies if a browser is specified
+            if self.browser:
+                cmd.extend(["--cookies-from-browser", self.browser])
+                self.logger.debug(f"Using cookies from browser: {self.browser}")
+
+            cmd.extend(
+                [
+                    "--extractor-args",
+                    "youtube:formats=missing_pot",
+                    "-g",
+                    f"https://music.youtube.com/watch?v={video_id}",
+                ]
+            )
+
             self.logger.debug(f"Running command: {' '.join(cmd)}")
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
             stream_url = result.stdout.strip()
@@ -1627,6 +1640,7 @@ def mount_ytmusicfs(
     cache_dir: Optional[str] = None,
     cache_timeout: int = 2592000,
     max_workers: int = 8,
+    browser: Optional[str] = None,
 ) -> None:
     """Mount the YouTube Music filesystem.
 
@@ -1640,6 +1654,7 @@ def mount_ytmusicfs(
         cache_dir: Directory to store cache files
         cache_timeout: Cache timeout in seconds
         max_workers: Maximum number of worker threads
+        browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
     """
     FUSE(
         YouTubeMusicFS(
@@ -1649,6 +1664,7 @@ def mount_ytmusicfs(
             cache_dir=cache_dir,
             cache_timeout=cache_timeout,
             max_workers=max_workers,
+            browser=browser,
         ),
         mount_point,
         foreground=foreground,

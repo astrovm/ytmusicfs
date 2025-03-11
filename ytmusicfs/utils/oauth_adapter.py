@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 
-import os
+from typing import Optional, Any
+from ytmusicapi import YTMusic, OAuthCredentials
 import json
 import logging
-from typing import Optional, Any
-
-from ytmusicapi import YTMusic, OAuthCredentials
+import os
 
 
 class YTMusicOAuthAdapter:
@@ -20,6 +19,7 @@ class YTMusicOAuthAdapter:
         client_id: Optional[str] = None,
         client_secret: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
+        browser: Optional[str] = None,
     ):
         """
         Initialize the YTMusic OAuth adapter.
@@ -29,11 +29,13 @@ class YTMusicOAuthAdapter:
             client_id: OAuth client ID from Google Cloud Console
             client_secret: OAuth client secret from Google Cloud Console
             logger: Optional logger instance
+            browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
         """
         self.auth_file = auth_file
         self.client_id = client_id
         self.client_secret = client_secret
         self.logger = logger or logging.getLogger(__name__)
+        self.browser = browser
         self.ytmusic = None
         self.auth_data = None
 

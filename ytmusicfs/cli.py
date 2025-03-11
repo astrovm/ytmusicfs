@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 
-import os
-import sys
-import json
-import argparse
-import logging
 from pathlib import Path
-
 from ytmusicfs import __version__
 from ytmusicfs.filesystem import mount_ytmusicfs
+import argparse
+import json
+import logging
+import os
+import sys
 
 
 def load_credentials(config_dir):
@@ -88,6 +87,11 @@ def main():
         "-d",
         action="store_true",
         help="Enable debug logging",
+    )
+    op_group.add_argument(
+        "--browser",
+        "-b",
+        help="Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave', etc.). If not specified, no browser cookies will be used",
     )
 
     # Version
@@ -224,6 +228,7 @@ def main():
             debug=args.debug,
             cache_dir=args.cache_dir,
             cache_timeout=args.cache_timeout,
+            browser=args.browser,
         )
 
         return 0

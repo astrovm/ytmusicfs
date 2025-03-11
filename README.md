@@ -13,6 +13,7 @@ YTMusicFS mounts your YouTube Music library as a standard filesystem, allowing y
 - **Disk Caching**: Caches metadata to improve browsing performance
 - **On-Demand Streaming**: Streams audio directly from YouTube Music servers
 - **Auto-Refresh**: Automatically refreshes your liked songs cache hourly to show new additions
+- **Browser Cookies**: Uses browser cookies for authentication to access higher quality audio streams (up to 256kbps)
 
 ## Requirements
 
@@ -106,6 +107,16 @@ ytmusicfs \
   --debug
 ```
 
+You can also specify a browser for cookie retrieval:
+
+```bash
+ytmusicfs --mount-point ~/Music/ytmusic --browser brave
+```
+
+Supported browsers include: chrome, firefox, brave, edge, safari, opera, and others supported by yt-dlp.
+
+The `--browser` option allows YouTube Premium subscribers to access higher quality audio streams (up to 256kbps) by using your browser's cookies for authentication. Without this option, audio will stream at standard quality, even for Premium subscribers.
+
 ### Browse and Play Music
 
 Once mounted, you can browse the filesystem with your file manager:
@@ -146,7 +157,7 @@ fusermount -u ~/Music/ytmusic
 usage: ytmusicfs [-h] --mount-point MOUNT_POINT [--auth-file AUTH_FILE]
                  [--client-id CLIENT_ID] [--client-secret CLIENT_SECRET]
                  [--cache-dir CACHE_DIR] [--cache-timeout CACHE_TIMEOUT]
-                 [--foreground] [--debug] [--version]
+                 [--foreground] [--debug] [--browser BROWSER] [--version]
 
 Mount YouTube Music as a filesystem
 
@@ -175,6 +186,8 @@ Cache Options:
 Operational Options:
   --foreground, -f      Run in the foreground (for debugging)
   --debug, -d           Enable debug logging
+  --browser, -b BROWSER Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave').
+                        If not specified, no browser cookies will be used
 ```
 
 ### ytmusicfs-oauth
