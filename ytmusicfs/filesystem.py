@@ -497,7 +497,7 @@ class YouTubeMusicFS(Operations):
 
         # Find the playlist ID
         playlists = self._fetch_and_cache(
-            "/playlists", self.ytmusic.get_library_playlists, limit=100
+            "/playlists", self.ytmusic.get_library_playlists, limit=10000
         )
 
         playlist_id = None
@@ -523,7 +523,9 @@ class YouTubeMusicFS(Operations):
         playlist_cache_key = f"/playlist/{playlist_id}"
         playlist_tracks = self._fetch_and_cache(
             playlist_cache_key,
-            lambda: self.ytmusic.get_playlist(playlist_id, limit=500).get("tracks", []),
+            lambda: self.ytmusic.get_playlist(playlist_id, limit=10000).get(
+                "tracks", []
+            ),
         )
 
         # Process tracks and create filenames using the centralized method
@@ -607,7 +609,7 @@ class YouTubeMusicFS(Operations):
 
         # Find the artist ID
         artists = self._fetch_and_cache(
-            "/artists", self.ytmusic.get_library_artists, limit=100
+            "/artists", self.ytmusic.get_library_artists, limit=10000
         )
 
         artist_id = None
@@ -708,7 +710,7 @@ class YouTubeMusicFS(Operations):
 
             # Find the artist ID
             artists = self._fetch_and_cache(
-                "/artists", self.ytmusic.get_library_artists, limit=100
+                "/artists", self.ytmusic.get_library_artists, limit=10000
             )
 
             artist_id = None
@@ -773,7 +775,7 @@ class YouTubeMusicFS(Operations):
 
             # Find the album ID
             albums = self._fetch_and_cache(
-                "/albums", self.ytmusic.get_library_albums, limit=100
+                "/albums", self.ytmusic.get_library_albums, limit=10000
             )
 
             for album in albums:
