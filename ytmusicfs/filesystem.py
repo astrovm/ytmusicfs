@@ -970,10 +970,30 @@ class YouTubeMusicFS(Operations):
         filename = os.path.basename(path)
         self.logger.debug(f"Looking for {filename} in {dir_path}")
 
+        songs = None
+
         # Special handling for liked songs which use a different cache key
         if dir_path == "/liked_songs":
             songs = self._get_from_cache("/liked_songs_processed")
             self.logger.debug(f"Liked songs cache: {'Found' if songs else 'Not found'}")
+        # Special handling for playlists which need to use the playlist ID in the cache key
+        elif dir_path.startswith("/playlists/"):
+            playlist_name = dir_path.split("/")[2]
+            # Find the playlist ID
+            playlists = self._get_from_cache("/playlists")
+            if playlists:
+                playlist_id = None
+                for playlist in playlists:
+                    if self._sanitize_filename(playlist["title"]) == playlist_name:
+                        playlist_id = playlist["playlistId"]
+                        break
+
+                if playlist_id:
+                    processed_cache_key = f"/playlist/{playlist_id}_processed"
+                    songs = self._get_from_cache(processed_cache_key)
+                    self.logger.debug(
+                        f"Playlist songs cache ({processed_cache_key}): {'Found' if songs else 'Not found'}"
+                    )
         else:
             songs = self._get_from_cache(dir_path)
             self.logger.debug(
@@ -991,6 +1011,22 @@ class YouTubeMusicFS(Operations):
                 self.logger.debug(
                     f"After re-fetch, liked songs cache: {'Found' if songs else 'Not found'}"
                 )
+            elif dir_path.startswith("/playlists/"):
+                playlist_name = dir_path.split("/")[2]
+                playlists = self._get_from_cache("/playlists")
+                if playlists:
+                    playlist_id = None
+                    for playlist in playlists:
+                        if self._sanitize_filename(playlist["title"]) == playlist_name:
+                            playlist_id = playlist["playlistId"]
+                            break
+
+                    if playlist_id:
+                        processed_cache_key = f"/playlist/{playlist_id}_processed"
+                        songs = self._get_from_cache(processed_cache_key)
+                        self.logger.debug(
+                            f"After re-fetch, playlist songs cache ({processed_cache_key}): {'Found' if songs else 'Not found'}"
+                        )
             else:
                 songs = self._get_from_cache(dir_path)
                 self.logger.debug(
