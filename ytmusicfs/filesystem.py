@@ -25,6 +25,7 @@ class PathRouter:
         """Initialize the path router with empty handler collections."""
         self.handlers: Dict[str, Callable] = {}
         self.subpath_handlers: List[tuple[str, Callable]] = []
+        self.pattern_handlers: List[tuple[str, Callable]] = []  # For wildcard patterns
 
     def register(self, path: str, handler: Callable) -> None:
         """Register a handler for an exact path match.
@@ -44,6 +45,45 @@ class PathRouter:
         """
         self.subpath_handlers.append((prefix, handler))
 
+    def register_dynamic(self, pattern: str, handler: Callable) -> None:
+        """Register a handler for a path pattern with wildcards.
+
+        Wildcards:
+        - * matches any sequence of characters within a path segment
+        - ** matches any sequence of characters across multiple path segments
+
+        Args:
+            pattern: The path pattern to match (e.g., "/playlists/*", "/artists/**/tracks")
+            handler: The handler function to call with the full path
+        """
+        self.pattern_handlers.append((pattern, handler))
+
+    def _match_wildcard_pattern(self, pattern: str, path: str) -> tuple[bool, list]:
+        """Check if a path matches a wildcard pattern and extract wildcard values.
+
+        Args:
+            pattern: The pattern with wildcards to match against
+            path: The path to check
+
+        Returns:
+            Tuple of (match_success, captured_values)
+        """
+        # Convert pattern to regex
+        import re
+
+        # Escape special regex characters except * which we'll handle specially
+        regex_pattern = re.escape(pattern).replace('\\*\\*', '(.+)').replace('\\*', '([^/]+)')
+
+        # Add start and end anchors
+        regex_pattern = f'^{regex_pattern}$'
+
+        # Match the path against the pattern
+        match = re.match(regex_pattern, path)
+        if match:
+            # Return captured values
+            return True, list(match.groups())
+        return False, []
+
     def route(self, path: str) -> List[str]:
         """Route a path to the appropriate handler.
 
@@ -53,12 +93,24 @@ class PathRouter:
         Returns:
             List of directory entries from the handler
         """
+        # First try exact matches
         if path in self.handlers:
             return self.handlers[path]()
 
+        # Then try prefix matches
         for prefix, handler in self.subpath_handlers:
             if path.startswith(prefix):
                 return handler(path)
+
+        # Finally try pattern matches
+        for pattern, handler in self.pattern_handlers:
+            match_success, captured_values = self._match_wildcard_pattern(pattern, path)
+            if match_success:
+                # Pass both the full path and the captured values
+                if captured_values:
+                    return handler(path, *captured_values)
+                else:
+                    return handler(path)
 
         return [".", ".."]
 
@@ -155,16 +207,22 @@ class YouTubeMusicFS(Operations):
         self.router.register("/artists", lambda: [".", ".."] + self._readdir_artists())
         self.router.register("/albums", lambda: [".", ".."] + self._readdir_albums())
 
-        # Register subpath handlers
-        self.router.register_subpath(
-            "/playlists/",
-            lambda path: [".", ".."] + self._readdir_playlist_content(path),
+        # Register dynamic handlers with wildcard capture
+        self.router.register_dynamic(
+            "/playlists/*",
+            lambda path, *args: [".", ".."] + self._readdir_playlist_content(path),
         )
-        self.router.register_subpath(
-            "/artists/", lambda path: [".", ".."] + self._readdir_artist_content(path)
+        self.router.register_dynamic(
+            "/artists/*",
+            lambda path, *args: [".", ".."] + self._readdir_artist_content(path)
         )
-        self.router.register_subpath(
-            "/albums/", lambda path: [".", ".."] + self._readdir_album_content(path)
+        self.router.register_dynamic(
+            "/artists/*/*",
+            lambda path, *args: [".", ".."] + self._readdir_album_content(path)
+        )
+        self.router.register_dynamic(
+            "/albums/*",
+            lambda path, *args: [".", ".."] + self._readdir_album_content(path)
         )
 
     @contextmanager
