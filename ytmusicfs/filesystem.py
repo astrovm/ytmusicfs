@@ -1028,9 +1028,9 @@ class YouTubeMusicFS(Operations):
             cmd = [
                 "yt-dlp",
                 "-f",
-                "bestaudio[ext=m4a]/bestaudio",  # Try different format hierarchy, fallback to best available audio
+                "bestaudio[ext=m4a]",
                 "-g",
-                f"https://www.youtube.com/watch?v={video_id}",
+                f"https://music.youtube.com/watch?v={video_id}",
             ]
             self.logger.debug(f"Running command: {' '.join(cmd)}")
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
