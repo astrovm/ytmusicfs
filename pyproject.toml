@@ -13,7 +13,11 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
+  "Development Status :: 4 - Beta",
+  "Topic :: Multimedia :: Sound/Audio",
+  "Topic :: System :: Filesystems",
 ]
+keywords = ["youtube", "music", "fuse", "filesystem", "streaming", "audio"]
 requires-python = ">=3.9"
 dependencies = [
   "fusepy==3.0.1",
@@ -21,6 +25,10 @@ dependencies = [
   "ytmusicapi==1.10.2",
   "yt-dlp==2025.2.19",
 ]
+
+[project.urls]
+"Homepage" = "https://github.com/astrovm/ytmusicfs"
+"Bug Tracker" = "https://github.com/astrovm/ytmusicfs/issues"
 
 [project.scripts]
 ytmusicfs = "ytmusicfs.cli:main"
