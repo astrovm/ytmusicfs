@@ -238,6 +238,121 @@ class YouTubeMusicFS(Operations):
             self._set_cache(cache_key, data)
         return data
 
+    def _clean_artists(self, raw_artists: List[Dict]) -> str:
+        """Clean and format artist names from a list of artist dictionaries.
+
+        Args:
+            raw_artists: List of artist dictionaries with 'name' keys.
+
+        Returns:
+            A comma-separated string of cleaned artist names.
+        """
+        clean_artists = []
+        for artist in raw_artists:
+            name = artist.get("name", "Unknown Artist")
+            # Remove "- Topic" suffix from artist names
+            if name.endswith(" - Topic"):
+                name = name[:-8]  # Remove "- Topic" (8 characters)
+            clean_artists.append(name)
+        return ", ".join(clean_artists)
+
+    def _parse_duration(self, track: Dict) -> tuple[Optional[int], str]:
+        """Parse track duration into seconds and formatted string.
+
+        Args:
+            track: Track dictionary that may contain duration information
+
+        Returns:
+            Tuple of (duration_seconds, duration_formatted)
+        """
+        duration_seconds = None
+        duration_formatted = "0:00"
+
+        if "duration" in track:
+            duration_str = track.get("duration", "0:00")
+            try:
+                # Convert MM:SS to seconds
+                parts = duration_str.split(":")
+                if len(parts) == 2:
+                    duration_seconds = int(parts[0]) * 60 + int(parts[1])
+                elif len(parts) == 3:
+                    duration_seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+            except (ValueError, IndexError):
+                pass
+        elif "duration_seconds" in track:
+            duration_seconds = track.get("duration_seconds")
+
+        # Format duration as mm:ss for display
+        if duration_seconds:
+            minutes = duration_seconds // 60
+            seconds = duration_seconds % 60
+            duration_formatted = f"{minutes}:{seconds:02d}"
+
+        return duration_seconds, duration_formatted
+
+    def _extract_album_info(self, track: Dict) -> tuple[str, str]:
+        """Extract album name and album artist from track data.
+
+        Args:
+            track: Track dictionary that may contain album information
+
+        Returns:
+            Tuple of (album_name, album_artist)
+        """
+        album = "Unknown Album"
+        album_artist = "Unknown Artist"
+
+        # Handle album which could be None, a string, or a dictionary
+        album_obj = track.get("album")
+        if album_obj is not None:
+            if isinstance(album_obj, dict):
+                album = album_obj.get("name", "Unknown Album")
+                # Handle album artist - could be direct 'artist' or in 'artists' list
+                album_artist_obj = album_obj.get("artist")
+                if album_artist_obj is not None:
+                    if isinstance(album_artist_obj, list) and album_artist_obj:
+                        album_artist_name = album_artist_obj[0].get("name", "Unknown Artist")
+                        # Remove "- Topic" from album artist
+                        if album_artist_name.endswith(" - Topic"):
+                            album_artist = album_artist_name[:-8]
+                        else:
+                            album_artist = album_artist_name
+                    elif isinstance(album_artist_obj, str):
+                        # Remove "- Topic" from album artist if it's a string
+                        if album_artist_obj.endswith(" - Topic"):
+                            album_artist = album_artist_obj[:-8]
+                        else:
+                            album_artist = album_artist_obj
+                # Try the 'artists' field if 'artist' wasn't found
+                elif "artists" in album_obj and album_obj["artists"]:
+                    artists_obj = album_obj["artists"]
+                    if artists_obj and isinstance(artists_obj[0], dict):
+                        album_artist_name = artists_obj[0].get("name", "Unknown Artist")
+                        # Remove "- Topic" from album artist
+                        if album_artist_name.endswith(" - Topic"):
+                            album_artist = album_artist_name[:-8]
+                        else:
+                            album_artist = album_artist_name
+            elif isinstance(album_obj, str):
+                album = album_obj
+
+        return album, album_artist
+
+    def _extract_year(self, track: Dict) -> Optional[int]:
+        """Extract the year from track or album data.
+
+        Args:
+            track: Track dictionary that may contain year information
+
+        Returns:
+            Year as int or None if not available
+        """
+        if "year" in track:
+            return track.get("year")
+        elif track.get("album") and isinstance(track.get("album"), dict) and "year" in track.get("album"):
+            return track.get("album").get("year")
+        return None
+
     def _process_tracks(
         self, tracks: List[Dict], add_filename: bool = True
     ) -> List[Dict]:
@@ -256,98 +371,22 @@ class YouTubeMusicFS(Operations):
         for track in tracks:
             title = track.get("title", "Unknown Title")
 
-            # Process artists, removing "- Topic" suffixes
-            raw_artists = [
-                a.get("name", "Unknown Artist") for a in track.get("artists", [])
-            ]
-            clean_artists = []
-            for artist in raw_artists:
-                # Remove "- Topic" suffix from artist names
-                if artist.endswith(" - Topic"):
-                    artist = artist[:-8]  # Remove "- Topic" (8 characters)
-                clean_artists.append(artist)
+            # Process artists
+            raw_artists = track.get("artists", [])
+            artists = self._clean_artists(raw_artists)
 
-            artists = ", ".join(clean_artists)
+            # Get album information
+            album, album_artist = self._extract_album_info(track)
 
-            # Get album information when available
-            album = "Unknown Album"
-            album_artist = "Unknown Artist"
-
-            # Handle album which could be None, a string, or a dictionary
-            album_obj = track.get("album")
-            if album_obj is not None:
-                if isinstance(album_obj, dict):
-                    album = album_obj.get("name", "Unknown Album")
-                    # Handle album artist - could be direct 'artist' or in 'artists' list
-                    album_artist_obj = album_obj.get("artist")
-                    if album_artist_obj is not None:
-                        if isinstance(album_artist_obj, list) and album_artist_obj:
-                            album_artist_name = album_artist_obj[0].get(
-                                "name", "Unknown Artist"
-                            )
-                            # Remove "- Topic" from album artist
-                            if album_artist_name.endswith(" - Topic"):
-                                album_artist = album_artist_name[:-8]
-                            else:
-                                album_artist = album_artist_name
-                        elif isinstance(album_artist_obj, str):
-                            # Remove "- Topic" from album artist if it's a string
-                            if album_artist_obj.endswith(" - Topic"):
-                                album_artist = album_artist_obj[:-8]
-                            else:
-                                album_artist = album_artist_obj
-                    # Try the 'artists' field if 'artist' wasn't found
-                    elif "artists" in album_obj and album_obj["artists"]:
-                        artists_obj = album_obj["artists"]
-                        if artists_obj and isinstance(artists_obj[0], dict):
-                            album_artist_name = artists_obj[0].get(
-                                "name", "Unknown Artist"
-                            )
-                            # Remove "- Topic" from album artist
-                            if album_artist_name.endswith(" - Topic"):
-                                album_artist = album_artist_name[:-8]
-                            else:
-                                album_artist = album_artist_name
-                elif isinstance(album_obj, str):
-                    album = album_obj
-
-            # Extract song duration if available
-            duration_seconds = None
-            if "duration" in track:
-                duration_str = track.get("duration", "0:00")
-                try:
-                    # Convert MM:SS to seconds
-                    parts = duration_str.split(":")
-                    if len(parts) == 2:
-                        duration_seconds = int(parts[0]) * 60 + int(parts[1])
-                    elif len(parts) == 3:
-                        duration_seconds = (
-                            int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-                        )
-                except (ValueError, IndexError):
-                    pass
-            elif "duration_seconds" in track:
-                duration_seconds = track.get("duration_seconds")
+            # Extract song duration
+            duration_seconds, duration_formatted = self._parse_duration(track)
 
             # Extract additional metadata
             track_number = track.get("trackNumber", track.get("index", 0))
-            year = None
-            if "year" in track:
-                year = track.get("year")
-            elif album_obj and isinstance(album_obj, dict) and "year" in album_obj:
-                year = album_obj.get("year")
+            year = self._extract_year(track)
 
             # Extract genre information if available
-            genre = "Unknown Genre"
-            if "genre" in track:
-                genre = track.get("genre")
-
-            # Format duration as mm:ss for display
-            duration_formatted = "0:00"
-            if duration_seconds:
-                minutes = duration_seconds // 60
-                seconds = duration_seconds % 60
-                duration_formatted = f"{minutes}:{seconds:02d}"
+            genre = track.get("genre", "Unknown Genre")
 
             filename = f"{artists} - {title}.m4a"
             sanitized_filename = self._sanitize_filename(filename)
@@ -357,9 +396,7 @@ class YouTubeMusicFS(Operations):
                 # Create a shallow copy of the track and add filename and metadata
                 processed_track = dict(track)
                 processed_track["filename"] = sanitized_filename
-                processed_track["artist"] = (
-                    artists  # Flattened artist string for metadata
-                )
+                processed_track["artist"] = artists  # Flattened artist string for metadata
                 processed_track["album"] = album
                 processed_track["album_artist"] = album_artist
                 processed_track["duration_seconds"] = duration_seconds
