@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 
-import os
-import sys
-import json
-import argparse
-import logging
 from pathlib import Path
-
-import ytmusicapi
 from ytmusicapi import setup_oauth as ytmusic_setup_oauth
 from ytmusicapi import YTMusic, OAuthCredentials
+import argparse
+import json
+import logging
+import os
+import sys
+import ytmusicapi
 
 
 def ensure_dir(path):

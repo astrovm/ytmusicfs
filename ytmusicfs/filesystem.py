@@ -173,30 +173,36 @@ class YouTubeMusicFS(Operations):
             List of directory entries
         """
         self.logger.debug(f"readdir: {path}")
-
-        # Check for hidden files/directories (those starting with a dot)
-        path_parts = path.split("/")
-        for part in path_parts:
-            if part and part.startswith("."):
-                self.logger.debug(f"Ignoring hidden path: {path}")
-                return [".", ".."]  # Return only the standard entries for hidden paths
-
-        # Standard entries for all directories
         dirents = [".", ".."]
 
+        # Ignore hidden paths
+        if any(part.startswith(".") for part in path.split("/") if part):
+            self.logger.debug(f"Ignoring hidden path: {path}")
+            return dirents
+
+        # Define path handlers
+        path_handlers = {
+            "/": lambda: dirents + ["playlists", "liked_songs", "artists", "albums"],
+            "/playlists": lambda: dirents + self._readdir_playlists(),
+            "/liked_songs": lambda: dirents + self._readdir_liked_songs(),
+            "/artists": lambda: dirents + self._readdir_artists(),
+            "/albums": lambda: dirents + self._readdir_albums(),
+        }
+
+        # Handle exact matches
+        if path in path_handlers:
+            try:
+                return path_handlers[path]()
+            except Exception as e:
+                self.logger.error(f"Error in readdir for {path}: {e}")
+                import traceback
+
+                self.logger.error(traceback.format_exc())
+                return dirents
+
+        # Handle subpaths
         try:
-            # Dispatch to the appropriate handler based on path
-            if path == "/":
-                return dirents + ["playlists", "liked_songs", "artists", "albums"]
-            elif path == "/playlists":
-                return dirents + self._readdir_playlists()
-            elif path == "/liked_songs":
-                return dirents + self._readdir_liked_songs()
-            elif path == "/artists":
-                return dirents + self._readdir_artists()
-            elif path == "/albums":
-                return dirents + self._readdir_albums()
-            elif path.startswith("/playlists/"):
+            if path.startswith("/playlists/"):
                 return dirents + self._readdir_playlist_content(path)
             elif path.startswith("/artists/") and path.count("/") == 2:
                 return dirents + self._readdir_artist_content(path)
@@ -1719,11 +1725,9 @@ class YouTubeMusicFS(Operations):
                                         del self.cache[related_key]
                                 break
             else:
-                self.logger.info(f"No new or updated items found for {cache_key}")
-        else:
-            self.logger.info(
-                f"No existing {cache_key} cache found, will create cache on next access"
-            )
+                self.logger.info(
+                    f"No existing {cache_key} cache found, will create cache on next access"
+                )
             # Just cache the recent data to make next access faster
             self._set_cache(cache_key, recent_data)
 
