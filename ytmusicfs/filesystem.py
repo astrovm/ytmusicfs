@@ -843,7 +843,7 @@ class YouTubeMusicFS(Operations):
                     ):
                         for song in songs:
                             if song.get("filename") == filename:
-                                # First check if we have an actual file size in cache
+                                # Check if we have an actual file size in cache
                                 file_size_cache_key = f"filesize:{path}"
                                 cached_size = self._get_from_cache(file_size_cache_key)
 
@@ -854,25 +854,13 @@ class YouTubeMusicFS(Operations):
                                     attr["st_size"] = cached_size
                                     return attr
 
-                                # Fall back to estimating size from duration if needed
-                                elif "duration_seconds" in song:
-                                    # This is now a fallback method when we don't have an actual size
-                                    estimated_size = int(
-                                        song["duration_seconds"] * 24 * 1024
-                                    )
-                                    self.logger.debug(
-                                        f"Fallback: Estimated size from duration: {estimated_size}"
-                                    )
-                                    # Cache this size estimate, but it will be replaced when we get the real size
-                                    self._set_cache(file_size_cache_key, estimated_size)
-                                    attr["st_size"] = estimated_size
-                                    return attr
+                                # No duration-based estimation - use minimal size
+                                # This will be updated with actual size when file is opened
+                                attr["st_size"] = 4096  # Minimal placeholder size
+                                return attr
 
-                    # Default size if no duration available or caching failed
-                    # For YouTube Music, assume average song length is about 4 minutes = 240 seconds
-                    # 240 seconds * 24 KB/s ~= 5.76 MB
-                    estimated_size = 6 * 1024 * 1024
-                    attr["st_size"] = estimated_size
+                    # No duration-based fallback anymore - just use minimal size
+                    attr["st_size"] = 4096  # Minimal placeholder size
                     return attr
             except Exception as e:
                 self.logger.debug(f"Error checking file existence: {e}")
@@ -906,14 +894,16 @@ class YouTubeMusicFS(Operations):
                 # It's a file
                 attr["st_mode"] = stat.S_IFREG | 0o644
 
-                # Same file size estimation logic as above
+                # Same but for other file paths - no estimation
                 file_size_cache_key = f"filesize:{path}"
                 cached_size = self._get_from_cache(file_size_cache_key)
 
                 if cached_size is not None:
                     attr["st_size"] = cached_size
                 else:
-                    attr["st_size"] = 6 * 1024 * 1024  # Improved default estimate
+                    attr["st_size"] = (
+                        4096  # Minimal placeholder size instead of default estimate
+                    )
 
                 return attr
         except Exception:
