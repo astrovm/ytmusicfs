@@ -16,6 +16,51 @@ import threading
 import time
 
 
+class PathRouter:
+    """Router for handling FUSE filesystem paths."""
+
+    def __init__(self):
+        """Initialize the path router with empty handler collections."""
+        self.handlers: Dict[str, Callable] = {}
+        self.subpath_handlers: List[tuple[str, Callable]] = []
+
+    def register(self, path: str, handler: Callable) -> None:
+        """Register a handler for an exact path match.
+
+        Args:
+            path: The exact path to match
+            handler: The handler function to call
+        """
+        self.handlers[path] = handler
+
+    def register_subpath(self, prefix: str, handler: Callable) -> None:
+        """Register a handler for a path prefix match.
+
+        Args:
+            prefix: The path prefix to match
+            handler: The handler function to call with the full path
+        """
+        self.subpath_handlers.append((prefix, handler))
+
+    def route(self, path: str) -> List[str]:
+        """Route a path to the appropriate handler.
+
+        Args:
+            path: The path to route
+
+        Returns:
+            List of directory entries from the handler
+        """
+        if path in self.handlers:
+            return self.handlers[path]()
+
+        for prefix, handler in self.subpath_handlers:
+            if path.startswith(prefix):
+                return handler(path)
+
+        return [".", ".."]
+
+
 class YouTubeMusicFS(Operations):
     """YouTube Music FUSE filesystem implementation."""
 
@@ -89,6 +134,21 @@ class YouTubeMusicFS(Operations):
         self.download_progress = (
             {}
         )  # Track download progress: {video_id: bytes_downloaded or status}
+
+        # Initialize the path router
+        self.router = PathRouter()
+
+        # Register exact path handlers
+        self.router.register("/", lambda: [".", "..", "playlists", "liked_songs", "artists", "albums"])
+        self.router.register("/playlists", lambda: [".", ".."] + self._readdir_playlists())
+        self.router.register("/liked_songs", lambda: [".", ".."] + self._readdir_liked_songs())
+        self.router.register("/artists", lambda: [".", ".."] + self._readdir_artists())
+        self.router.register("/albums", lambda: [".", ".."] + self._readdir_albums())
+
+        # Register subpath handlers
+        self.router.register_subpath("/playlists/", lambda path: [".", ".."] + self._readdir_playlist_content(path))
+        self.router.register_subpath("/artists/", lambda path: [".", ".."] + self._readdir_artist_content(path))
+        self.router.register_subpath("/albums/", lambda path: [".", ".."] + self._readdir_album_content(path))
 
     def _get_from_cache(self, path: str) -> Optional[Any]:
         """Get data from cache if it's still valid.
@@ -173,50 +233,20 @@ class YouTubeMusicFS(Operations):
             List of directory entries
         """
         self.logger.debug(f"readdir: {path}")
-        dirents = [".", ".."]
 
         # Ignore hidden paths
         if any(part.startswith(".") for part in path.split("/") if part):
             self.logger.debug(f"Ignoring hidden path: {path}")
-            return dirents
+            return [".", ".."]
 
-        # Define path handlers
-        path_handlers = {
-            "/": lambda: dirents + ["playlists", "liked_songs", "artists", "albums"],
-            "/playlists": lambda: dirents + self._readdir_playlists(),
-            "/liked_songs": lambda: dirents + self._readdir_liked_songs(),
-            "/artists": lambda: dirents + self._readdir_artists(),
-            "/albums": lambda: dirents + self._readdir_albums(),
-        }
-
-        # Handle exact matches
-        if path in path_handlers:
-            try:
-                return path_handlers[path]()
-            except Exception as e:
-                self.logger.error(f"Error in readdir for {path}: {e}")
-                import traceback
-
-                self.logger.error(traceback.format_exc())
-                return dirents
-
-        # Handle subpaths
+        # Use the router to handle the path
         try:
-            if path.startswith("/playlists/"):
-                return dirents + self._readdir_playlist_content(path)
-            elif path.startswith("/artists/") and path.count("/") == 2:
-                return dirents + self._readdir_artist_content(path)
-            elif path.startswith("/albums/") or (
-                path.startswith("/artists/") and path.count("/") >= 3
-            ):
-                return dirents + self._readdir_album_content(path)
+            return self.router.route(path)
         except Exception as e:
             self.logger.error(f"Error in readdir for {path}: {e}")
             import traceback
-
             self.logger.error(traceback.format_exc())
-
-        return dirents
+            return [".", ".."]
 
     def _fetch_and_cache(self, cache_key: str, fetch_func, *args, **kwargs) -> Any:
         """Fetch data from cache or API and update cache if needed.
