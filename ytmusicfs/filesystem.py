@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Callable
 from yt_dlp import YoutubeDL
 from ytmusicfs.utils.oauth_adapter import YTMusicOAuthAdapter
+from cachetools import LRUCache
 import errno
 import json
 import logging
@@ -74,6 +75,7 @@ class YouTubeMusicFS(Operations):
         cache_timeout: int = 2592000,
         max_workers: int = 8,
         browser: Optional[str] = None,
+        cache_maxsize: int = 1000,
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
@@ -85,6 +87,7 @@ class YouTubeMusicFS(Operations):
             cache_timeout: Time in seconds before cached data expires (default: 30 days)
             max_workers: Maximum number of worker threads (default: 8)
             browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
+            cache_maxsize: Maximum number of items to keep in memory cache (default: 1000)
         """
         # Get the logger
         self.logger = logging.getLogger("YTMusicFS")
@@ -116,7 +119,7 @@ class YouTubeMusicFS(Operations):
             )
             raise
 
-        self.cache = {}  # In-memory cache: {path: {'data': ..., 'time': ...}}
+        self.cache = LRUCache(maxsize=cache_maxsize)  # In-memory cache with LRU eviction strategy: {path: {'data': ..., 'time': ...}}
         self.cache_timeout = cache_timeout
         self.open_files = {}  # Store file handles: {handle: {'stream_url': ...}}
         self.next_fh = 1  # Next file handle to assign
@@ -2019,6 +2022,7 @@ def mount_ytmusicfs(
     max_workers: int = 8,
     browser: Optional[str] = None,
     credentials_file: Optional[str] = None,
+    cache_maxsize: int = 1000,
 ) -> None:
     """Mount the YouTube Music filesystem.
 
@@ -2034,6 +2038,7 @@ def mount_ytmusicfs(
         max_workers: Maximum number of worker threads for parallel operations
         browser: Browser to use for cookies
         credentials_file: Path to the client credentials file (default: None)
+        cache_maxsize: Maximum number of items to keep in memory cache (default: 1000)
     """
     FUSE(
         YouTubeMusicFS(
@@ -2044,6 +2049,7 @@ def mount_ytmusicfs(
             cache_timeout=cache_timeout,
             max_workers=max_workers,
             browser=browser,
+            cache_maxsize=cache_maxsize,
         ),
         mount_point,
         foreground=foreground,
