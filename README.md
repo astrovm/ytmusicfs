@@ -10,7 +10,7 @@ YTMusicFS mounts your YouTube Music library as a standard filesystem, allowing y
 - **Traditional Player Support**: Play songs with any audio player that can read files
 - **Complete Library Access**: Browse playlists, liked songs, artists, and albums
 - **Persistent Authentication**: Uses OAuth for reliable, long-lasting sessions
-- **Disk Caching**: Caches metadata to improve browsing performance
+- **Disk Caching**: Caches metadata and audio to improve browsing performance and enable offline playback of previously streamed songs
 - **On-Demand Streaming**: Streams audio directly from YouTube Music servers
 - **Smart Auto-Refresh**: Automatically refreshes your entire library cache every 10 minutes using an intelligent merging approach that preserves existing data and only updates what has changed, optimized for large libraries
 - **Browser Cookies**: Uses browser cookies for authentication to access higher quality audio streams (up to 256kbps)
