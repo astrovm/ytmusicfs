@@ -11,6 +11,7 @@ from ytmusicfs.processor import TrackProcessor
 import errno
 import logging
 import os
+import re
 import requests
 import stat
 import threading
@@ -237,6 +238,159 @@ class YouTubeMusicFS(Operations):
             self.cache.set(cache_key, data)
         yield data
 
+    def _is_valid_path(self, path: str) -> bool:
+        """Quickly check if a path is potentially valid without expensive operations.
+
+        Args:
+            path: The path to validate
+
+        Returns:
+            Boolean indicating if the path might be valid
+        """
+        # Root and main category directories are always valid
+        if path == "/" or path in ["/playlists", "/liked_songs", "/artists", "/albums"]:
+            return True
+
+        # Extract directory and filename
+        dir_path = os.path.dirname(path)
+        filename = os.path.basename(path)
+
+        # If no filename, it might be a directory - check if we know it's valid
+        if not filename:
+            # Check if we've seen this directory before
+            if self.cache.get(f"valid_dir:{path}"):
+                return True
+
+            # For directories we haven't validated yet, we'll need to check them normally
+            return True
+
+        # Check if we've already validated this exact path before
+        if self.cache.get(f"exact_path:{path}"):
+            return True
+
+        # Check for known valid base filenames in this directory
+        valid_base_names_key = f"valid_base_names:{dir_path}"
+        valid_base_names_cached = self.cache.get(valid_base_names_key)
+        valid_base_names = set(valid_base_names_cached) if valid_base_names_cached else set()
+
+        # If we have a pattern with numbers in parentheses
+        match = re.search(r'(.*?)\s*\((\d+)\)(\.[^.]+)?$', filename)
+        if match:
+            base_name, number, extension = match.groups()
+            # Check if base name is in our set of valid base names
+            if valid_base_names and base_name in valid_base_names:
+                # We've seen this base name before, but is this the exact valid filename?
+                cache_key = f"valid_path:{dir_path}/{base_name}"
+                cached_valid_path = self.cache.get(cache_key)
+
+                if cached_valid_path is not None:
+                    # If we have a cached valid path for this base name,
+                    # check if the current path is different
+                    if path != cached_valid_path:
+                        self.logger.debug(f"Rejecting invalid path probe: {path}, valid path is {cached_valid_path}")
+                        return False
+            elif valid_base_names and base_name not in valid_base_names:
+                # We've processed this directory before and this base name wasn't valid
+                self.logger.debug(f"Rejecting invalid base filename: {base_name} in {dir_path}")
+                return False
+
+        # If this is a file in a directory we know is valid
+        if dir_path and self.cache.get(f"valid_dir:{dir_path}"):
+            parent_dir_filenames_cached = self.cache.get(f"valid_files:{dir_path}")
+            parent_dir_filenames = set(parent_dir_filenames_cached) if parent_dir_filenames_cached else set()
+            if parent_dir_filenames and filename not in parent_dir_filenames:
+                self.logger.debug(f"Rejecting file not in valid file list: {filename} in {dir_path}")
+                return False
+
+        return True
+
+    def _cache_valid_path(self, path: str) -> None:
+        """Cache a valid path to help with quick validation.
+
+        Args:
+            path: The valid path to cache
+        """
+        dir_path = os.path.dirname(path)
+        filename = os.path.basename(path)
+
+        # Mark this exact path as valid
+        self.cache.set(f"exact_path:{path}", True)
+
+        # Add to directory's valid files list
+        valid_files_cached = self.cache.get(f"valid_files:{dir_path}")
+        valid_files = set(valid_files_cached) if valid_files_cached else set()
+        valid_files.add(filename)
+        # Convert set to list for JSON serialization
+        self.cache.set(f"valid_files:{dir_path}", list(valid_files))
+
+        match = re.search(r'(.*?)\s*\((\d+)\)(\.[^.]+)?$', filename)
+        if match:
+            base_name, _, _ = match.groups()
+            # Cache the specific valid path
+            cache_key = f"valid_path:{dir_path}/{base_name}"
+            self.cache.set(cache_key, path)
+
+            # Also add this base name to our set of valid base names for this directory
+            valid_base_names_key = f"valid_base_names:{dir_path}"
+            valid_base_names_cached = self.cache.get(valid_base_names_key)
+            valid_base_names = set(valid_base_names_cached) if valid_base_names_cached else set()
+            valid_base_names.add(base_name)
+            # Convert set to list for JSON serialization
+            self.cache.set(valid_base_names_key, list(valid_base_names))
+
+            self.logger.debug(f"Cached valid path: {path} with key {cache_key}")
+
+    def _cache_valid_dir(self, dir_path: str) -> None:
+        """Mark a directory as valid in the cache.
+
+        Args:
+            dir_path: The directory path to cache as valid
+        """
+        # Mark the directory as valid
+        self.cache.set(f"valid_dir:{dir_path}", True)
+
+        # Also mark parent directories as valid
+        parts = dir_path.split('/')
+        for i in range(1, len(parts)):
+            parent = '/'.join(parts[:i]) or '/'
+            self.cache.set(f"valid_dir:{parent}", True)
+
+    # Helper method to cache all valid filenames in a directory
+    def _cache_valid_filenames(self, dir_path: str, filenames: List[str]) -> None:
+        """Cache all valid filenames in a directory for efficient path validation.
+
+        Args:
+            dir_path: Directory path
+            filenames: List of valid filenames in this directory
+        """
+        # Mark this directory as valid
+        self._cache_valid_dir(dir_path)
+
+        # Store the complete list of valid files - already a list, so no conversion needed
+        self.cache.set(f"valid_files:{dir_path}", filenames)
+
+        valid_base_names = set()
+
+        for filename in filenames:
+            # Mark each path as exactly valid
+            path = f"{dir_path}/{filename}"
+            self.cache.set(f"exact_path:{path}", True)
+
+            # Process base names for paths with number patterns
+            match = re.search(r'(.*?)\s*\((\d+)\)(\.[^.]+)?$', filename)
+            if match:
+                base_name, _, _ = match.groups()
+                valid_base_names.add(base_name)
+                # Cache the specific valid path
+                cache_key = f"valid_path:{dir_path}/{base_name}"
+                self.cache.set(cache_key, path)
+
+        if valid_base_names:
+            valid_base_names_key = f"valid_base_names:{dir_path}"
+            # Convert set to list for JSON serialization
+            self.cache.set(valid_base_names_key, list(valid_base_names))
+            self.logger.debug(f"Cached {len(valid_base_names)} valid base names for {dir_path}")
+
     def readdir(self, path: str, fh: Optional[int] = None) -> List[str]:
         """Read directory contents.
 
@@ -249,6 +403,11 @@ class YouTubeMusicFS(Operations):
         """
         self.logger.debug(f"readdir: {path}")
 
+        # Quick validation to reject invalid paths
+        if not self._is_valid_path(path):
+            self.logger.debug(f"Rejecting invalid path in readdir: {path}")
+            return [".", ".."]
+
         # Ignore hidden paths
         if any(part.startswith(".") for part in path.split("/") if part):
             self.logger.debug(f"Ignoring hidden path: {path}")
@@ -256,7 +415,14 @@ class YouTubeMusicFS(Operations):
 
         # Use the router to handle the path
         try:
-            return self.router.route(path)
+            result = self.router.route(path)
+
+            # Mark this as a valid directory and cache all valid filenames for future validation
+            if path != "/" and len(result) > 2:  # More than just "." and ".."
+                self._cache_valid_filenames(path, [entry for entry in result if entry not in [".", ".."]])
+                self._cache_valid_dir(path)
+
+            return result
         except Exception as e:
             self.logger.error(f"Error in readdir for {path}: {e}")
             import traceback
@@ -682,6 +848,11 @@ class YouTubeMusicFS(Operations):
         """
         self.logger.debug(f"getattr: {path}")
 
+        # Quick validation to reject invalid paths
+        if not self._is_valid_path(path):
+            self.logger.debug(f"Rejecting invalid path in getattr: {path}")
+            raise OSError(errno.ENOENT, f"No such file or directory: {path}")
+
         now = time.time()
         attr = {
             "st_atime": now,
@@ -797,10 +968,15 @@ class YouTubeMusicFS(Operations):
                         4096  # Minimal placeholder size instead of default estimate
                     )
 
+                # If we successfully determined attributes for a file path with a number pattern,
+                # cache it as a valid path to help with future validation
+                self._cache_valid_path(path)
+
                 return attr
         except Exception:
             pass
 
+        # If we get here, the file or directory doesn't exist
         raise OSError(errno.ENOENT, f"No such file or directory: {path}")
 
     def open(self, path: str, flags: int) -> int:
@@ -814,6 +990,10 @@ class YouTubeMusicFS(Operations):
             File handle
         """
         self.logger.debug(f"open: {path} with flags {flags}")
+
+        # Cache this as a valid path since it's being opened
+        self._cache_valid_path(path)
+
         if path == "/":
             raise OSError(errno.EISDIR, "Is a directory")
 
