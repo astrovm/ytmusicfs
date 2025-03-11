@@ -1025,7 +1025,11 @@ class YouTubeMusicFS(Operations):
             cmd = [
                 "yt-dlp",
                 "-f",
-                "bestaudio[ext=m4a]",
+                "141/bestaudio[ext=m4a]",
+                "--cookies-from-browser",
+                "brave",
+                "--extractor-args",
+                "youtube:formats=missing_pot",
                 "-g",
                 f"https://music.youtube.com/watch?v={video_id}",
             ]
