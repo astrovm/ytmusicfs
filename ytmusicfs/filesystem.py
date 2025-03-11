@@ -339,53 +339,6 @@ class YouTubeMusicFS(Operations):
 
             return filenames
 
-    def _get_cache_metadata(self, cache_key: str, metadata_key: str) -> Any:
-        """Get metadata associated with a cache key.
-
-        Args:
-            cache_key: The cache key
-            metadata_key: The metadata key
-
-        Returns:
-            The metadata value or None if not found
-        """
-        metadata_cache_key = f"{cache_key}_metadata"
-        metadata = self.cache.get(metadata_cache_key) or {}
-        return metadata.get(metadata_key)
-
-    def _set_cache_metadata(
-        self, cache_key: str, metadata_key: str, value: Any
-    ) -> None:
-        """Set metadata associated with a cache key.
-
-        Args:
-            cache_key: The cache key
-            metadata_key: The metadata key
-            value: The metadata value to set
-        """
-        metadata_cache_key = f"{cache_key}_metadata"
-        metadata = self.cache.get(metadata_cache_key) or {}
-        metadata[metadata_key] = value
-        self.cache.set(metadata_cache_key, metadata)
-
-    def _auto_refresh_cache(self, cache_key: str, refresh_interval: int = 600) -> None:
-        """Automatically refresh the cache if the last refresh time exceeds the interval.
-
-        Args:
-            cache_key: The cache key to check (e.g., '/playlists').
-            refresh_interval: Time in seconds before triggering a refresh (default: 600).
-        """
-        last_refresh_time = self.cache.get_metadata(cache_key, "last_refresh_time")
-        current_time = time.time()
-        if (
-            last_refresh_time is None
-            or (current_time - last_refresh_time) > refresh_interval
-        ):
-            self.logger.info(f"Auto-refreshing cache for {cache_key}")
-            self.refresh_cache()
-            # Mark the cache as freshly refreshed
-            self.cache.set_metadata(cache_key, "last_refresh_time", current_time)
-
     def _readdir_playlist_content(self, path: str) -> List[str]:
         """Handle listing contents of a specific playlist.
 
@@ -1383,264 +1336,19 @@ class YouTubeMusicFS(Operations):
 
         return attributes
 
-    def _refresh_cache_data(
-        self,
-        cache_key: str,
-        fetch_func: Callable,
-        id_fields: List[str] = ["id"],
-        check_updates: bool = False,
-        update_field: str = None,
-        clear_related_cache: bool = False,
-        related_cache_prefix: str = None,
-        related_cache_suffix: str = None,
-        fetch_args: Dict = None,
-        process_items: bool = False,
-        processed_cache_key: str = None,
-        extract_nested_items: str = None,
-        prepend_new_items: bool = False,
-    ) -> None:
-        """Generic method to refresh any cache with a smart merging approach.
+    def _auto_refresh_cache(self, cache_key: str, refresh_interval: int = 600) -> None:
+        """Automatically refresh the cache if the last refresh time exceeds the interval.
 
         Args:
-            cache_key: The cache key to refresh
-            fetch_func: Function to call to fetch new data
-            id_fields: List of possible field names for ID in priority order
-            check_updates: Whether to check for updates to existing items
-            update_field: Field to check for updates if check_updates is True
-            clear_related_cache: Whether to clear related caches for updated items
-            related_cache_prefix: Prefix for related cache keys
-            related_cache_suffix: Suffix for related cache keys
-            fetch_args: Optional arguments to pass to the fetch function
-            process_items: Whether to process items (e.g., for tracks)
-            processed_cache_key: Cache key for processed items
-            extract_nested_items: Key to extract nested items from response
-            prepend_new_items: Whether to add new items to the beginning of the list
+            cache_key: The cache key to check (e.g., '/playlists').
+            refresh_interval: Time in seconds before triggering a refresh (default: 600).
         """
-        self.logger.info(f"Refreshing {cache_key} cache...")
-
-        # Get existing cached data
-        existing_items = self._get_from_cache(cache_key)
-        existing_processed_items = None
-        if process_items and processed_cache_key:
-            existing_processed_items = self._get_from_cache(processed_cache_key)
-
-        # Fetch recent data
-        self.logger.debug(f"Fetching recent data for {cache_key}...")
-        if fetch_args:
-            recent_data = fetch_func(**fetch_args)
-        else:
-            recent_data = fetch_func()
-
-        if not recent_data:
-            self.logger.info(f"No data found or error fetching data for {cache_key}")
-            return
-
-        # Extract nested items if needed
-        recent_items = recent_data
-        if (
-            extract_nested_items
-            and isinstance(recent_data, dict)
-            and extract_nested_items in recent_data
-        ):
-            recent_items = recent_data[extract_nested_items]
-
-        # Handle case where we have existing items
-        if existing_items:
-            self.logger.info(
-                f"Found {len(existing_items if not extract_nested_items else existing_items.get(extract_nested_items, []))} existing items in {cache_key} cache"
-            )
-
-            # Build a set of existing IDs and a mapping for updates
-            existing_ids = set()
-            existing_item_map = {}
-
-            # Extract nested items from existing data if needed
-            existing_nested_items = existing_items
-            if (
-                extract_nested_items
-                and isinstance(existing_items, dict)
-                and extract_nested_items in existing_items
-            ):
-                existing_nested_items = existing_items[extract_nested_items]
-            else:
-                existing_nested_items = existing_items
-
-            for item in existing_nested_items:
-                # Find the first available ID field
-                item_id = None
-                for id_field in id_fields:
-                    if item.get(id_field):
-                        item_id = item.get(id_field)
-                        existing_ids.add(item_id)
-                        existing_item_map[item_id] = item
-                        break
-
-            # Find new items
-            new_items = []
-            updated_items = []
-
-            for item in recent_items:
-                # Find the item ID
-                item_id = None
-                for id_field in id_fields:
-                    if item.get(id_field):
-                        item_id = item.get(id_field)
-                        break
-
-                if not item_id:
-                    continue
-
-                if item_id not in existing_ids:
-                    # New item
-                    new_items.append(item)
-                elif (
-                    check_updates
-                    and update_field
-                    and item.get(update_field)
-                    != existing_item_map[item_id].get(update_field)
-                ):
-                    # Updated item
-                    updated_items.append(item)
-
-            if new_items or updated_items:
-                action_text = []
-                if new_items:
-                    action_text.append(f"{len(new_items)} new")
-                if updated_items:
-                    action_text.append(f"{len(updated_items)} updated")
-
-                self.logger.info(
-                    f"Found {' and '.join(action_text)} items to add to {cache_key} cache"
-                )
-
-                # Get list of updated and new item IDs
-                changed_ids = set()
-                for item in new_items + updated_items:
-                    for id_field in id_fields:
-                        if item.get(id_field):
-                            changed_ids.add(item.get(id_field))
-                            break
-
-                # Handle nested structure update
-                if extract_nested_items and isinstance(existing_items, dict):
-                    # Filter out changed items
-                    unchanged_items = [
-                        item
-                        for item in existing_nested_items
-                        if not any(
-                            item.get(id_field) in changed_ids
-                            for id_field in id_fields
-                            if item.get(id_field)
-                        )
-                    ]
-
-                    # Determine merge order based on prepend_new_items
-                    if prepend_new_items:
-                        merged_nested_items = (
-                            new_items + updated_items + unchanged_items
-                        )
-                    else:
-                        merged_nested_items = (
-                            unchanged_items + new_items + updated_items
-                        )
-
-                    # Update the nested structure
-                    existing_items[extract_nested_items] = merged_nested_items
-                    self._set_cache(cache_key, existing_items)
-                else:
-                    # Filter out changed items
-                    unchanged_items = [
-                        item
-                        for item in existing_nested_items
-                        if not any(
-                            item.get(id_field) in changed_ids
-                            for id_field in id_fields
-                            if item.get(id_field)
-                        )
-                    ]
-
-                    # Determine merge order based on prepend_new_items
-                    if prepend_new_items:
-                        merged_items = new_items + updated_items + unchanged_items
-                    else:
-                        merged_items = unchanged_items + new_items + updated_items
-
-                    self._set_cache(cache_key, merged_items)
-
-                self.logger.info(
-                    f"Updated cache with {len(merged_nested_items if extract_nested_items else merged_items)} total items"
-                )
-
-                # Process items if needed (for tracks)
-                if process_items and processed_cache_key:
-                    if new_items or updated_items:
-                        # Process just the new/updated items
-                        items_to_process = new_items + updated_items
-                        new_processed_items, _ = self._process_tracks(items_to_process)
-
-                        if existing_processed_items:
-                            # Filter out processed items corresponding to changed items
-                            unchanged_processed_items = [
-                                item
-                                for item in existing_processed_items
-                                if not any(
-                                    item.get(id_field) in changed_ids
-                                    for id_field in id_fields
-                                    if item.get(id_field)
-                                )
-                            ]
-
-                            # Determine merge order based on prepend_new_items
-                            if prepend_new_items:
-                                merged_processed_items = (
-                                    new_processed_items + unchanged_processed_items
-                                )
-                            else:
-                                merged_processed_items = (
-                                    unchanged_processed_items + new_processed_items
-                                )
-
-                            self._set_cache(processed_cache_key, merged_processed_items)
-                            self.logger.info(
-                                f"Updated processed cache with {len(merged_processed_items)} total items"
-                            )
-                        else:
-                            self.logger.warning(
-                                f"Existing processed items not found at {processed_cache_key}, skipping update"
-                            )
-
-                # Clear related caches if needed
-                if clear_related_cache and (
-                    related_cache_prefix or related_cache_suffix
-                ):
-                    for item in updated_items:
-                        for id_field in id_fields:
-                            item_id = item.get(id_field)
-                            if item_id:
-                                if related_cache_prefix:
-                                    related_key = f"{related_cache_prefix}{item_id}"
-                                    if related_key in self.cache:
-                                        del self.cache[related_key]
-
-                                if related_cache_suffix:
-                                    related_key = f"{item_id}{related_cache_suffix}"
-                                    if related_key in self.cache:
-                                        del self.cache[related_key]
-                                break
-            else:
-                self.logger.info(
-                    f"No existing {cache_key} cache found, will create cache on next access"
-                )
-            # Just cache the recent data to make next access faster
-            self._set_cache(cache_key, recent_data)
-
-            # Process and cache items if needed
-            if process_items and processed_cache_key and recent_items:
-                processed_items, _ = self._process_tracks(recent_items)
-                self._set_cache(processed_cache_key, processed_items)
-                self.logger.info(
-                    f"Created processed cache with {len(processed_items)} items"
-                )
+        # Use the CacheManager's auto_refresh_cache method instead
+        self.cache.auto_refresh_cache(
+            cache_key=cache_key,
+            refresh_method=self.refresh_cache,
+            refresh_interval=refresh_interval
+        )
 
     def refresh_liked_songs_cache(self) -> None:
         """Refresh the cache for liked songs.
@@ -1648,9 +1356,10 @@ class YouTubeMusicFS(Operations):
         This method updates the liked songs cache with any newly liked songs,
         without deleting the entire cache.
         """
-        self._refresh_cache_data(
+        self.cache.refresh_cache_data(
             cache_key="/liked_songs",
             fetch_func=self.client.get_liked_songs,
+            processor=self.processor,
             id_fields=["videoId"],
             fetch_args={"limit": 100},
             process_items=True,
@@ -1665,7 +1374,7 @@ class YouTubeMusicFS(Operations):
         This method updates the playlists cache with any changes in playlists,
         without deleting the entire cache.
         """
-        self._refresh_cache_data(
+        self.cache.refresh_cache_data(
             cache_key="/playlists",
             fetch_func=self.client.get_library_playlists,
             id_fields=["playlistId"],
@@ -1683,7 +1392,7 @@ class YouTubeMusicFS(Operations):
         This method updates the artists cache with any changes in the user's library,
         without deleting the entire cache.
         """
-        self._refresh_cache_data(
+        self.cache.refresh_cache_data(
             cache_key="/artists",
             fetch_func=self.client.get_library_artists,
             id_fields=["artistId", "browseId", "id"],
@@ -1695,7 +1404,7 @@ class YouTubeMusicFS(Operations):
         This method updates the albums cache with any changes in the user's library,
         without deleting the entire cache.
         """
-        self._refresh_cache_data(
+        self.cache.refresh_cache_data(
             cache_key="/albums",
             fetch_func=self.client.get_library_albums,
             id_fields=["albumId", "browseId", "id"],
