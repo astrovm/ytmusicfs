@@ -131,7 +131,7 @@ class YouTubeMusicFS(Operations):
         browser: str = None,
         cache_maxsize: int = 10000,
         preload_cache: bool = True,
-        request_cooldown: int = 100,  # Cooldown in milliseconds
+        request_cooldown: int = 100,
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
@@ -1656,7 +1656,7 @@ def mount_ytmusicfs(
     credentials_file: str = None,
     cache_maxsize: int = 10000,
     preload_cache: bool = True,
-    request_cooldown: int = 100,  # Cooldown in milliseconds
+    request_cooldown: int = 100,
 ) -> None:
     """Mount the YouTube Music filesystem.
 
