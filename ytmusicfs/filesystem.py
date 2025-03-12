@@ -131,6 +131,7 @@ class YouTubeMusicFS(Operations):
         browser: str = None,
         cache_maxsize: int = 10000,
         preload_cache: bool = True,
+        request_cooldown: int = 100,  # Cooldown in milliseconds
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
@@ -144,6 +145,7 @@ class YouTubeMusicFS(Operations):
             browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
             cache_maxsize: Maximum number of items to keep in memory cache (default: 10000)
             preload_cache: Whether to preload cache data at startup (default: True)
+            request_cooldown: Time in milliseconds between allowed repeated requests to the same path (default: 100)
         """
         # Get the logger
         self.logger = logging.getLogger("YTMusicFS")
@@ -176,11 +178,17 @@ class YouTubeMusicFS(Operations):
         self.client_id = client_id
         self.client_secret = client_secret
         self.browser = browser
+        self.request_cooldown = request_cooldown / 1000.0  # Convert to seconds
 
         # File handling state
         self.open_files = {}  # Store file handles: {handle: {'stream_url': ...}}
         self.next_fh = 1  # Next file handle to assign
         self.path_to_fh = {}  # Store path to file handle mapping
+
+        # Debounce mechanism for repeated requests
+        self.last_access_time = {}  # {operation_path: last_access_time}
+        self.last_access_lock = threading.RLock()  # Lock for last_access_time operations
+        self.last_access_results = {}  # {operation_path: cached_result}
 
         # Thread-related objects
         self.file_handle_lock = threading.RLock()  # Lock for file handle operations
@@ -508,15 +516,36 @@ class YouTubeMusicFS(Operations):
         """
         self.logger.debug(f"readdir: {path}")
 
+        # Check if this request is too soon after the last one
+        operation_key = f"readdir:{path}"
+        current_time = time.time()
+
+        with self.last_access_lock:
+            last_time = self.last_access_time.get(operation_key, 0)
+            if current_time - last_time < self.request_cooldown:
+                # Request is within cooldown period, return cached result if available
+                if operation_key in self.last_access_results:
+                    self.logger.debug(f"Using cached result for {operation_key} (within cooldown: {current_time - last_time:.3f}s)")
+                    return self.last_access_results[operation_key]
+
+            # Update the last access time for this operation
+            self.last_access_time[operation_key] = current_time
+
         # Quick validation to reject invalid paths
         if not self._is_valid_path(path):
             self.logger.debug(f"Rejecting invalid path in readdir: {path}")
-            return [".", ".."]
+            result = [".", ".."]
+            with self.last_access_lock:
+                self.last_access_results[operation_key] = result
+            return result
 
         # Ignore hidden paths
         if any(part.startswith(".") for part in path.split("/") if part):
             self.logger.debug(f"Ignoring hidden path: {path}")
-            return [".", ".."]
+            result = [".", ".."]
+            with self.last_access_lock:
+                self.last_access_results[operation_key] = result
+            return result
 
         # Use the router to handle the path
         try:
@@ -529,13 +558,20 @@ class YouTubeMusicFS(Operations):
                 )
                 self._cache_valid_dir(path)
 
+            # Cache this result for the cooldown period
+            with self.last_access_lock:
+                self.last_access_results[operation_key] = result
+
             return result
         except Exception as e:
             self.logger.error(f"Error in readdir for {path}: {e}")
             import traceback
 
             self.logger.error(traceback.format_exc())
-            return [".", ".."]
+            result = [".", ".."]
+            with self.last_access_lock:
+                self.last_access_results[operation_key] = result
+            return result
 
     def _fetch_and_cache(self, cache_key: str, fetch_func, *args, **kwargs) -> Any:
         """Fetch data from cache or API and update cache if needed.
@@ -955,10 +991,25 @@ class YouTubeMusicFS(Operations):
         """
         self.logger.debug(f"getattr: {path}")
 
+        # Check if this request is too soon after the last one
+        operation_key = f"getattr:{path}"
+        current_time = time.time()
+
+        with self.last_access_lock:
+            last_time = self.last_access_time.get(operation_key, 0)
+            if current_time - last_time < self.request_cooldown:
+                # Request is within cooldown period, return cached result if available
+                if operation_key in self.last_access_results:
+                    self.logger.debug(f"Using cached result for {operation_key} (within cooldown: {current_time - last_time:.3f}s)")
+                    return self.last_access_results[operation_key]
+
+            # Update the last access time for this operation
+            self.last_access_time[operation_key] = current_time
+
         # Quick validation to reject invalid paths
         if not self._is_valid_path(path):
             self.logger.debug(f"Rejecting invalid path in getattr: {path}")
-            raise OSError(errno.ENOENT, f"No such file or directory: {path}")
+            raise OSError(errno.ENOENT, "No such file or directory")
 
         now = time.time()
         attr = {
@@ -972,12 +1023,16 @@ class YouTubeMusicFS(Operations):
         if path == "/":
             attr["st_mode"] = stat.S_IFDIR | 0o755
             attr["st_size"] = 0
+            with self.last_access_lock:
+                self.last_access_results[operation_key] = attr.copy()
             return attr
 
         # Main categories
         if path in ["/playlists", "/liked_songs", "/artists", "/albums"]:
             attr["st_mode"] = stat.S_IFDIR | 0o755
             attr["st_size"] = 0
+            with self.last_access_lock:
+                self.last_access_results[operation_key] = attr.copy()
             return attr
 
         # Check if this is a song file (ends with .m4a)
@@ -994,6 +1049,8 @@ class YouTubeMusicFS(Operations):
                 self.logger.debug(f"Using cached file size for {path}: {cached_size}")
                 attr["st_mode"] = stat.S_IFREG | 0o644
                 attr["st_size"] = cached_size
+                with self.last_access_lock:
+                    self.last_access_results[operation_key] = attr.copy()
                 return attr
 
             try:
@@ -1022,15 +1079,21 @@ class YouTubeMusicFS(Operations):
                                         f"Using cached actual file size for {path}: {cached_size}"
                                     )
                                     attr["st_size"] = cached_size
+                                    with self.last_access_lock:
+                                        self.last_access_results[operation_key] = attr.copy()
                                     return attr
 
                                 # No duration-based estimation - use minimal size
                                 # This will be updated with actual size when file is opened
                                 attr["st_size"] = 4096  # Minimal placeholder size
+                                with self.last_access_lock:
+                                    self.last_access_results[operation_key] = attr.copy()
                                 return attr
 
                     # No duration-based fallback anymore - just use minimal size
                     attr["st_size"] = 4096  # Minimal placeholder size
+                    with self.last_access_lock:
+                        self.last_access_results[operation_key] = attr.copy()
                     return attr
             except Exception as e:
                 self.logger.debug(f"Error checking file existence: {e}")
@@ -1046,6 +1109,8 @@ class YouTubeMusicFS(Operations):
             if entries:
                 attr["st_mode"] = stat.S_IFDIR | 0o755
                 attr["st_size"] = 0
+                with self.last_access_lock:
+                    self.last_access_results[operation_key] = attr.copy()
                 return attr
         except Exception:
             pass
@@ -1055,7 +1120,7 @@ class YouTubeMusicFS(Operations):
         filename = os.path.basename(path)
 
         if not filename:
-            raise OSError(errno.ENOENT, f"No such file or directory: {path}")
+            raise OSError(errno.ENOENT, "No such file or directory")
 
         # Check if file exists in parent directory
         try:
@@ -1079,12 +1144,14 @@ class YouTubeMusicFS(Operations):
                 # cache it as a valid path to help with future validation
                 self._cache_valid_path(path)
 
+                with self.last_access_lock:
+                    self.last_access_results[operation_key] = attr.copy()
                 return attr
         except Exception:
             pass
 
         # If we get here, the file or directory doesn't exist
-        raise OSError(errno.ENOENT, f"No such file or directory: {path}")
+        raise OSError(errno.ENOENT, "No such file or directory")
 
     def open(self, path: str, flags: int) -> int:
         """Open a file and return a file handle.
@@ -1180,7 +1247,7 @@ class YouTubeMusicFS(Operations):
 
         if not songs:
             self.logger.error(f"Could not find songs in directory {dir_path}")
-            raise OSError(errno.ENOENT, f"File not found: {path}")
+            raise OSError(errno.ENOENT, "File not found")
 
         # Handle songs as either list of strings or list of dictionaries
         video_id = None
@@ -1194,7 +1261,7 @@ class YouTubeMusicFS(Operations):
                 self.logger.error(
                     f"File found in cache but no videoId available: {filename}"
                 )
-                raise OSError(errno.ENOENT, f"No video ID for file: {path}")
+                raise OSError(errno.ENOENT, "No video ID for file")
         else:
             # Cache contains song dictionaries as expected
             for song in songs:
@@ -1220,7 +1287,7 @@ class YouTubeMusicFS(Operations):
                 f"Cache contents for debugging: {songs[:5] if isinstance(songs, list) else songs}"
             )
 
-            raise OSError(errno.ENOENT, f"File not found: {path}")
+            raise OSError(errno.ENOENT, "File not found")
 
         # First check if the audio is already cached
         cache_path = Path(self.cache.cache_dir / "audio" / f"{video_id}.m4a")
@@ -1844,6 +1911,7 @@ def mount_ytmusicfs(
     credentials_file: str = None,
     cache_maxsize: int = 10000,
     preload_cache: bool = True,
+    request_cooldown: int = 100,  # Cooldown in milliseconds
 ) -> None:
     """Mount the YouTube Music filesystem.
 
@@ -1861,6 +1929,7 @@ def mount_ytmusicfs(
         credentials_file: Path to the client credentials file (default: None)
         cache_maxsize: Maximum number of items to keep in memory cache (default: 10000)
         preload_cache: Whether to preload cache data at startup (default: True)
+        request_cooldown: Time in milliseconds between allowed repeated requests to the same path (default: 100)
     """
     FUSE(
         YouTubeMusicFS(
@@ -1873,6 +1942,7 @@ def mount_ytmusicfs(
             browser=browser,
             cache_maxsize=cache_maxsize,
             preload_cache=preload_cache,
+            request_cooldown=request_cooldown,
         ),
         mount_point,
         foreground=foreground,
