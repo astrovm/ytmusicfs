@@ -624,14 +624,9 @@ class YouTubeMusicFS(Operations):
         """
         self.logger.debug(f"readdir: {path}")
 
-        # Defensive check for unusual file extensions that might be probed by file managers
-        if any(
-            path.endswith(ext)
-            for ext in [".tar.gz", ".zip", ".jpg", ".png", ".bmp", ".gif", ".tgz"]
-        ):
-            self.logger.debug(
-                f"Rejecting unsupported file extension in readdir: {path}"
-            )
+        # Check if this is a file (contains a period) and not an m4a file
+        if "." in os.path.basename(path) and not path.lower().endswith(".m4a"):
+            self.logger.debug(f"Rejecting non-m4a file extension in readdir: {path}")
             # Just return empty directory for these special files
             return [".", ".."]
 
@@ -652,7 +647,7 @@ class YouTubeMusicFS(Operations):
             # Update the last access time for this operation
             self.last_access_time[operation_key] = current_time
 
-        # Quick validation to reject invalid paths
+        # Check if we need to handle path validation
         if not self._is_valid_path(path):
             self.logger.debug(f"Rejecting invalid path in readdir: {path}")
             result = [".", ".."]
@@ -1540,14 +1535,9 @@ class YouTubeMusicFS(Operations):
         """
         self.logger.debug(f"getattr: {path}")
 
-        # Defensive check for unusual file extensions that might be probed by file managers
-        if any(
-            path.endswith(ext)
-            for ext in [".tar.gz", ".zip", ".jpg", ".png", ".bmp", ".gif", ".tgz"]
-        ):
-            self.logger.debug(
-                f"Rejecting unsupported file extension in getattr: {path}"
-            )
+        # Reject any file that is not an m4a file
+        if "." in os.path.basename(path) and not path.lower().endswith(".m4a"):
+            self.logger.debug(f"Rejecting non-m4a file extension in getattr: {path}")
             raise OSError(errno.ENOENT, "No such file or directory")
 
         # For debugging, check if we have a stack trace involved in a mkdir operation
