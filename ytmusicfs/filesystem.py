@@ -227,6 +227,15 @@ class YouTubeMusicFS(Operations):
         self.router.register(
             "/search", lambda: [".", ".."] + self._readdir_search_categories()
         )
+        # Add handlers for /search/library and /search/catalog to show categories
+        self.router.register(
+            "/search/library",
+            lambda: [".", ".."] + self._readdir_search_category_options(),
+        )
+        self.router.register(
+            "/search/catalog",
+            lambda: [".", ".."] + self._readdir_search_category_options(),
+        )
 
         # Register dynamic handlers with wildcard capture
         self.router.register_dynamic(
@@ -302,6 +311,8 @@ class YouTubeMusicFS(Operations):
         futures.append(self.thread_pool.submit(self._readdir_artists))
         futures.append(self.thread_pool.submit(self._readdir_albums))
         futures.append(self.thread_pool.submit(self._readdir_search_categories))
+        # Also preload search category options
+        futures.append(self.thread_pool.submit(self._readdir_search_category_options))
 
         # Wait for all preload tasks to complete
         for future in futures:
@@ -316,56 +327,40 @@ class YouTubeMusicFS(Operations):
         self.logger.info("Cache preloading completed")
 
     def optimize_path_validation(self):
-        """Optimize path validation by caching entire directory structure.
+        """Optimize path validation by pre-caching known valid paths.
 
-        This method traverses the directory structure and caches all valid paths
-        to reduce the overhead of path validation during filesystem operations.
+        This method creates a set of known valid paths to avoid repeated validation
+        and improve performance.
         """
         self.logger.info("Optimizing path validation...")
 
-        # Mark root dir as valid
+        # Cache the basic directory structure
         self._cache_valid_dir("/")
+        self._cache_valid_dir("/playlists")
+        self._cache_valid_dir("/liked_songs")
+        self._cache_valid_dir("/artists")
+        self._cache_valid_dir("/albums")
+        self._cache_valid_dir("/search")
+        self._cache_valid_dir("/search/library")
+        self._cache_valid_dir("/search/catalog")
 
-        # Mark main category directories as valid
-        main_dirs = ["/playlists", "/liked_songs", "/artists", "/albums", "/search"]
-        for dir_path in main_dirs:
-            self._cache_valid_dir(dir_path)
+        # Cache search category directories
+        for category in ["songs", "videos", "albums", "artists", "playlists"]:
+            self._cache_valid_dir(f"/search/library/{category}")
+            self._cache_valid_dir(f"/search/catalog/{category}")
 
-        # Prevalidate playlists
-        try:
-            playlists = self.cache.get("/playlists")
-            if playlists:
-                for playlist in playlists:
-                    playlist_name = self.processor.sanitize_filename(playlist["title"])
-                    playlist_path = f"/playlists/{playlist_name}"
-                    # Mark the playlist directory as valid
-                    self._cache_valid_dir(playlist_path)
-        except Exception as e:
-            self.logger.error(f"Error prevalidating playlists: {e}")
+        # Cache the valid filenames for root
+        self._cache_valid_filenames(
+            "/", ["playlists", "liked_songs", "artists", "albums", "search"]
+        )
 
-        # Prevalidate artists
-        try:
-            artists = self.cache.get("/artists")
-            if artists:
-                for artist in artists:
-                    artist_name = self.processor.sanitize_filename(artist["artist"])
-                    artist_path = f"/artists/{artist_name}"
-                    # Mark the artist directory as valid
-                    self._cache_valid_dir(artist_path)
-        except Exception as e:
-            self.logger.error(f"Error prevalidating artists: {e}")
+        # Cache the valid filenames for search
+        self._cache_valid_filenames("/search", ["library", "catalog"])
 
-        # Prevalidate albums
-        try:
-            albums = self.cache.get("/albums")
-            if albums:
-                for album in albums:
-                    album_name = self.processor.sanitize_filename(album["title"])
-                    album_path = f"/albums/{album_name}"
-                    # Mark the album directory as valid
-                    self._cache_valid_dir(album_path)
-        except Exception as e:
-            self.logger.error(f"Error prevalidating albums: {e}")
+        # Cache the valid filenames for search/library and search/catalog
+        search_categories = ["songs", "videos", "albums", "artists", "playlists"]
+        self._cache_valid_filenames("/search/library", search_categories)
+        self._cache_valid_filenames("/search/catalog", search_categories)
 
         self.logger.info("Path validation optimization completed")
 
@@ -634,6 +629,12 @@ class YouTubeMusicFS(Operations):
                     path, [entry for entry in result if entry not in [".", ".."]]
                 )
                 self._cache_valid_dir(path)
+
+                # Special handling for search scope directories to cache category directories
+                if path in ["/search/library", "/search/catalog"]:
+                    categories = [entry for entry in result if entry not in [".", ".."]]
+                    for category in categories:
+                        self._cache_valid_dir(f"{path}/{category}")
 
             # Cache this result for the cooldown period
             with self.last_access_lock:
@@ -1110,6 +1111,30 @@ class YouTubeMusicFS(Operations):
             "library",  # Search within your library
             "catalog",  # Search the entire YouTube Music catalog
         ]
+
+        return categories
+
+    def _readdir_search_category_options(self) -> List[str]:
+        """Handle listing search category options (songs, videos, etc.).
+
+        Returns:
+            List of search category options
+        """
+        # Return the search category options
+        categories = [
+            "songs",  # Search for songs
+            "videos",  # Search for videos
+            "albums",  # Search for albums
+            "artists",  # Search for artists
+            "playlists",  # Search for playlists
+        ]
+
+        # Make sure these categories are recognized as valid directories
+        path_parts = inspect.stack()[1].frame.f_locals.get("path", "").split("/")
+        if len(path_parts) >= 3:
+            prefix = f"/search/{path_parts[2]}"
+            for category in categories:
+                self._cache_valid_dir(f"{prefix}/{category}")
 
         return categories
 
