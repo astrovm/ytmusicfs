@@ -369,24 +369,6 @@ class YouTubeMusicFS(Operations):
 
         self.logger.info("Path validation optimization completed")
 
-    def cached_data(self, cache_key: str, fetch_func: Callable, *args, **kwargs):
-        """Manage cache fetching and updating.
-
-        Args:
-            cache_key: The cache key to use.
-            fetch_func: Function to fetch data if not cached.
-            *args, **kwargs: Arguments for fetch_func.
-
-        Yields:
-            The cached or freshly fetched data.
-        """
-        data = self.cache.get(cache_key)
-        if data is None:
-            self.logger.debug(f"Cache miss for {cache_key}, fetching data")
-            data = fetch_func(*args, **kwargs)
-            self.cache.set(cache_key, data)
-        yield data
-
     def _is_valid_path(self, path: str) -> bool:
         """Quickly check if a path is potentially valid without expensive operations.
 
@@ -666,20 +648,6 @@ class YouTubeMusicFS(Operations):
                 self.last_access_results[operation_key] = result
             return result
 
-    def _fetch_and_cache(self, cache_key: str, fetch_func, *args, **kwargs) -> Any:
-        """Fetch data from cache or API and update cache if needed.
-
-        Args:
-            cache_key: The key to use for caching
-            fetch_func: The function to call to fetch data
-            *args, **kwargs: Arguments to pass to fetch_func
-
-        Returns:
-            The fetched or cached data
-        """
-        with self.cached_data(cache_key, fetch_func, *args, **kwargs) as data:
-            return data
-
     def _readdir_playlists(self) -> List[str]:
         """Handle listing playlists.
 
@@ -689,13 +657,21 @@ class YouTubeMusicFS(Operations):
         # Use the helper method to handle cache auto-refreshing
         self._auto_refresh_cache("/playlists")
 
-        with self.cache.cached_data(
-            "/playlists", self.client.get_library_playlists, limit=100
-        ) as playlists:
-            return [
-                self.processor.sanitize_filename(playlist["title"])
-                for playlist in playlists
-            ]
+        # Check if we have cached playlists
+        playlists = self.cache.get("/playlists")
+        if not playlists:
+            # Fetch playlists data outside of any locks
+            self.logger.debug("Fetching playlists data from API")
+            playlists = self.client.get_library_playlists(limit=100)
+            self.cache.set("/playlists", playlists)
+
+        # Process playlist data outside of locks
+        playlist_names = [
+            self.processor.sanitize_filename(playlist["title"])
+            for playlist in playlists
+        ]
+
+        return playlist_names
 
     def _readdir_liked_songs(self) -> List[str]:
         """Handle listing liked songs.
@@ -811,12 +787,20 @@ class YouTubeMusicFS(Operations):
         # Use the helper method to handle cache auto-refreshing
         self._auto_refresh_cache("/artists")
 
-        with self.cache.cached_data(
-            "/artists", self.client.get_library_artists
-        ) as artists:
-            return [
-                self.processor.sanitize_filename(artist["artist"]) for artist in artists
-            ]
+        # First check if we have cached artists
+        artists = self.cache.get("/artists")
+        if not artists:
+            # Fetch artists data outside of any locks
+            self.logger.debug("Fetching artists data from API")
+            artists = self.client.get_library_artists()
+            self.cache.set("/artists", artists)
+
+        # Process artist data outside of locks
+        artist_names = [
+            self.processor.sanitize_filename(artist["artist"]) for artist in artists
+        ]
+
+        return artist_names
 
     def _readdir_albums(self) -> List[str]:
         """Handle listing albums.
@@ -827,12 +811,20 @@ class YouTubeMusicFS(Operations):
         # Use the helper method to handle cache auto-refreshing
         self._auto_refresh_cache("/albums")
 
-        with self.cache.cached_data(
-            "/albums", self.client.get_library_albums
-        ) as albums:
-            return [
-                self.processor.sanitize_filename(album["title"]) for album in albums
-            ]
+        # First check if we have cached albums
+        albums = self.cache.get("/albums")
+        if not albums:
+            # Fetch albums data outside of any locks
+            self.logger.debug("Fetching albums data from API")
+            albums = self.client.get_library_albums()
+            self.cache.set("/albums", albums)
+
+        # Process album data outside of locks
+        album_names = [
+            self.processor.sanitize_filename(album["title"]) for album in albums
+        ]
+
+        return album_names
 
     def _readdir_artist_content(self, path: str) -> List[str]:
         """Handle listing contents of a specific artist.
@@ -861,15 +853,26 @@ class YouTubeMusicFS(Operations):
         # Extract artist ID from path
         artist_name = os.path.basename(path)
 
-        # Find artist ID
+        # Find artist ID - do this outside of locks
         artist_id = None
-        with self.cache.cached_data(
-            "/artists", self.client.get_library_artists, limit=10000
-        ) as artists:
-            for artist in artists:
-                if self.processor.sanitize_filename(artist["name"]) == artist_name:
-                    artist_id = artist["browseId"]
-                    break
+
+        # Fetch artists data first (check cache, then API if needed)
+        artists = self.cache.get("/artists")
+        if not artists:
+            self.logger.debug("Fetching artists data from API")
+            artists = self.client.get_library_artists(limit=10000)
+            self.cache.set("/artists", artists)
+
+        # Search for matching artist ID
+        for artist in artists:
+            if (
+                self.processor.sanitize_filename(
+                    artist.get("name") or artist.get("artist")
+                )
+                == artist_name
+            ):
+                artist_id = artist["browseId"]
+                break
 
         if not artist_id:
             self.logger.error(f"Could not find artist ID for {artist_name}")
@@ -886,45 +889,45 @@ class YouTubeMusicFS(Operations):
         artist_singles_cache_key = f"{path}/singles"
         artist_albums_cache_key = f"{path}/albums"
 
-        def fetch_artist_albums():
-            return self.client.get_artist_albums(artist_id, limit=50)
+        # Fetch artist albums outside of locks
+        artist_albums = self.cache.get(artist_albums_cache_key)
+        if not artist_albums:
+            self.logger.debug(f"Fetching albums for artist ID: {artist_id}")
+            artist_albums = self.client.get_artist_albums(artist_id, limit=50)
+            self.cache.set(artist_albums_cache_key, artist_albums)
 
-        # Fetch and cache the artist's albums
-        with self.cache.cached_data(
-            artist_albums_cache_key, fetch_artist_albums
-        ) as artist_albums:
-            # Process album information
-            if artist_albums:
-                # Create album directories
-                albums = []
-                for album in artist_albums:
-                    if album.get("title"):
-                        album_name = self.processor.sanitize_filename(album["title"])
-                        albums.append(album_name)
+        # Process album information outside of locks
+        if artist_albums:
+            # Create album directories
+            albums = []
+            for album in artist_albums:
+                if album.get("title"):
+                    album_name = self.processor.sanitize_filename(album["title"])
+                    albums.append(album_name)
 
-                # Cache album directories for album listing
-                album_dirs = list(set(albums))  # Remove duplicates
-                self.cache.set(f"{path}/albums_dirs", album_dirs)
+            # Cache album directories for album listing
+            album_dirs = list(set(albums))  # Remove duplicates
+            self.cache.set(f"{path}/albums_dirs", album_dirs)
 
-                # Mark this content as valid for future validation
-                self._cache_valid_dir(f"{path}/albums")
-                self._cache_valid_filenames(f"{path}/albums", album_dirs)
+            # Mark this content as valid for future validation
+            self._cache_valid_dir(f"{path}/albums")
+            self._cache_valid_filenames(f"{path}/albums", album_dirs)
 
-                # Cache directory listing with attributes for efficient getattr lookups
-                album_listing_with_attrs = {}
-                now = time.time()
-                for album_name in album_dirs:
-                    album_listing_with_attrs[album_name] = {
-                        "st_mode": stat.S_IFDIR | 0o755,
-                        "st_atime": now,
-                        "st_ctime": now,
-                        "st_mtime": now,
-                        "st_nlink": 2,
-                        "st_size": 0,
-                    }
-                self.cache.set_directory_listing_with_attrs(
-                    f"{path}/albums", album_listing_with_attrs
-                )
+            # Cache directory listing with attributes for efficient getattr lookups
+            album_listing_with_attrs = {}
+            now = time.time()
+            for album_name in album_dirs:
+                album_listing_with_attrs[album_name] = {
+                    "st_mode": stat.S_IFDIR | 0o755,
+                    "st_atime": now,
+                    "st_ctime": now,
+                    "st_mtime": now,
+                    "st_nlink": 2,
+                    "st_size": 0,
+                }
+            self.cache.set_directory_listing_with_attrs(
+                f"{path}/albums", album_listing_with_attrs
+            )
 
         # Cache the content list
         self.cache.set(f"{path}_content", artist_content)
@@ -968,32 +971,39 @@ class YouTubeMusicFS(Operations):
             artist_name = parts[2]
             album_name = parts[3]
 
-            # Find the artist ID
-            with self.cache.cached_data(
-                "/artists", self.client.get_library_artists, limit=10000
-            ) as artists:
-                artist_id = None
-                for artist in artists:
-                    if (
-                        self.processor.sanitize_filename(artist["artist"])
-                        == artist_name
-                    ):
-                        # Safely access ID fields with fallbacks
-                        artist_id = artist.get("artistId")
-                        if not artist_id:
-                            artist_id = artist.get("browseId")
-                        if not artist_id:
-                            artist_id = artist.get("id")
-                        break
+            # Find the artist ID - do this outside of locks
+            artist_id = None
+
+            # Get artists from cache or API
+            artists = self.cache.get("/artists")
+            if not artists:
+                self.logger.debug("Fetching artists data from API")
+                artists = self.client.get_library_artists(limit=10000)
+                self.cache.set("/artists", artists)
+
+            # Find matching artist
+            for artist in artists:
+                if self.processor.sanitize_filename(artist["artist"]) == artist_name:
+                    # Safely access ID fields with fallbacks
+                    artist_id = artist.get("artistId")
+                    if not artist_id:
+                        artist_id = artist.get("browseId")
+                    if not artist_id:
+                        artist_id = artist.get("id")
+                    break
 
             if not artist_id:
                 self.logger.error(f"Could not find artist ID for {artist_name}")
                 return []
 
-            # Get the artist's albums
+            # Get the artist's albums - outside of locks
             artist_cache_key = f"/artist/{artist_id}"
 
-            def fetch_artist_albums():
+            # Check if we have cached artist albums
+            artist_albums = self.cache.get(artist_cache_key)
+            if not artist_albums:
+                # Fetch artist data outside of locks
+                self.logger.debug(f"Fetching data for artist ID: {artist_id}")
                 artist_data = self.client.get_artist(artist_id)
                 artist_albums = []
 
@@ -1021,71 +1031,73 @@ class YouTubeMusicFS(Operations):
                             }
                         )
 
-                return artist_albums
+                # Cache the artist albums
+                self.cache.set(artist_cache_key, artist_albums)
 
-            with self.cache.cached_data(
-                artist_cache_key, fetch_artist_albums
-            ) as artist_albums:
-                # Find the album ID
-                for album in artist_albums:
-                    if self.processor.sanitize_filename(album["title"]) == album_name:
-                        album_id = album["browseId"]
-                        album_title = album["title"]
-                        break
+            # Find the album ID
+            for album in artist_albums:
+                if self.processor.sanitize_filename(album["title"]) == album_name:
+                    album_id = album["browseId"]
+                    album_title = album["title"]
+                    break
         else:
             # Regular album path
             album_name = path.split("/")[2]
 
-            # Find the album ID
-            with self.cache.cached_data(
-                "/albums", self.client.get_library_albums, limit=10000
-            ) as albums:
-                for album in albums:
-                    if self.processor.sanitize_filename(album["title"]) == album_name:
-                        album_id = album["browseId"]
-                        album_title = album["title"]
-                        break
+            # Find the album ID - do this outside of locks
+            # Get albums from cache or API
+            albums = self.cache.get("/albums")
+            if not albums:
+                self.logger.debug("Fetching albums data from API")
+                albums = self.client.get_library_albums(limit=10000)
+                self.cache.set("/albums", albums)
+
+            # Find matching album
+            for album in albums:
+                if self.processor.sanitize_filename(album["title"]) == album_name:
+                    album_id = album["browseId"]
+                    album_title = album["title"]
+                    break
 
         if not album_id:
             self.logger.error(f"Could not find album ID for album in path: {path}")
             return []
 
-        # Get the album tracks
+        # Get the album tracks - outside of locks
         album_cache_key = f"/album/{album_id}"
 
-        def fetch_album_tracks():
+        # Check if we have cached album tracks
+        album_tracks = self.cache.get(album_cache_key)
+        if not album_tracks:
+            # Fetch album tracks outside of locks
+            self.logger.debug(f"Fetching tracks for album ID: {album_id}")
             album_data = self.client.get_album(album_id)
-            return album_data.get("tracks", [])
+            album_tracks = album_data.get("tracks", [])
+            self.cache.set(album_cache_key, album_tracks)
 
-        with self.cache.cached_data(
-            album_cache_key, fetch_album_tracks
-        ) as album_tracks:
-            # Process tracks using the processor
-            processed_tracks, filenames = self.processor.process_tracks(album_tracks)
+        # Process tracks outside of locks
+        processed_tracks, filenames = self.processor.process_tracks(album_tracks)
 
-            # Add additional album-specific information
-            for track in processed_tracks:
-                # Override album title with the one from the path
-                if album_title:
-                    track["album"] = album_title
+        # Add additional album-specific information
+        for track in processed_tracks:
+            # Override album title with the one from the path
+            if album_title:
+                track["album"] = album_title
 
-                # For artist albums, try to find the album year if available
-                if is_artist_album and artist_albums and not track.get("year"):
-                    for album in artist_albums:
-                        if (
-                            self.processor.sanitize_filename(album["title"])
-                            == album_name
-                        ):
-                            track["year"] = album.get("year")
-                            break
+            # For artist albums, try to find the album year if available
+            if is_artist_album and artist_albums and not track.get("year"):
+                for album in artist_albums:
+                    if self.processor.sanitize_filename(album["title"]) == album_name:
+                        track["year"] = album.get("year")
+                        break
 
-            # Cache the processed track list for this album
-            self.cache.set(path, processed_tracks)
+        # Cache the processed track list for this album
+        self.cache.set(path, processed_tracks)
 
-            # Cache directory listing with attributes for efficient getattr lookups
-            self._cache_directory_listing_with_attrs(path, processed_tracks)
+        # Cache directory listing with attributes for efficient getattr lookups
+        self._cache_directory_listing_with_attrs(path, processed_tracks)
 
-            return filenames
+        return filenames
 
     def _readdir_search_categories(self) -> List[str]:
         """Handle listing search categories.

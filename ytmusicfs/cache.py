@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 from cachetools import LRUCache
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional, Callable, Dict, List
 import hashlib
@@ -576,44 +575,26 @@ class CacheManager:
         Returns:
             True if cache was refreshed, False otherwise
         """
+        # Check refresh time outside of any locks
         last_refresh_time = self.get_metadata(cache_key, "last_refresh_time")
         current_time = time.time()
 
-        if (
+        # Determine if refresh is needed outside of locks
+        refresh_needed = (
             last_refresh_time is None
             or (current_time - last_refresh_time) > refresh_interval
-        ):
+        )
+
+        if refresh_needed:
             self.logger.info(f"Auto-refreshing cache for {cache_key}")
+            # Call refresh method outside of locks
             refresh_method()
-            # Mark the cache as freshly refreshed
+
+            # Only update metadata after refresh completes
             self.set_metadata(cache_key, "last_refresh_time", current_time)
             return True
+
         return False
-
-    @contextmanager
-    def cached_data(self, cache_key: str, fetch_func: Callable, *args, **kwargs):
-        """Manage cache fetching and updating.
-
-        Args:
-            cache_key: The cache key to use.
-            fetch_func: Function to fetch data if not cached.
-            *args, **kwargs: Arguments for fetch_func.
-
-        Yields:
-            The cached or freshly fetched data.
-        """
-        # First try to get from cache without holding locks
-        data = self.get(cache_key)
-
-        if data is None:
-            # Cache miss - fetch data outside of any locks
-            self.logger.debug(f"Cache miss for {cache_key}, fetching data")
-            data = fetch_func(*args, **kwargs)
-
-            # Store in cache
-            self.set(cache_key, data)
-
-        yield data
 
     def refresh_cache_data(
         self,
@@ -661,24 +642,29 @@ class CacheManager:
             "success": False,
         }
 
-        # Get existing cached data
+        # Get existing cached data outside of locks
         existing_items = self.get(cache_key)
         existing_processed_items = None
         if process_items and processed_cache_key:
             existing_processed_items = self.get(processed_cache_key)
 
-        # Fetch recent data
+        # Fetch recent data outside of locks
         self.logger.debug(f"Fetching recent data for {cache_key}...")
-        if fetch_args:
-            recent_data = fetch_func(**fetch_args)
-        else:
-            recent_data = fetch_func()
+        recent_data = None
+        try:
+            if fetch_args:
+                recent_data = fetch_func(**fetch_args)
+            else:
+                recent_data = fetch_func()
+        except Exception as e:
+            self.logger.error(f"Error fetching data for {cache_key}: {e}")
+            return result
 
         if not recent_data:
             self.logger.info(f"No data found or error fetching data for {cache_key}")
             return result
 
-        # Extract nested items if needed
+        # Extract nested items if needed - do this outside of locks
         recent_items = recent_data
         if (
             extract_nested_items
