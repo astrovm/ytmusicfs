@@ -716,35 +716,33 @@ class YouTubeMusicFS(Operations):
             self._cache_directory_listing_with_attrs("/liked_songs", processed_tracks)
             return [track["filename"] for track in processed_tracks]
 
-        # If no processed tracks in cache, fetch and process raw data
-        with self.cache.cached_data(
-            "/liked_songs", self.client.get_liked_songs, limit=10000
-        ) as liked_songs:
-            # Process the raw liked songs data
-            self.logger.debug(f"Processing raw liked songs data: {type(liked_songs)}")
+        # If no processed tracks in cache, fetch data outside of any locks
+        self.logger.debug("Fetching liked songs data from API")
+        liked_songs = self.client.get_liked_songs(limit=10000)
 
-            # Handle both possible response formats from the API:
-            # 1. A dictionary with a 'tracks' key containing the list of tracks
-            # 2. A direct list of tracks
-            tracks_to_process = liked_songs
-            if isinstance(liked_songs, dict) and "tracks" in liked_songs:
-                tracks_to_process = liked_songs["tracks"]
+        # Process the raw liked songs data outside of any locks
+        self.logger.debug(f"Processing raw liked songs data: {type(liked_songs)}")
 
-            # Use the track processor to process tracks and create filenames
-            processed_tracks, filenames = self.processor.process_tracks(
-                tracks_to_process
-            )
+        # Handle both possible response formats from the API:
+        # 1. A dictionary with a 'tracks' key containing the list of tracks
+        # 2. A direct list of tracks
+        tracks_to_process = liked_songs
+        if isinstance(liked_songs, dict) and "tracks" in liked_songs:
+            tracks_to_process = liked_songs["tracks"]
 
-            # Cache the processed song list with filename mappings
-            self.logger.debug(
-                f"Caching {len(processed_tracks)} processed tracks for /liked_songs"
-            )
-            self.cache.set("/liked_songs_processed", processed_tracks)
+        # Use the track processor to process tracks and create filenames (outside of locks)
+        processed_tracks, filenames = self.processor.process_tracks(tracks_to_process)
 
-            # Cache directory listing with attributes for efficient getattr lookups
-            self._cache_directory_listing_with_attrs("/liked_songs", processed_tracks)
+        # Cache the processed song list with filename mappings
+        self.logger.debug(
+            f"Caching {len(processed_tracks)} processed tracks for /liked_songs"
+        )
+        self.cache.set("/liked_songs_processed", processed_tracks)
 
-            return filenames
+        # Cache directory listing with attributes for efficient getattr lookups
+        self._cache_directory_listing_with_attrs("/liked_songs", processed_tracks)
+
+        return filenames
 
     def _readdir_playlist_content(self, path: str) -> List[str]:
         """Handle listing contents of a specific playlist.
@@ -768,40 +766,41 @@ class YouTubeMusicFS(Operations):
         # Extract playlist ID from path
         playlist_name = path.split("/")[2]
 
-        # Locate the playlist ID using the sanitized name
+        # Locate the playlist ID using the sanitized name - do this outside of locks
         playlist_id = None
 
-        with self.cache.cached_data(
-            "/playlists", self.client.get_library_playlists, limit=10000
-        ) as playlists:
-            for playlist in playlists:
-                if self.processor.sanitize_filename(playlist["title"]) == playlist_name:
-                    playlist_id = playlist["playlistId"]
-                    break
+        # Fetch playlists data outside of locks
+        playlists = self.cache.get("/playlists")
+        if not playlists:
+            self.logger.debug("Fetching playlists data from API")
+            playlists = self.client.get_library_playlists(limit=10000)
+            self.cache.set("/playlists", playlists)
+
+        # Find matching playlist ID
+        for playlist in playlists:
+            if self.processor.sanitize_filename(playlist["title"]) == playlist_name:
+                playlist_id = playlist["playlistId"]
+                break
 
         if not playlist_id:
             self.logger.error(f"Could not find playlist ID for playlist: {path}")
             return []
 
-        # Define a function to fetch the playlist tracks
-        def fetch_playlist_tracks():
-            return self.client.get_playlist(playlist_id, limit=10000)
+        # Fetch the playlist tracks outside of locks
+        self.logger.debug(f"Fetching tracks for playlist ID: {playlist_id}")
+        playlist_data = self.client.get_playlist(playlist_id, limit=10000)
 
-        # Get the playlist tracks
-        with self.cache.cached_data(path, fetch_playlist_tracks) as playlist_data:
-            # Process the playlist tracks
-            tracks_to_process = playlist_data.get("tracks", [])
-            processed_tracks, filenames = self.processor.process_tracks(
-                tracks_to_process
-            )
+        # Process the playlist tracks outside of locks
+        tracks_to_process = playlist_data.get("tracks", [])
+        processed_tracks, filenames = self.processor.process_tracks(tracks_to_process)
 
-            # Cache the processed playlist tracks
-            self.cache.set(path, processed_tracks)
+        # Cache the processed playlist tracks
+        self.cache.set(path, processed_tracks)
 
-            # Cache directory listing with attributes for efficient getattr lookups
-            self._cache_directory_listing_with_attrs(path, processed_tracks)
+        # Cache directory listing with attributes for efficient getattr lookups
+        self._cache_directory_listing_with_attrs(path, processed_tracks)
 
-            return filenames
+        return filenames
 
     def _readdir_artists(self) -> List[str]:
         """Handle listing artists.

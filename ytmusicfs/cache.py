@@ -47,6 +47,12 @@ class CacheManager:
         self.cache_lock = threading.RLock()  # Lock for in-memory cache access
         self.db_lock = threading.RLock()  # Dedicated lock for database operations
 
+        # Initialize path-specific locks for frequently accessed directories
+        self.path_locks = {}
+        self.path_locks_lock = (
+            threading.RLock()
+        )  # Meta-lock for the path_locks dictionary
+
         # Initialize SQLite database
         self.db_path = self.cache_dir / "cache.db"
         self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
@@ -119,12 +125,19 @@ class CacheManager:
         Args:
             path: The path to mark as valid
         """
-        # Add to in-memory set
-        with self.cache_lock:
-            self.valid_paths.add(path)
+        # Get the path-specific lock
+        path_lock = self.get_path_lock(path)
 
-        # Also persist in the database
-        self.set(f"valid_dir:{path}", True)
+        # Add to in-memory set with minimal locking
+        add_to_cache = False
+        with self.cache_lock:
+            if path not in self.valid_paths:
+                self.valid_paths.add(path)
+                add_to_cache = True
+
+        # Only persist to database if needed (outside the cache_lock)
+        if add_to_cache:
+            self.set(f"valid_dir:{path}", True)
 
     def remove_valid_path(self, path: str) -> None:
         """Remove a path from the valid paths set.
@@ -158,7 +171,7 @@ class CacheManager:
         if path.startswith("/search/"):
             return True
 
-        # Check if in our precomputed valid paths set
+        # Check if in our precomputed valid paths set with minimal lock time
         with self.cache_lock:
             return path in self.valid_paths
 
@@ -246,17 +259,18 @@ class CacheManager:
         Returns:
             The cached data if valid, None otherwise
         """
-        # First check memory cache
+        # First check memory cache with minimal lock time
         with self.cache_lock:
-            if (
-                path in self.cache
-                and time.time() - self.cache[path]["time"] < self.cache_timeout
-            ):
-                self.logger.debug(f"Cache hit (memory) for {path}")
-                return self.cache[path]["data"]
+            if path in self.cache:
+                cache_entry = self.cache[path]
+                if time.time() - cache_entry["time"] < self.cache_timeout:
+                    self.logger.debug(f"Cache hit (memory) for {path}")
+                    return cache_entry["data"]
 
-        # Then check SQLite cache
+        # Then check SQLite cache (outside the cache_lock)
         key = self.path_to_key(path)
+        cache_data = None
+
         with self.db_lock:
             try:
                 self.cursor.execute(
@@ -265,16 +279,18 @@ class CacheManager:
                 row = self.cursor.fetchone()
                 if row:
                     cache_data = json.loads(row[0])
-                    if time.time() - cache_data["time"] < self.cache_timeout:
-                        self.logger.debug(f"Cache hit (disk) for {path}")
-                        # Also update memory cache
-                        with self.cache_lock:
-                            self.cache[path] = cache_data
-                        return cache_data["data"]
             except sqlite3.Error as e:
                 self.logger.debug(
                     f"Failed to read database cache for {path}: {e.__class__.__name__}: {e}"
                 )
+
+        # Process the SQLite result outside both locks
+        if cache_data and time.time() - cache_data["time"] < self.cache_timeout:
+            self.logger.debug(f"Cache hit (disk) for {path}")
+            # Update memory cache with minimal lock time
+            with self.cache_lock:
+                self.cache[path] = cache_data
+            return cache_data["data"]
 
         return None
 
@@ -285,16 +301,18 @@ class CacheManager:
             path: The path to cache
             data: The data to cache
         """
+        # Prepare cache entry outside of lock
         cache_entry = {"data": data, "time": time.time()}
 
-        # Update memory cache (with lock)
+        # Update memory cache with minimal lock time
         with self.cache_lock:
             self.cache[path] = cache_entry
 
-        # Update SQLite cache with a dedicated lock
+        # Prepare SQLite data outside of lock
         key = self.path_to_key(path)
         entry_str = json.dumps(cache_entry)
 
+        # Update SQLite cache with a dedicated lock
         with self.db_lock:
             try:
                 self.cursor.execute(
@@ -359,39 +377,41 @@ class CacheManager:
         matching_keys = []
         pattern_re = pattern.replace("*", ".*")
 
-        # First check memory cache
+        # First check memory cache with minimal lock time
+        memory_keys = []
         with self.cache_lock:
-            for key in self.cache.keys():
-                if re.match(f"^{pattern_re}$", key):
-                    matching_keys.append(key)
+            memory_keys = list(self.cache.keys())
+
+        # Process keys outside the lock
+        for key in memory_keys:
+            if re.match(f"^{pattern_re}$", key):
+                matching_keys.append(key)
 
         # Also check SQLite database for keys not in memory
+        db_keys = []
         with self.db_lock:
             try:
                 # Fetch all keys from the database
                 self.cursor.execute("SELECT key FROM cache_entries")
-                all_keys = [row[0] for row in self.cursor.fetchall()]
-
-                for key in all_keys:
-                    # For hashed keys, get the original path and check against pattern
-                    if self.is_hashed_key(key):
-                        original_path = self.get_original_path(key)
-                        if original_path and re.match(f"^{pattern_re}$", original_path):
-                            if original_path not in matching_keys:
-                                matching_keys.append(original_path)
-                    else:
-                        # For regular keys, convert back to path and check against pattern
-                        path = self.key_to_path(key)
-                        if (
-                            re.match(f"^{pattern_re}$", path)
-                            and path not in matching_keys
-                        ):
-                            matching_keys.append(path)
-
+                db_keys = [row[0] for row in self.cursor.fetchall()]
             except sqlite3.Error as e:
                 self.logger.warning(
                     f"Failed to get keys matching pattern {pattern}: {e.__class__.__name__}: {e}"
                 )
+
+        # Process database keys outside the lock
+        for key in db_keys:
+            # For hashed keys, get the original path and check against pattern
+            if self.is_hashed_key(key):
+                original_path = self.get_original_path(key)
+                if original_path and re.match(f"^{pattern_re}$", original_path):
+                    if original_path not in matching_keys:
+                        matching_keys.append(original_path)
+            else:
+                # For regular keys, convert back to path and check against pattern
+                path = self.key_to_path(key)
+                if re.match(f"^{pattern_re}$", path) and path not in matching_keys:
+                    matching_keys.append(path)
 
         self.logger.debug(
             f"Found {len(matching_keys)} keys matching pattern: {pattern}"
@@ -408,35 +428,43 @@ class CacheManager:
             Number of cache keys deleted
         """
         count = 0
-
-        # First handle memory cache
         pattern_re = pattern.replace("*", ".*")
+
+        # First identify keys to delete from memory cache (minimal lock time)
+        keys_to_delete = []
         with self.cache_lock:
             # Find all matching keys in memory cache
             keys_to_delete = [
                 k for k in self.cache.keys() if re.match(f"^{pattern_re}$", k)
             ]
-            for key in keys_to_delete:
-                del self.cache[key]
-                count += 1
+
+        # Then delete them with minimal lock time
+        if keys_to_delete:
+            with self.cache_lock:
+                for key in keys_to_delete:
+                    if key in self.cache:  # Check again in case it was removed
+                        del self.cache[key]
+                        count += 1
 
         # Get all matching paths - leveraging our updated get_keys_by_pattern method
+        # This is done outside of locks
         matching_paths = self.get_keys_by_pattern(pattern)
 
         # Delete each matching path from the database within a single transaction
-        with self.db_lock:
-            try:
-                for path in matching_paths:
-                    key = self.path_to_key(path)
-                    self.cursor.execute(
-                        "DELETE FROM cache_entries WHERE key = ?", (key,)
+        if matching_paths:
+            with self.db_lock:
+                try:
+                    for path in matching_paths:
+                        key = self.path_to_key(path)
+                        self.cursor.execute(
+                            "DELETE FROM cache_entries WHERE key = ?", (key,)
+                        )
+                        count += 1
+                    self.conn.commit()
+                except sqlite3.Error as e:
+                    self.logger.warning(
+                        f"Failed to delete pattern {pattern} from database: {e.__class__.__name__}: {e}"
                     )
-                    count += 1
-                self.conn.commit()
-            except sqlite3.Error as e:
-                self.logger.warning(
-                    f"Failed to delete pattern {pattern} from database: {e.__class__.__name__}: {e}"
-                )
 
         self.logger.debug(f"Deleted {count} cache entries matching pattern: {pattern}")
         return count
@@ -574,11 +602,17 @@ class CacheManager:
         Yields:
             The cached or freshly fetched data.
         """
+        # First try to get from cache without holding locks
         data = self.get(cache_key)
+
         if data is None:
+            # Cache miss - fetch data outside of any locks
             self.logger.debug(f"Cache miss for {cache_key}, fetching data")
             data = fetch_func(*args, **kwargs)
+
+            # Store in cache
             self.set(cache_key, data)
+
         yield data
 
     def refresh_cache_data(
@@ -963,7 +997,9 @@ class CacheManager:
         Returns:
             Dictionary mapping filenames to their attributes, or None if not cached
         """
-        return self.get(f"{path}_listing_with_attrs")
+        # Use path-specific lock for this operation
+        with self.get_path_lock(path):
+            return self.get(f"{path}_listing_with_attrs")
 
     def set_directory_listing_with_attrs(
         self, path: str, listing_with_attrs: Dict[str, Dict[str, Any]]
@@ -974,7 +1010,9 @@ class CacheManager:
             path: Directory path
             listing_with_attrs: Dictionary mapping filenames to their attributes
         """
-        self.set(f"{path}_listing_with_attrs", listing_with_attrs)
+        # Use path-specific lock for this operation
+        with self.get_path_lock(path):
+            self.set(f"{path}_listing_with_attrs", listing_with_attrs)
 
     def get_file_attrs_from_parent_dir(self, path: str) -> Optional[Dict[str, Any]]:
         """Try to get file attributes from the parent directory's cached listing.
@@ -1027,3 +1065,32 @@ class CacheManager:
         except Exception as e:
             # We can't log here as the logger might be gone
             pass
+
+    def get_path_lock(self, path: str) -> threading.RLock:
+        """Get a path-specific lock for a given path.
+
+        For frequently accessed directories, this provides finer-grained locking
+        than the global cache_lock.
+
+        Args:
+            path: The path to get a lock for
+
+        Returns:
+            A threading.RLock specific to this path or category of paths
+        """
+        # Get the top-level directory for this path
+        if path == "/":
+            top_level = "/"
+        else:
+            parts = path.split("/")
+            if len(parts) > 1 and parts[1]:
+                # Use first directory level as the lock category
+                top_level = f"/{parts[1]}"
+            else:
+                top_level = path
+
+        # Get or create a lock for this top-level path
+        with self.path_locks_lock:
+            if top_level not in self.path_locks:
+                self.path_locks[top_level] = threading.RLock()
+            return self.path_locks[top_level]
