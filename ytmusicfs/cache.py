@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import threading
 import time
 
@@ -41,6 +42,28 @@ class CacheManager:
             self.cache_dir = Path.home() / ".cache" / "ytmusicfs"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.logger.info(f"Using cache directory: {self.cache_dir}")
+
+        # Initialize SQLite database
+        self.db_path = self.cache_dir / "cache.db"
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self.conn.execute("PRAGMA journal_mode=WAL;")
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cache_entries (
+                key TEXT PRIMARY KEY,
+                entry TEXT
+            )
+        """
+        )
+        self.conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS hash_mappings (
+                hashed_key TEXT PRIMARY KEY,
+                original_path TEXT
+            )
+        """
+        )
+        self.conn.commit()
 
         self.cache = LRUCache(
             maxsize=maxsize
@@ -86,12 +109,7 @@ class CacheManager:
             Original filesystem path
         """
         # If this is a hashed key, try to look up the original path
-        if (
-            "_" in key
-            and len(key) > 30
-            and key[30:31] == "_"
-            and len(key) - key.rfind("_") == 33
-        ):
+        if self.is_hashed_key(key):
             original_path = self.get_original_path(key)
             if original_path:
                 return original_path
@@ -100,34 +118,6 @@ class CacheManager:
 
         # Regular key - just replace underscores with slashes
         return key.replace("_", "/")
-
-    def get_cache_file_path(self, path: str) -> Path:
-        """Get the filesystem path for a cache entry.
-
-        Args:
-            path: The cache path
-
-        Returns:
-            Path object pointing to the cache file
-        """
-        # Get the sanitized key
-        key = self.path_to_key(path)
-
-        # If this is a hashed key (for long paths), store it in a 'hashed' subdirectory
-        # to keep the cache organization clean
-        if (
-            "_" in key
-            and len(key) > 30
-            and key[30:31] == "_"
-            and len(key) - key.rfind("_") == 33
-        ):
-            # It's a hashed key - create in a hashed subdir for organization
-            hashed_dir = self.cache_dir / "hashed"
-            hashed_dir.mkdir(exist_ok=True)
-            return hashed_dir / f"{key}.json"
-
-        # Regular key
-        return self.cache_dir / f"{key}.json"
 
     def get(self, path: str) -> Optional[Any]:
         """Get data from cache if it's still valid.
@@ -147,26 +137,27 @@ class CacheManager:
                 self.logger.debug(f"Cache hit (memory) for {path}")
                 return self.cache[path]["data"]
 
-        # Then check disk cache
-        cache_file = self.get_cache_file_path(path)
-        if cache_file.exists():
-            try:
-                with open(cache_file, "r") as f:
-                    cache_data = json.load(f)
-
+        # Then check SQLite cache
+        key = self.path_to_key(path)
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT entry FROM cache_entries WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            if row:
+                cache_data = json.loads(row[0])
                 if time.time() - cache_data["time"] < self.cache_timeout:
                     self.logger.debug(f"Cache hit (disk) for {path}")
                     # Also update memory cache
                     with self.cache_lock:
                         self.cache[path] = cache_data
                     return cache_data["data"]
-            except Exception as e:
-                self.logger.debug(f"Failed to read disk cache for {path}: {e}")
+        except Exception as e:
+            self.logger.debug(f"Failed to read database cache for {path}: {e}")
 
         return None
 
     def set(self, path: str, data: Any) -> None:
-        """Set data in both memory and disk cache.
+        """Set data in both memory and SQLite cache.
 
         Args:
             path: The path to cache
@@ -178,13 +169,21 @@ class CacheManager:
         with self.cache_lock:
             self.cache[path] = cache_entry
 
-        # Update disk cache
+        # Update SQLite cache
         try:
-            cache_file = self.get_cache_file_path(path)
-            with open(cache_file, "w") as f:
-                json.dump(cache_entry, f)
+            key = self.path_to_key(path)
+            entry_str = json.dumps(cache_entry)
+            cursor = self.conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO cache_entries (key, entry)
+                VALUES (?, ?)
+                """,
+                (key, entry_str),
+            )
+            self.conn.commit()
         except Exception as e:
-            self.logger.warning(f"Failed to write disk cache for {path}: {e}")
+            self.logger.warning(f"Failed to write database cache for {path}: {e}")
 
     def delete(self, path: str) -> None:
         """Delete data from cache.
@@ -196,13 +195,76 @@ class CacheManager:
             if path in self.cache:
                 del self.cache[path]
 
-        # Also try to delete from disk cache
+        # Also delete from SQLite cache
         try:
-            cache_file = self.get_cache_file_path(path)
-            if cache_file.exists():
-                cache_file.unlink()
+            key = self.path_to_key(path)
+            cursor = self.conn.cursor()
+            cursor.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
+            self.conn.commit()
         except Exception as e:
-            self.logger.warning(f"Failed to delete disk cache for {path}: {e}")
+            self.logger.warning(f"Failed to delete from database cache for {path}: {e}")
+
+    def is_hashed_key(self, key: str) -> bool:
+        """Check if a key is a hashed key.
+
+        Args:
+            key: The key to check
+
+        Returns:
+            True if the key is a hashed key, False otherwise
+        """
+        return (
+            "_" in key
+            and len(key) > 30
+            and key[30:31] == "_"
+            and len(key) - key.rfind("_") == 33
+        )
+
+    def get_keys_by_pattern(self, pattern: str) -> List[str]:
+        """Get all cache keys matching a pattern.
+
+        Args:
+            pattern: The pattern to match, e.g. "valid_dir:/search/*"
+
+        Returns:
+            List of matching cache keys
+        """
+        matching_keys = []
+        pattern_re = pattern.replace("*", ".*")
+
+        # First check memory cache
+        with self.cache_lock:
+            for key in self.cache.keys():
+                if re.match(f"^{pattern_re}$", key):
+                    matching_keys.append(key)
+
+        # Also check SQLite database for keys not in memory
+        try:
+            # Fetch all keys from the database
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT key FROM cache_entries")
+            all_keys = [row[0] for row in cursor.fetchall()]
+
+            for key in all_keys:
+                # For hashed keys, get the original path and check against pattern
+                if self.is_hashed_key(key):
+                    original_path = self.get_original_path(key)
+                    if original_path and re.match(f"^{pattern_re}$", original_path):
+                        if original_path not in matching_keys:
+                            matching_keys.append(original_path)
+                else:
+                    # For regular keys, convert back to path and check against pattern
+                    path = self.key_to_path(key)
+                    if re.match(f"^{pattern_re}$", path) and path not in matching_keys:
+                        matching_keys.append(path)
+
+        except Exception as e:
+            self.logger.warning(f"Failed to get keys matching pattern {pattern}: {e}")
+
+        self.logger.debug(
+            f"Found {len(matching_keys)} keys matching pattern: {pattern}"
+        )
+        return matching_keys
 
     def delete_pattern(self, pattern: str) -> int:
         """Delete all cache keys matching a pattern.
@@ -226,87 +288,22 @@ class CacheManager:
                 del self.cache[key]
                 count += 1
 
-        # Now handle disk cache
-        try:
-            prefix = pattern.replace("*", "")
-            base_key = self.path_to_key(prefix)
+        # Get all matching paths - leveraging our updated get_keys_by_pattern method
+        matching_paths = self.get_keys_by_pattern(pattern)
 
-            # Find all matching files in the cache directory
-            for cache_file in self.cache_dir.glob(f"{base_key}*.json"):
-                if cache_file.exists():
-                    cache_file.unlink()
-                    count += 1
-
-            # Also check the hashed directory if it exists
-            hashed_dir = self.cache_dir / "hashed"
-            if hashed_dir.exists():
-                for cache_file in hashed_dir.glob(f"{base_key}*.json"):
-                    if cache_file.exists():
-                        cache_file.unlink()
-                        count += 1
-
-        except Exception as e:
-            self.logger.warning(
-                f"Failed to delete pattern {pattern} from disk cache: {e}"
-            )
+        # Delete each matching path from the database
+        for path in matching_paths:
+            try:
+                key = self.path_to_key(path)
+                cursor = self.conn.cursor()
+                cursor.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
+                self.conn.commit()
+                count += 1
+            except Exception as e:
+                self.logger.warning(f"Failed to delete {path} from database: {e}")
 
         self.logger.debug(f"Deleted {count} cache entries matching pattern: {pattern}")
         return count
-
-    def get_keys_by_pattern(self, pattern: str) -> List[str]:
-        """Get all cache keys matching a pattern.
-
-        Args:
-            pattern: The pattern to match, e.g. "valid_dir:/search/*"
-
-        Returns:
-            List of matching cache keys
-        """
-        matching_keys = []
-        pattern_re = pattern.replace("*", ".*")
-
-        # First check memory cache
-        with self.cache_lock:
-            for key in self.cache.keys():
-                if re.match(f"^{pattern_re}$", key):
-                    matching_keys.append(key)
-
-        # Also check disk cache for keys not in memory
-        try:
-            prefix = pattern.replace("*", "")
-            base_key = self.path_to_key(prefix)
-
-            # Find all matching files in the cache directory
-            for cache_file in self.cache_dir.glob(f"{base_key}*.json"):
-                if cache_file.exists():
-                    # Convert filename back to key
-                    filename = cache_file.stem  # Get filename without extension
-                    key = self.key_to_path(filename)
-                    if re.match(f"^{pattern_re}$", key) and key not in matching_keys:
-                        matching_keys.append(key)
-
-            # Also check the hashed directory if it exists
-            hashed_dir = self.cache_dir / "hashed"
-            if hashed_dir.exists():
-                for cache_file in hashed_dir.glob(f"{base_key}*.json"):
-                    if cache_file.exists():
-                        # Need to get the original path from the hash mapping
-                        filename = cache_file.stem
-                        original_path = self.get_original_path(filename)
-                        if (
-                            original_path
-                            and re.match(f"^{pattern_re}$", original_path)
-                            and original_path not in matching_keys
-                        ):
-                            matching_keys.append(original_path)
-
-        except Exception as e:
-            self.logger.warning(f"Failed to get keys matching pattern {pattern}: {e}")
-
-        self.logger.debug(
-            f"Found {len(matching_keys)} keys matching pattern: {pattern}"
-        )
-        return matching_keys
 
     def get_metadata(self, cache_key: str, metadata_key: str) -> Any:
         """Get metadata associated with a cache key.
@@ -709,23 +706,16 @@ class CacheManager:
                     self.hash_to_path = {}
                 self.hash_to_path[hashed_key] = original_path
 
-            # Also try to store on disk for persistence across restarts
-            hash_map_file = self.cache_dir / "hash_mappings.json"
-
-            # Load existing mappings if file exists
-            mappings = {}
-            if hash_map_file.exists():
-                try:
-                    with open(hash_map_file, "r") as f:
-                        mappings = json.load(f)
-                except json.JSONDecodeError:
-                    # If file is corrupted, start fresh
-                    mappings = {}
-
-            # Add the new mapping and save
-            mappings[hashed_key] = original_path
-            with open(hash_map_file, "w") as f:
-                json.dump(mappings, f)
+            # Store in SQLite database
+            cursor = self.conn.cursor()
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO hash_mappings (hashed_key, original_path)
+                VALUES (?, ?)
+                """,
+                (hashed_key, original_path),
+            )
+            self.conn.commit()
 
         except Exception as e:
             self.logger.warning(f"Failed to store hash mapping: {e}")
@@ -744,19 +734,22 @@ class CacheManager:
             if hasattr(self, "hash_to_path") and hashed_key in self.hash_to_path:
                 return self.hash_to_path[hashed_key]
 
-        # Then check on-disk storage
+        # Then check in SQLite database
         try:
-            hash_map_file = self.cache_dir / "hash_mappings.json"
-            if hash_map_file.exists():
-                with open(hash_map_file, "r") as f:
-                    mappings = json.load(f)
-                    if hashed_key in mappings:
-                        # Also update in-memory cache for next time
-                        with self.cache_lock:
-                            if not hasattr(self, "hash_to_path"):
-                                self.hash_to_path = {}
-                            self.hash_to_path[hashed_key] = mappings[hashed_key]
-                        return mappings[hashed_key]
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT original_path FROM hash_mappings WHERE hashed_key = ?",
+                (hashed_key,),
+            )
+            row = cursor.fetchone()
+            if row:
+                original_path = row[0]
+                # Also update in-memory cache for next time
+                with self.cache_lock:
+                    if not hasattr(self, "hash_to_path"):
+                        self.hash_to_path = {}
+                    self.hash_to_path[hashed_key] = original_path
+                return original_path
         except Exception as e:
             self.logger.warning(f"Failed to retrieve hash mapping: {e}")
 
