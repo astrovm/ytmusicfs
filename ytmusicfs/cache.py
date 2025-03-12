@@ -56,7 +56,7 @@ class CacheManager:
             Sanitized cache key suitable for filesystem storage
         """
         # First replace slashes with underscores for basic path conversion
-        key = path.replace('/', '_')
+        key = path.replace("/", "_")
 
         # If the key is too long (> 200 chars), hash it to avoid filename length issues
         # Keep a prefix to make it somewhat readable/debuggable
@@ -65,7 +65,7 @@ class CacheManager:
             # Get the first 30 chars for readability
             prefix = key[:30]
             # Hash the full path for uniqueness
-            path_hash = hashlib.md5(path.encode('utf-8')).hexdigest()
+            path_hash = hashlib.md5(path.encode("utf-8")).hexdigest()
             # Create a new key with prefix and hash
             key = f"{prefix}_{path_hash}"
 
@@ -84,7 +84,12 @@ class CacheManager:
             Original filesystem path
         """
         # If this is a hashed key, try to look up the original path
-        if '_' in key and len(key) > 30 and key[30:31] == '_' and len(key) - key.rfind('_') == 33:
+        if (
+            "_" in key
+            and len(key) > 30
+            and key[30:31] == "_"
+            and len(key) - key.rfind("_") == 33
+        ):
             original_path = self.get_original_path(key)
             if original_path:
                 return original_path
@@ -92,7 +97,7 @@ class CacheManager:
             return key  # Return as is if we can't reconstruct the original
 
         # Regular key - just replace underscores with slashes
-        return key.replace('_', '/')
+        return key.replace("_", "/")
 
     def get_cache_file_path(self, path: str) -> Path:
         """Get the filesystem path for a cache entry.
@@ -108,7 +113,12 @@ class CacheManager:
 
         # If this is a hashed key (for long paths), store it in a 'hashed' subdirectory
         # to keep the cache organization clean
-        if '_' in key and len(key) > 30 and key[30:31] == '_' and len(key) - key.rfind('_') == 33:
+        if (
+            "_" in key
+            and len(key) > 30
+            and key[30:31] == "_"
+            and len(key) - key.rfind("_") == 33
+        ):
             # It's a hashed key - create in a hashed subdir for organization
             hashed_dir = self.cache_dir / "hashed"
             hashed_dir.mkdir(exist_ok=True)
@@ -192,6 +202,57 @@ class CacheManager:
         except Exception as e:
             self.logger.warning(f"Failed to delete disk cache for {path}: {e}")
 
+    def delete_pattern(self, pattern: str) -> int:
+        """Delete all cache entries matching a pattern.
+
+        Args:
+            pattern: The pattern to match (e.g., "/search/*")
+
+        Returns:
+            Number of entries deleted
+        """
+        count = 0
+
+        # First handle memory cache
+        with self.cache_lock:
+            # Create a list of keys to delete (can't modify dict during iteration)
+            keys_to_delete = []
+            for key in self.cache.keys():
+                if key.startswith(pattern.replace("*", "")):
+                    keys_to_delete.append(key)
+
+            # Delete the keys
+            for key in keys_to_delete:
+                del self.cache[key]
+                count += 1
+
+        # Now handle disk cache
+        try:
+            prefix = pattern.replace("*", "")
+            base_key = self.path_to_key(prefix)
+
+            # Find all matching files in the cache directory
+            for cache_file in self.cache_dir.glob(f"{base_key}*.json"):
+                if cache_file.exists():
+                    cache_file.unlink()
+                    count += 1
+
+            # Also check the hashed directory if it exists
+            hashed_dir = self.cache_dir / "hashed"
+            if hashed_dir.exists():
+                for cache_file in hashed_dir.glob(f"{base_key}*.json"):
+                    if cache_file.exists():
+                        cache_file.unlink()
+                        count += 1
+
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to delete pattern {pattern} from disk cache: {e}"
+            )
+
+        self.logger.debug(f"Deleted {count} cache entries matching pattern: {pattern}")
+        return count
+
     def get_metadata(self, cache_key: str, metadata_key: str) -> Any:
         """Get metadata associated with a cache key.
 
@@ -219,7 +280,9 @@ class CacheManager:
         metadata[metadata_key] = value
         self.set(metadata_cache_key, metadata)
 
-    def auto_refresh_cache(self, cache_key: str, refresh_method: Callable, refresh_interval: int = 600) -> bool:
+    def auto_refresh_cache(
+        self, cache_key: str, refresh_method: Callable, refresh_interval: int = 600
+    ) -> bool:
         """Automatically refresh the cache if the last refresh time exceeds the interval.
 
         Args:
@@ -233,7 +296,10 @@ class CacheManager:
         last_refresh_time = self.get_metadata(cache_key, "last_refresh_time")
         current_time = time.time()
 
-        if last_refresh_time is None or (current_time - last_refresh_time) > refresh_interval:
+        if (
+            last_refresh_time is None
+            or (current_time - last_refresh_time) > refresh_interval
+        ):
             self.logger.info(f"Auto-refreshing cache for {cache_key}")
             refresh_method()
             # Mark the cache as freshly refreshed
@@ -303,7 +369,7 @@ class CacheManager:
             "new_items": 0,
             "updated_items": 0,
             "total_items": 0,
-            "success": False
+            "success": False,
         }
 
         # Get existing cached data
@@ -325,7 +391,11 @@ class CacheManager:
 
         # Extract nested items if needed
         recent_items = recent_data
-        if extract_nested_items and isinstance(recent_data, dict) and extract_nested_items in recent_data:
+        if (
+            extract_nested_items
+            and isinstance(recent_data, dict)
+            and extract_nested_items in recent_data
+        ):
             recent_items = recent_data[extract_nested_items]
 
         # Handle case where we have existing items
@@ -340,7 +410,11 @@ class CacheManager:
 
             # Extract nested items from existing data if needed
             existing_nested_items = existing_items
-            if extract_nested_items and isinstance(existing_items, dict) and extract_nested_items in existing_items:
+            if (
+                extract_nested_items
+                and isinstance(existing_items, dict)
+                and extract_nested_items in existing_items
+            ):
                 existing_nested_items = existing_items[extract_nested_items]
             else:
                 existing_nested_items = existing_items
@@ -373,7 +447,12 @@ class CacheManager:
                 if item_id not in existing_ids:
                     # New item
                     new_items.append(item)
-                elif check_updates and update_field and item.get(update_field) != existing_item_map[item_id].get(update_field):
+                elif (
+                    check_updates
+                    and update_field
+                    and item.get(update_field)
+                    != existing_item_map[item_id].get(update_field)
+                ):
                     # Updated item
                     updated_items.append(item)
 
@@ -384,7 +463,9 @@ class CacheManager:
                 if updated_items:
                     action_text.append(f"{len(updated_items)} updated")
 
-                self.logger.info(f"Found {' and '.join(action_text)} items to add to {cache_key} cache")
+                self.logger.info(
+                    f"Found {' and '.join(action_text)} items to add to {cache_key} cache"
+                )
 
                 # Get list of updated and new item IDs
                 changed_ids = set()
@@ -398,15 +479,24 @@ class CacheManager:
                 if extract_nested_items and isinstance(existing_items, dict):
                     # Filter out changed items
                     unchanged_items = [
-                        item for item in existing_nested_items
-                        if not any(item.get(id_field) in changed_ids for id_field in id_fields if item.get(id_field))
+                        item
+                        for item in existing_nested_items
+                        if not any(
+                            item.get(id_field) in changed_ids
+                            for id_field in id_fields
+                            if item.get(id_field)
+                        )
                     ]
 
                     # Determine merge order based on prepend_new_items
                     if prepend_new_items:
-                        merged_nested_items = new_items + updated_items + unchanged_items
+                        merged_nested_items = (
+                            new_items + updated_items + unchanged_items
+                        )
                     else:
-                        merged_nested_items = unchanged_items + new_items + updated_items
+                        merged_nested_items = (
+                            unchanged_items + new_items + updated_items
+                        )
 
                     # Update the nested structure
                     existing_items[extract_nested_items] = merged_nested_items
@@ -414,8 +504,13 @@ class CacheManager:
                 else:
                     # Filter out changed items
                     unchanged_items = [
-                        item for item in existing_nested_items
-                        if not any(item.get(id_field) in changed_ids for id_field in id_fields if item.get(id_field))
+                        item
+                        for item in existing_nested_items
+                        if not any(
+                            item.get(id_field) in changed_ids
+                            for id_field in id_fields
+                            if item.get(id_field)
+                        )
                     ]
 
                     # Determine merge order based on prepend_new_items
@@ -435,30 +530,45 @@ class CacheManager:
                     if new_items or updated_items:
                         # Process just the new/updated items
                         items_to_process = new_items + updated_items
-                        new_processed_items, _ = processor.process_tracks(items_to_process)
+                        new_processed_items, _ = processor.process_tracks(
+                            items_to_process
+                        )
 
                         if existing_processed_items:
                             # Filter out processed items corresponding to changed items
                             unchanged_processed_items = [
-                                item for item in existing_processed_items
-                                if not any(item.get(id_field) in changed_ids for id_field in id_fields if item.get(id_field))
+                                item
+                                for item in existing_processed_items
+                                if not any(
+                                    item.get(id_field) in changed_ids
+                                    for id_field in id_fields
+                                    if item.get(id_field)
+                                )
                             ]
 
                             # Determine merge order based on prepend_new_items
                             if prepend_new_items:
-                                merged_processed_items = new_processed_items + unchanged_processed_items
+                                merged_processed_items = (
+                                    new_processed_items + unchanged_processed_items
+                                )
                             else:
-                                merged_processed_items = unchanged_processed_items + new_processed_items
+                                merged_processed_items = (
+                                    unchanged_processed_items + new_processed_items
+                                )
 
                             self.set(processed_cache_key, merged_processed_items)
-                            self.logger.info(f"Updated processed cache with {len(merged_processed_items)} total items")
+                            self.logger.info(
+                                f"Updated processed cache with {len(merged_processed_items)} total items"
+                            )
                         else:
                             self.logger.warning(
                                 f"Existing processed items not found at {processed_cache_key}, skipping update"
                             )
 
                 # Clear related caches if needed
-                if clear_related_cache and (related_cache_prefix or related_cache_suffix):
+                if clear_related_cache and (
+                    related_cache_prefix or related_cache_suffix
+                ):
                     for item in updated_items:
                         for id_field in id_fields:
                             item_id = item.get(id_field)
@@ -472,16 +582,24 @@ class CacheManager:
                                     self.delete(related_key)
                                 break
 
-                result.update({
-                    "new_items": len(new_items),
-                    "updated_items": len(updated_items),
-                    "total_items": len(merged_nested_items if extract_nested_items else merged_items),
-                    "success": True
-                })
+                result.update(
+                    {
+                        "new_items": len(new_items),
+                        "updated_items": len(updated_items),
+                        "total_items": len(
+                            merged_nested_items
+                            if extract_nested_items
+                            else merged_items
+                        ),
+                        "success": True,
+                    }
+                )
                 return result
             else:
                 self.logger.info(f"No changes detected for {cache_key} cache")
-                result.update({"success": True, "total_items": len(existing_nested_items)})
+                result.update(
+                    {"success": True, "total_items": len(existing_nested_items)}
+                )
                 return result
         else:
             self.logger.info(f"No existing {cache_key} cache found, will create cache")
@@ -489,21 +607,36 @@ class CacheManager:
             self.set(cache_key, recent_data)
 
             # Process and cache items if needed
-            if process_items and processed_cache_key and recent_items and processor is not None:
+            if (
+                process_items
+                and processed_cache_key
+                and recent_items
+                and processor is not None
+            ):
                 processed_items, _ = processor.process_tracks(recent_items)
                 self.set(processed_cache_key, processed_items)
-                self.logger.info(f"Created processed cache with {len(processed_items)} items")
-                result.update({
-                    "new_items": len(recent_items),
-                    "total_items": len(recent_items),
-                    "success": True
-                })
+                self.logger.info(
+                    f"Created processed cache with {len(processed_items)} items"
+                )
+                result.update(
+                    {
+                        "new_items": len(recent_items),
+                        "total_items": len(recent_items),
+                        "success": True,
+                    }
+                )
             else:
-                result.update({
-                    "new_items": len(recent_items) if isinstance(recent_items, list) else 1,
-                    "total_items": len(recent_items) if isinstance(recent_items, list) else 1,
-                    "success": True
-                })
+                result.update(
+                    {
+                        "new_items": (
+                            len(recent_items) if isinstance(recent_items, list) else 1
+                        ),
+                        "total_items": (
+                            len(recent_items) if isinstance(recent_items, list) else 1
+                        ),
+                        "success": True,
+                    }
+                )
 
             return result
 
@@ -517,7 +650,7 @@ class CacheManager:
         try:
             # Store in memory for quick lookups
             with self.cache_lock:
-                if not hasattr(self, 'hash_to_path'):
+                if not hasattr(self, "hash_to_path"):
                     self.hash_to_path = {}
                 self.hash_to_path[hashed_key] = original_path
 
@@ -553,7 +686,7 @@ class CacheManager:
         """
         # First check in-memory cache
         with self.cache_lock:
-            if hasattr(self, 'hash_to_path') and hashed_key in self.hash_to_path:
+            if hasattr(self, "hash_to_path") and hashed_key in self.hash_to_path:
                 return self.hash_to_path[hashed_key]
 
         # Then check on-disk storage
@@ -565,7 +698,7 @@ class CacheManager:
                     if hashed_key in mappings:
                         # Also update in-memory cache for next time
                         with self.cache_lock:
-                            if not hasattr(self, 'hash_to_path'):
+                            if not hasattr(self, "hash_to_path"):
                                 self.hash_to_path = {}
                             self.hash_to_path[hashed_key] = mappings[hashed_key]
                         return mappings[hashed_key]

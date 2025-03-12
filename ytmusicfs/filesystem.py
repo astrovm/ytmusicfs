@@ -187,7 +187,9 @@ class YouTubeMusicFS(Operations):
 
         # Debounce mechanism for repeated requests
         self.last_access_time = {}  # {operation_path: last_access_time}
-        self.last_access_lock = threading.RLock()  # Lock for last_access_time operations
+        self.last_access_lock = (
+            threading.RLock()
+        )  # Lock for last_access_time operations
         self.last_access_results = {}  # {operation_path: cached_result}
 
         # Thread-related objects
@@ -201,7 +203,16 @@ class YouTubeMusicFS(Operations):
 
         # Register exact path handlers
         self.router.register(
-            "/", lambda: [".", "..", "playlists", "liked_songs", "artists", "albums"]
+            "/",
+            lambda: [
+                ".",
+                "..",
+                "playlists",
+                "liked_songs",
+                "artists",
+                "albums",
+                "search",
+            ],
         )
         self.router.register(
             "/playlists", lambda: [".", ".."] + self._readdir_playlists()
@@ -211,6 +222,9 @@ class YouTubeMusicFS(Operations):
         )
         self.router.register("/artists", lambda: [".", ".."] + self._readdir_artists())
         self.router.register("/albums", lambda: [".", ".."] + self._readdir_albums())
+        self.router.register(
+            "/search", lambda: [".", ".."] + self._readdir_search_categories()
+        )
 
         # Register dynamic handlers with wildcard capture
         self.router.register_dynamic(
@@ -228,6 +242,41 @@ class YouTubeMusicFS(Operations):
         self.router.register_dynamic(
             "/albums/*",
             lambda path, *args: [".", ".."] + self._readdir_album_content(path),
+        )
+        # Search routes - focused on library and catalog paths only
+        self.router.register_dynamic(
+            "/search/*",
+            lambda path, *args: [".", ".."] + self._readdir_search_results(path, *args),
+        )
+        self.router.register_dynamic(
+            "/search/library/*",
+            lambda path, *args: [".", ".."]
+            + self._readdir_search_results(path, *args, scope="library"),
+        )
+        self.router.register_dynamic(
+            "/search/catalog/*",
+            lambda path, *args: [".", ".."]
+            + self._readdir_search_results(path, *args, scope=None),
+        )
+        self.router.register_dynamic(
+            "/search/library/*/*",
+            lambda path, *args: [".", ".."]
+            + self._readdir_search_item_content(path, *args, scope="library"),
+        )
+        self.router.register_dynamic(
+            "/search/catalog/*/*",
+            lambda path, *args: [".", ".."]
+            + self._readdir_search_item_content(path, *args, scope=None),
+        )
+        self.router.register_dynamic(
+            "/search/library/*/*/*",
+            lambda path, *args: [".", ".."]
+            + self._readdir_search_item_content(path, *args, scope="library"),
+        )
+        self.router.register_dynamic(
+            "/search/catalog/*/*/*",
+            lambda path, *args: [".", ".."]
+            + self._readdir_search_item_content(path, *args, scope=None),
         )
 
         # Preload cache if requested
@@ -250,6 +299,7 @@ class YouTubeMusicFS(Operations):
         futures.append(self.thread_pool.submit(self._readdir_liked_songs))
         futures.append(self.thread_pool.submit(self._readdir_artists))
         futures.append(self.thread_pool.submit(self._readdir_albums))
+        futures.append(self.thread_pool.submit(self._readdir_search_categories))
 
         # Wait for all preload tasks to complete
         for future in futures:
@@ -275,7 +325,7 @@ class YouTubeMusicFS(Operations):
         self._cache_valid_dir("/")
 
         # Mark main category directories as valid
-        main_dirs = ["/playlists", "/liked_songs", "/artists", "/albums"]
+        main_dirs = ["/playlists", "/liked_songs", "/artists", "/albums", "/search"]
         for dir_path in main_dirs:
             self._cache_valid_dir(dir_path)
 
@@ -345,7 +395,19 @@ class YouTubeMusicFS(Operations):
             Boolean indicating if the path might be valid
         """
         # Root and main category directories are always valid
-        if path == "/" or path in ["/playlists", "/liked_songs", "/artists", "/albums"]:
+        if path == "/" or path in [
+            "/playlists",
+            "/liked_songs",
+            "/artists",
+            "/albums",
+            "/search",
+            "/search/library",
+            "/search/catalog",
+        ]:
+            return True
+
+        # Search paths are always initially valid for exploration
+        if path.startswith("/search/"):
             return True
 
         # Extract directory and filename
@@ -525,7 +587,9 @@ class YouTubeMusicFS(Operations):
             if current_time - last_time < self.request_cooldown:
                 # Request is within cooldown period, return cached result if available
                 if operation_key in self.last_access_results:
-                    self.logger.debug(f"Using cached result for {operation_key} (within cooldown: {current_time - last_time:.3f}s)")
+                    self.logger.debug(
+                        f"Using cached result for {operation_key} (within cooldown: {current_time - last_time:.3f}s)"
+                    )
                     return self.last_access_results[operation_key]
 
             # Update the last access time for this operation
@@ -979,6 +1043,403 @@ class YouTubeMusicFS(Operations):
 
             return filenames
 
+    def _readdir_search_categories(self) -> List[str]:
+        """Handle listing search categories.
+
+        Returns:
+            List of search categories
+        """
+        # Return only the two scope options - library and catalog
+        categories = [
+            "library",  # Search within your library
+            "catalog",  # Search the entire YouTube Music catalog
+        ]
+
+        return categories
+
+    def _readdir_search_results(
+        self, path: str, *args, scope: Optional[str] = None
+    ) -> List[str]:
+        """Handle listing search results for a query.
+
+        Args:
+            path: Search query path
+            args: Additional arguments from wildcard match
+            scope: Search scope (None for entire catalog, 'library' for just library)
+
+        Returns:
+            List of search result filenames
+        """
+        # Extract the search query from the path
+        parts = path.split("/")
+        if len(parts) < 3:
+            self.logger.error(f"Invalid search path: {path}")
+            return []
+
+        # Handle library and catalog directory cases
+        if parts[2] == "library" or parts[2] == "catalog":
+            # These are special scope directories, return categories to place searches in
+            if len(parts) == 3:  # /search/library or /search/catalog
+                return ["songs", "videos", "albums", "artists", "playlists"]
+
+            # If we're in /search/library/songs or /search/catalog/songs, etc.
+            if len(parts) == 4:
+                category = parts[3]
+                categories = ["songs", "videos", "albums", "artists", "playlists"]
+                if category in categories:
+                    # This is a category folder, user should create search query inside
+                    return []
+
+            # If we're in /search/library/songs/query or /search/catalog/songs/query
+            if len(parts) >= 5:
+                category = parts[3]
+                search_query = parts[4]
+
+                # Set scope based on which path we're in
+                scope = "library" if parts[2] == "library" else None
+
+                # Set filter type based on category - keep plural form
+                filter_type = None
+                if category in ["songs", "videos", "albums", "artists", "playlists"]:
+                    # Use the category directly without changing to singular
+                    filter_type = category  # Keep plural form as expected by the API
+
+            # Generate the appropriate cache key based on scope and filter
+            scope_suffix = f"_library" if scope == "library" else ""
+            filter_suffix = f"_{filter_type}" if filter_type else ""
+            cache_key = f"/search/{search_query}{scope_suffix}{filter_suffix}"
+            search_results = self.cache.get(cache_key)
+
+            if not search_results:
+                # Perform the search and cache results
+                search_results = self._perform_search(search_query, scope, filter_type)
+                self.cache.set(cache_key, search_results)
+
+            # If this is a specific filter type, we only want to show that type of result
+            if filter_type:
+                filtered_results = {}
+                # Map API filter to our category names
+                category_map = {
+                    "songs": "songs",
+                    "videos": "videos",
+                    "albums": "albums",
+                    "artists": "artists",
+                    "playlists": "playlists",
+                }
+                category_key = category_map.get(filter_type, filter_type)
+                filtered_results[category_key] = search_results.get(category_key, [])
+                result_items = self._process_search_result_items(
+                    filtered_results, category_key, path
+                )
+                return result_items
+
+            # Process results normally
+            result_dirs = self._process_search_results_to_dirs(search_results)
+            return result_dirs
+        else:
+            # For any other path directly under /search, only allow "library" and "catalog"
+            if len(parts) == 3:
+                # This is the top-level search directory - just return empty list
+                # for any path that's not library or catalog
+                if parts[2] not in ["library", "catalog"]:
+                    self.logger.debug(
+                        f"Invalid search path: {path} - searches only allowed in /search/library or /search/catalog"
+                    )
+                    return []
+
+        # Default return empty list for any other cases
+        return []
+
+    def _readdir_search_item_content(
+        self, path: str, *args, scope: Optional[str] = None
+    ) -> List[str]:
+        """Handle listing contents of a specific search result item.
+
+        Args:
+            path: Search result item path
+            args: Additional arguments from wildcard match
+            scope: Search scope (None for entire catalog, 'library' for just library)
+
+        Returns:
+            List of track filenames in the search result item
+        """
+        # Extract path parts
+        parts = path.split("/")
+        if len(parts) < 4:
+            self.logger.error(f"Invalid search item path: {path}")
+            return []
+
+        filter_type = None
+        search_query = None
+        item_category = None
+
+        # Handle nested library/catalog paths with categories (like /search/catalog/songs/Linkin)
+        if parts[2] == "library" or parts[2] == "catalog":
+            # Set scope based on which path we're in
+            scope = "library" if parts[2] == "library" else None
+
+            if len(parts) == 5:  # /search/catalog/songs/Linkin
+                category = parts[3]
+                search_query = parts[4]
+
+                # Get filter type based on category - use the category directly without changing to singular
+                if category in ["songs", "videos", "albums", "artists", "playlists"]:
+                    filter_type = category  # Keep plural form as expected by the API
+
+                # For direct category searches, we need to return the search results
+                # in the category folder directly, not as a subcategory
+                scope_suffix = f"_library" if scope == "library" else ""
+                filter_suffix = f"_{filter_type}" if filter_type else ""
+                cache_key = f"/search/{search_query}{scope_suffix}{filter_suffix}"
+
+                # Get cached search results or perform search
+                search_results = self.cache.get(cache_key)
+                if not search_results:
+                    # Need to perform the search
+                    search_results = self._perform_search(
+                        search_query, scope, filter_type
+                    )
+                    self.cache.set(cache_key, search_results)
+
+                # For a direct category search, use the category as the item_category
+                item_category = category
+                result_items = self._process_search_result_items(
+                    search_results, item_category, path
+                )
+
+                return result_items
+
+            elif len(parts) >= 6:  # /search/catalog/songs/query/results
+                category = parts[3]
+                search_query = parts[4]
+                item_category = parts[5]
+
+                # Get filter type based on category - keep plural form
+                if category in ["songs", "videos", "albums", "artists", "playlists"]:
+                    filter_type = category  # Keep plural form as expected by the API
+            else:
+                self.logger.error(f"Invalid nested search path: {path}")
+                return []
+        else:
+            # Standard path (like /search/query/results)
+            search_query = parts[2]
+            item_category = parts[3]
+
+            # If scope was not explicitly passed, try to determine it from the path
+            if scope is None:
+                # Default is to search entire catalog (None)
+                pass
+
+        # Generate the appropriate cache key based on scope and filter
+        scope_suffix = f"_library" if scope == "library" else ""
+        filter_suffix = f"_{filter_type}" if filter_type else ""
+        cache_key = f"/search/{search_query}{scope_suffix}{filter_suffix}"
+
+        # Get cached search results
+        search_results = self.cache.get(cache_key)
+
+        if not search_results:
+            # Need to perform the search again
+            search_results = self._perform_search(search_query, scope, filter_type)
+            self.cache.set(cache_key, search_results)
+
+        # Process the items based on category
+        result_items = self._process_search_result_items(
+            search_results, item_category, path
+        )
+
+        return result_items
+
+    def _process_search_results_to_dirs(
+        self, search_results: Dict[str, List]
+    ) -> List[str]:
+        """Process search results into directory names.
+
+        Args:
+            search_results: Categorized search results
+
+        Returns:
+            List of directory names
+        """
+        result_dirs = []
+
+        # Add a directory for each category that has results
+        for category, items in search_results.items():
+            if items:
+                count = len(items)
+                result_dirs.append(f"{category}_{count}")
+
+        return result_dirs
+
+    def _perform_search(
+        self,
+        search_query: str,
+        scope: Optional[str] = None,
+        filter_type: Optional[str] = None,
+    ) -> Dict[str, List]:
+        """Perform a search and organize results by category.
+
+        Args:
+            search_query: The search query
+            scope: The search scope (None for entire catalog, 'library' for just library)
+            filter_type: The filter type for specific content (songs, videos, albums, etc.)
+
+        Returns:
+            Dictionary mapping categories to results
+        """
+        self.logger.info(
+            f"Performing search for '{search_query}' with scope '{scope}' and filter '{filter_type}'"
+        )
+
+        # Perform search with appropriate scope and filter
+        results = self.client.search(
+            search_query, filter_type=filter_type, scope=scope, limit=100
+        )
+
+        # Organize results by category
+        categorized_results = {
+            "songs": [],
+            "videos": [],
+            "albums": [],
+            "artists": [],
+            "playlists": [],
+        }
+
+        # Map between API result types and our category names
+        result_type_map = {
+            "song": "songs",
+            "video": "videos",
+            "album": "albums",
+            "artist": "artists",
+            "playlist": "playlists",
+        }
+
+        # Process and categorize results
+        for item in results:
+            result_type = item.get("resultType")
+            if result_type in result_type_map:
+                category = result_type_map[result_type]
+                categorized_results[category].append(item)
+
+        self.logger.debug(
+            f"Search categorized results: {[(k, len(v)) for k, v in categorized_results.items()]}"
+        )
+        return categorized_results
+
+    def _process_search_result_items(
+        self, search_results: Dict[str, List], item_category: str, path: str
+    ) -> List[str]:
+        """Process search result items for a specific category.
+
+        Args:
+            search_results: Categorized search results
+            item_category: The category to process
+            path: The full path (used for caching)
+
+        Returns:
+            List of filenames
+        """
+        # Check if we already processed this category
+        processed_cache_key = f"{path}_processed"
+        processed_items = self.cache.get(processed_cache_key)
+        if processed_items:
+            self.logger.debug(f"Using cached processed items for {item_category}")
+            return [item["filename"] for item in processed_items]
+
+        # Parse the category (it may include a count suffix)
+        category_base = item_category.split("_")[0]
+
+        # Get items for the specific category
+        items_to_process = search_results.get(category_base, [])
+
+        if not items_to_process:
+            self.logger.warning(f"No items found for category: {category_base}")
+            return []
+
+        # Process the items based on their type
+        if category_base in ["songs", "videos"]:
+            # For songs and videos, process them as tracks
+            processed_tracks, filenames = self.processor.process_tracks(
+                items_to_process
+            )
+
+            # Cache the processed tracks
+            self.cache.set(processed_cache_key, processed_tracks)
+
+            return filenames
+
+        elif category_base == "albums":
+            # For albums, create a list of album names
+            album_names = []
+            processed_albums = []
+
+            for i, album in enumerate(items_to_process):
+                album_title = album.get("title", f"Unknown Album {i+1}")
+                album_name = self.processor.sanitize_filename(album_title)
+
+                # Store the browse ID to fetch album contents later
+                processed_album = {
+                    "title": album_title,
+                    "browseId": album.get("browseId"),
+                    "filename": album_name,
+                }
+                processed_albums.append(processed_album)
+                album_names.append(album_name)
+
+            # Cache the processed albums
+            self.cache.set(processed_cache_key, processed_albums)
+
+            return album_names
+
+        elif category_base == "artists":
+            # For artists, create a list of artist names
+            artist_names = []
+            processed_artists = []
+
+            for i, artist in enumerate(items_to_process):
+                artist_name = artist.get("artist", f"Unknown Artist {i+1}")
+                sanitized_name = self.processor.sanitize_filename(artist_name)
+
+                # Store the browse ID to fetch artist contents later
+                processed_artist = {
+                    "artist": artist_name,
+                    "browseId": artist.get("browseId"),
+                    "filename": sanitized_name,
+                }
+                processed_artists.append(processed_artist)
+                artist_names.append(sanitized_name)
+
+            # Cache the processed artists
+            self.cache.set(processed_cache_key, processed_artists)
+
+            return artist_names
+
+        elif category_base == "playlists":
+            # For playlists, create a list of playlist names
+            playlist_names = []
+            processed_playlists = []
+
+            for i, playlist in enumerate(items_to_process):
+                playlist_title = playlist.get("title", f"Unknown Playlist {i+1}")
+                playlist_name = self.processor.sanitize_filename(playlist_title)
+
+                # Store the browse ID to fetch playlist contents later
+                processed_playlist = {
+                    "title": playlist_title,
+                    "playlistId": playlist.get("playlistId"),
+                    "browseId": playlist.get("browseId"),
+                    "filename": playlist_name,
+                }
+                processed_playlists.append(processed_playlist)
+                playlist_names.append(playlist_name)
+
+            # Cache the processed playlists
+            self.cache.set(processed_cache_key, processed_playlists)
+
+            return playlist_names
+
+        return []
+
     def getattr(self, path: str, fh: Optional[int] = None) -> Dict[str, Any]:
         """Get file attributes.
 
@@ -1000,7 +1461,9 @@ class YouTubeMusicFS(Operations):
             if current_time - last_time < self.request_cooldown:
                 # Request is within cooldown period, return cached result if available
                 if operation_key in self.last_access_results:
-                    self.logger.debug(f"Using cached result for {operation_key} (within cooldown: {current_time - last_time:.3f}s)")
+                    self.logger.debug(
+                        f"Using cached result for {operation_key} (within cooldown: {current_time - last_time:.3f}s)"
+                    )
                     return self.last_access_results[operation_key]
 
             # Update the last access time for this operation
@@ -1029,6 +1492,21 @@ class YouTubeMusicFS(Operations):
 
         # Main categories
         if path in ["/playlists", "/liked_songs", "/artists", "/albums"]:
+            attr["st_mode"] = stat.S_IFDIR | 0o755
+            attr["st_size"] = 0
+            with self.last_access_lock:
+                self.last_access_results[operation_key] = attr.copy()
+            return attr
+
+        # Search paths - special handling for search functionality
+        if (
+            path == "/search"
+            or path.startswith("/search/")
+            or path == "/search/library"
+            or path == "/search/catalog"
+            or path.startswith("/search/library/")
+            or path.startswith("/search/catalog/")
+        ):
             attr["st_mode"] = stat.S_IFDIR | 0o755
             attr["st_size"] = 0
             with self.last_access_lock:
@@ -1080,14 +1558,18 @@ class YouTubeMusicFS(Operations):
                                     )
                                     attr["st_size"] = cached_size
                                     with self.last_access_lock:
-                                        self.last_access_results[operation_key] = attr.copy()
+                                        self.last_access_results[operation_key] = (
+                                            attr.copy()
+                                        )
                                     return attr
 
                                 # No duration-based estimation - use minimal size
                                 # This will be updated with actual size when file is opened
                                 attr["st_size"] = 4096  # Minimal placeholder size
                                 with self.last_access_lock:
-                                    self.last_access_results[operation_key] = attr.copy()
+                                    self.last_access_results[operation_key] = (
+                                        attr.copy()
+                                    )
                                 return attr
 
                     # No duration-based fallback anymore - just use minimal size
@@ -1524,6 +2006,11 @@ class YouTubeMusicFS(Operations):
         self.refresh_playlists_cache()
         self.refresh_artists_cache()
         self.refresh_albums_cache()
+
+        # Delete all keys that start with "/search/"
+        self.cache.delete_pattern("/search/*")
+        # Also clear processed search results
+        self.cache.delete_pattern("/search/*/*_processed")
 
         current_time = time.time()
 

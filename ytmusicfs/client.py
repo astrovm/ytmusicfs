@@ -122,3 +122,43 @@ class YouTubeMusicClient:
             Dictionary containing album data
         """
         return self.ytmusic.get_album(album_id)
+
+    def search(
+        self,
+        query: str,
+        filter_type: Optional[str] = None,
+        scope: Optional[str] = None,
+        limit: int = 100,
+        ignore_spelling: bool = False,
+    ) -> List[Dict]:
+        """Search YouTube Music.
+
+        Args:
+            query: Search query string (e.g., 'Oasis Wonderwall')
+            filter_type: Filter for item types. Allowed values: 'songs', 'videos', 'albums',
+                        'artists', 'playlists', 'community_playlists', 'featured_playlists', 'uploads'.
+                        Default: None (includes all types)
+            scope: Search scope. Allowed values: 'library', 'uploads'.
+                  Default: None (searches the entire YouTube Music catalog)
+            limit: Maximum number of search results to return
+            ignore_spelling: Whether to ignore YT Music spelling suggestions
+
+        Returns:
+            List of search result dictionaries
+        """
+        self.logger.debug(
+            f"Searching for '{query}' with filter '{filter_type}' and scope '{scope}'"
+        )
+        try:
+            results = self.ytmusic.search(
+                query=query,
+                filter=filter_type,
+                scope=scope,
+                limit=limit,
+                ignore_spelling=ignore_spelling,
+            )
+            self.logger.debug(f"Search returned {len(results)} results")
+            return results
+        except Exception as e:
+            self.logger.error(f"Error during search: {e}")
+            return []
