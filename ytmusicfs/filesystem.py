@@ -1978,14 +1978,18 @@ class YouTubeMusicFS(Operations):
         cache_path = Path(self.cache.cache_dir / "audio" / f"{video_id}.m4a")
         cache_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Set up the file handle first with just the video_id and cache_path
+        # Set up the file handle with initial information
         with self.file_handle_lock:
             fh = self.next_fh
             self.next_fh += 1
             self.open_files[fh] = {
                 "cache_path": str(cache_path),
                 "video_id": video_id,
-                "stream_url": None,  # Will be populated only if needed
+                "stream_url": None,  # Will be populated in background
+                "status": "initializing",  # Track status of file preparation
+                "error": None,  # Store any errors that occur
+                "path": path,  # Store path for reference
+                "initialized_event": threading.Event(),  # Event to signal when initialization is complete
             }
             self.path_to_fh[path] = fh
             self.logger.debug(f"Assigned file handle {fh} to {path}")
@@ -1993,10 +1997,34 @@ class YouTubeMusicFS(Operations):
         # Check if the audio file is already cached completely
         if self._check_cached_audio(video_id):
             self.logger.debug(f"Found complete cached audio for {video_id}")
+            with self.file_handle_lock:
+                self.open_files[fh]["status"] = "ready"
+                self.open_files[fh]["initialized_event"].set()
             return fh
 
-        # If not cached, fetch stream URL using yt-dlp
+        # Start a background task to prepare the stream URL and file size
+        self.thread_pool.submit(self._prepare_file_in_background, fh, video_id, path)
+
+        # Return file handle immediately without waiting for background task
+        return fh
+
+    def _prepare_file_in_background(self, fh: int, video_id: str, path: str) -> None:
+        """Prepare a file in the background by fetching its stream URL and starting download.
+
+        Args:
+            fh: File handle
+            video_id: YouTube video ID
+            path: File path
+        """
         try:
+            # Get file info from handle
+            file_info = self.open_files.get(fh)
+            if not file_info:
+                self.logger.error(f"File handle {fh} no longer exists")
+                return
+
+            cache_path = file_info["cache_path"]
+
             # Use yt-dlp to get the audio stream URL
             ydl_opts = {
                 "format": "141/bestaudio[ext=m4a]",
@@ -2020,12 +2048,12 @@ class YouTubeMusicFS(Operations):
                 stream_url = info["url"]
 
             if not stream_url:
-                self.logger.error("No suitable audio stream found")
-                raise OSError(errno.EIO, "No suitable audio stream found")
+                raise Exception("No suitable audio stream found")
 
             self.logger.debug(f"Successfully got stream URL for {video_id}")
 
             # Get the actual file size using a HEAD request
+            actual_size = None
             try:
                 head_response = requests.head(stream_url, timeout=10)
                 if (
@@ -2046,20 +2074,26 @@ class YouTubeMusicFS(Operations):
                 self.logger.warning(f"Error getting file size for {video_id}: {str(e)}")
                 # Continue even if we can't get the file size
 
-            # Update the file handle with the stream URL
+            # Update the file handle with the stream URL and status
             with self.file_handle_lock:
-                self.open_files[fh]["stream_url"] = stream_url
+                if fh in self.open_files:
+                    self.open_files[fh]["stream_url"] = stream_url
+                    self.open_files[fh]["status"] = "ready"
+                    self.open_files[fh]["initialized_event"].set()
 
             # Initialize download status and start the download
             if video_id not in self.download_progress:
                 self.download_progress[video_id] = 0
                 self._start_background_download(video_id, stream_url, cache_path)
 
-            return fh
-
         except Exception as e:
-            self.logger.error(f"Error getting stream URL: {e}")
-            raise OSError(errno.EIO, f"Failed to get stream URL: {str(e)}")
+            self.logger.error(f"Error preparing file {video_id}: {str(e)}")
+            # Update file handle with error
+            with self.file_handle_lock:
+                if fh in self.open_files:
+                    self.open_files[fh]["status"] = "error"
+                    self.open_files[fh]["error"] = str(e)
+                    self.open_files[fh]["initialized_event"].set()
 
     def _update_file_size(self, path: str, size: int) -> None:
         """Update the cached file size for a path.
@@ -2090,21 +2124,66 @@ class YouTubeMusicFS(Operations):
         file_info = self.open_files[fh]
         cache_path = file_info["cache_path"]
         video_id = file_info["video_id"]
-        stream_url = file_info["stream_url"]
+        status = file_info.get("status")
 
-        status = self.download_progress.get(video_id)
+        # Check for errors first
+        if status == "error":
+            error_msg = file_info.get("error", "Unknown error preparing file")
+            self.logger.error(f"Error reading {path}: {error_msg}")
+            raise OSError(errno.EIO, error_msg)
+
+        # If still initializing, wait for a short time for background initialization to complete
+        if status == "initializing":
+            # Wait up to 1 second for initialization to complete
+            init_wait_result = file_info["initialized_event"].wait(1.0)
+            if not init_wait_result:
+                # If initialization is taking too long, try direct streaming if possible
+                stream_url = file_info.get("stream_url")
+                if stream_url:
+                    self.logger.debug(
+                        f"Streaming directly during initialization: {path}"
+                    )
+                    return self._stream_content(stream_url, offset, size)
+                else:
+                    # Fall back to waiting longer if we must (up to 5 more seconds)
+                    self.logger.debug(f"Waiting for initialization to complete: {path}")
+                    file_info["initialized_event"].wait(5.0)
+
+                    # Check status again
+                    if file_info.get("status") == "error":
+                        error_msg = file_info.get(
+                            "error", "Unknown error preparing file"
+                        )
+                        self.logger.error(f"Error after waiting: {error_msg}")
+                        raise OSError(errno.EIO, error_msg)
+                    elif file_info.get("status") == "initializing":
+                        self.logger.error(
+                            f"Timeout waiting for file initialization: {path}"
+                        )
+                        raise OSError(
+                            errno.EIO, "Timeout waiting for file initialization"
+                        )
+
+        # Now check download status - use video_id to get download progress
+        download_status = self.download_progress.get(video_id)
 
         # If download is complete, read from cache
-        if status == "complete":
+        if download_status == "complete":
             with open(cache_path, "rb") as f:
                 f.seek(offset)
                 return f.read(size)
 
         # If we have enough of the file downloaded, read from cache
-        if isinstance(status, int) and status > offset + size:
+        if isinstance(download_status, int) and download_status > offset + size:
             with open(cache_path, "rb") as f:
                 f.seek(offset)
                 return f.read(size)
+
+        # Get the stream URL (should be available by now)
+        stream_url = file_info["stream_url"]
+        if not stream_url:
+            self.logger.error(f"Stream URL not available for {path}")
+            raise OSError(errno.EIO, "Stream URL not available")
 
         # Otherwise, stream directly - no waiting
         self.logger.debug(
@@ -2630,5 +2709,12 @@ def mount_ytmusicfs(
         ),
         mount_point,
         foreground=foreground,
-        nothreads=False,
+        nothreads=False,  # Enable threading for better performance
+        big_writes=True,  # Use larger buffer sizes for better performance
+        max_read=4194304,  # 4MB max read size for better performance
+        max_write=4194304,  # 4MB max write size for better performance
+        max_readahead=4194304,  # Optimize readahead for streaming media
+        direct_io=False,  # Allow kernel caching for better performance
+        kernel_cache=True,  # Enable kernel caching
+        auto_cache=True,  # Enable automatic cache for data
     )
