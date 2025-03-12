@@ -133,7 +133,7 @@ class YouTubeMusicFS(Operations):
         browser: str = None,
         cache_maxsize: int = 10000,
         preload_cache: bool = True,
-        request_cooldown: int = 100,
+        request_cooldown: int = 1000,
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
@@ -147,7 +147,7 @@ class YouTubeMusicFS(Operations):
             browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
             cache_maxsize: Maximum number of items to keep in memory cache (default: 10000)
             preload_cache: Whether to preload cache data at startup (default: True)
-            request_cooldown: Time in milliseconds between allowed repeated requests to the same path (default: 100)
+            request_cooldown: Time in milliseconds between allowed repeated requests to the same path (default: 1000)
         """
         # Get the logger
         self.logger = logging.getLogger("YTMusicFS")
@@ -2461,7 +2461,7 @@ def mount_ytmusicfs(
     credentials_file: str = None,
     cache_maxsize: int = 10000,
     preload_cache: bool = True,
-    request_cooldown: int = 100,
+    request_cooldown: int = 1000,
 ) -> None:
     """Mount the YouTube Music filesystem.
 
@@ -2479,7 +2479,7 @@ def mount_ytmusicfs(
         credentials_file: Path to the client credentials file (default: None)
         cache_maxsize: Maximum number of items to keep in memory cache (default: 10000)
         preload_cache: Whether to preload cache data at startup (default: True)
-        request_cooldown: Time in milliseconds between allowed repeated requests to the same path (default: 100)
+        request_cooldown: Time in milliseconds between allowed repeated requests to the same path (default: 1000)
     """
     # Set fuse logger to WARNING level to suppress debug messages about unsupported operations
     logging.getLogger("fuse").setLevel(logging.WARNING)
