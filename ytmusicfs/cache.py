@@ -920,8 +920,21 @@ class CacheManager:
         if parent_dir:
             filename = os.path.basename(path)
             key_patterns.extend(
-                [f"valid_files:{parent_dir}", f"valid_base_names:{parent_dir}"]
+                [
+                    f"valid_files:{parent_dir}",
+                    f"valid_base_names:{parent_dir}",
+                    f"{parent_dir}_listing_with_attrs",  # Add directory listing with attributes
+                ]
             )
+
+            # Also clean up the file from the directory listing with attributes if it exists
+            dir_listing = self.get_directory_listing_with_attrs(parent_dir)
+            if dir_listing and filename in dir_listing:
+                self.logger.debug(
+                    f"Removing {filename} from {parent_dir} directory listing with attributes"
+                )
+                del dir_listing[filename]
+                self.set_directory_listing_with_attrs(parent_dir, dir_listing)
 
         # Delete each key
         for key_pattern in key_patterns:
@@ -932,7 +945,79 @@ class CacheManager:
             if "*" in key_pattern:
                 self.delete_pattern(key_pattern)
 
+        # Remove from in-memory valid paths set
+        with self.cache_lock:
+            if path in self.valid_paths:
+                self.valid_paths.remove(path)
+
         self.logger.debug(f"Finished cleaning path metadata for: {path}")
+
+    def get_directory_listing_with_attrs(
+        self, path: str
+    ) -> Optional[Dict[str, Dict[str, Any]]]:
+        """Get directory listing with file attributes.
+
+        Args:
+            path: Directory path
+
+        Returns:
+            Dictionary mapping filenames to their attributes, or None if not cached
+        """
+        return self.get(f"{path}_listing_with_attrs")
+
+    def set_directory_listing_with_attrs(
+        self, path: str, listing_with_attrs: Dict[str, Dict[str, Any]]
+    ) -> None:
+        """Set directory listing with file attributes.
+
+        Args:
+            path: Directory path
+            listing_with_attrs: Dictionary mapping filenames to their attributes
+        """
+        self.set(f"{path}_listing_with_attrs", listing_with_attrs)
+
+    def get_file_attrs_from_parent_dir(self, path: str) -> Optional[Dict[str, Any]]:
+        """Try to get file attributes from the parent directory's cached listing.
+
+        Args:
+            path: File path
+
+        Returns:
+            File attributes if found in parent directory cache, None otherwise
+        """
+        parent_dir = os.path.dirname(path)
+        filename = os.path.basename(path)
+
+        # Get the cached directory listing with attributes
+        dir_listing = self.get_directory_listing_with_attrs(parent_dir)
+
+        # Return the file's attributes if found
+        if dir_listing and filename in dir_listing:
+            self.logger.debug(f"Found attributes for {filename} in {parent_dir} cache")
+            return dir_listing[filename]
+
+        return None
+
+    def update_file_attrs_in_parent_dir(self, path: str, attrs: Dict[str, Any]) -> None:
+        """Update file attributes in the parent directory's cached listing.
+
+        Args:
+            path: File path
+            attrs: File attributes to update
+        """
+        parent_dir = os.path.dirname(path)
+        filename = os.path.basename(path)
+
+        # Get the cached directory listing with attributes
+        dir_listing = self.get_directory_listing_with_attrs(parent_dir)
+
+        # Update the listing if it exists
+        if dir_listing is not None:
+            dir_listing[filename] = attrs
+            self.set_directory_listing_with_attrs(parent_dir, dir_listing)
+            self.logger.debug(
+                f"Updated attributes for {filename} in {parent_dir} cache"
+            )
 
     def __del__(self):
         """Clean up resources when the object is deleted."""
