@@ -2547,6 +2547,9 @@ def mount_ytmusicfs(
         preload_cache: Whether to preload cache data at startup (default: True)
         request_cooldown: Time in milliseconds between allowed repeated requests to the same path (default: 100)
     """
+    # Set fuse logger to WARNING level to suppress debug messages about unsupported operations
+    logging.getLogger("fuse").setLevel(logging.WARNING)
+
     FUSE(
         YouTubeMusicFS(
             auth_file=auth_file,
