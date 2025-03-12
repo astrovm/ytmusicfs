@@ -78,6 +78,113 @@ class CacheManager:
         )  # In-memory cache with LRU eviction strategy
         self.cache_timeout = cache_timeout
 
+        # Add a set to track valid paths in memory for faster lookup
+        self.valid_paths = set()
+        self._load_valid_paths()  # Load valid paths from SQLite at startup
+
+    def _load_valid_paths(self) -> None:
+        """Load valid paths from SQLite into memory."""
+        self.logger.debug("Loading valid paths from SQLite into memory...")
+        valid_paths_count = 0
+
+        with self.db_lock:
+            try:
+                # Load paths from valid_dir: entries
+                self.cursor.execute(
+                    "SELECT key FROM cache_entries WHERE key LIKE 'valid_dir:%'"
+                )
+                for row in self.cursor.fetchall():
+                    path = self.key_to_path(row[0].replace("valid_dir:", ""))
+                    self.valid_paths.add(path)
+                    valid_paths_count += 1
+
+                # Also load paths from exact_path: entries
+                self.cursor.execute(
+                    "SELECT key FROM cache_entries WHERE key LIKE 'exact_path:%'"
+                )
+                for row in self.cursor.fetchall():
+                    path = self.key_to_path(row[0].replace("exact_path:", ""))
+                    self.valid_paths.add(path)
+                    valid_paths_count += 1
+
+                self.logger.info(f"Loaded {valid_paths_count} valid paths into memory")
+            except sqlite3.Error as e:
+                self.logger.warning(
+                    f"Failed to load valid paths: {e.__class__.__name__}: {e}"
+                )
+
+    def add_valid_path(self, path: str) -> None:
+        """Add a path to the valid paths set and persist it.
+
+        Args:
+            path: The path to mark as valid
+        """
+        # Add to in-memory set
+        with self.cache_lock:
+            self.valid_paths.add(path)
+
+        # Also persist in the database
+        self.set(f"valid_dir:{path}", True)
+
+    def remove_valid_path(self, path: str) -> None:
+        """Remove a path from the valid paths set.
+
+        Args:
+            path: The path to remove from valid paths
+        """
+        # Remove from in-memory set
+        with self.cache_lock:
+            if path in self.valid_paths:
+                self.valid_paths.remove(path)
+
+        # Also remove from database
+        self.delete(f"valid_dir:{path}")
+        self.delete(f"exact_path:{path}")
+
+    def is_valid_path(self, path: str) -> bool:
+        """Check if a path is in the valid paths set.
+
+        Args:
+            path: The path to check
+
+        Returns:
+            True if the path is valid, False otherwise
+        """
+        # Root is always valid
+        if path == "/":
+            return True
+
+        # Search paths are dynamically generated and always considered valid
+        if path.startswith("/search/"):
+            return True
+
+        # Check if in our precomputed valid paths set
+        with self.cache_lock:
+            return path in self.valid_paths
+
+    def add_valid_dir(self, dir_path: str) -> None:
+        """Add a directory to valid paths and mark it in the cache.
+
+        This is a convenience method that updates both the in-memory set
+        and the cached valid_dir marker.
+
+        Args:
+            dir_path: The directory path to mark as valid
+        """
+        self.add_valid_path(dir_path)
+
+    def add_valid_file(self, file_path: str) -> None:
+        """Add a file to valid paths and mark it in the cache.
+
+        This is a convenience method that updates both the in-memory set
+        and the cached exact_path marker.
+
+        Args:
+            file_path: The file path to mark as valid
+        """
+        self.add_valid_path(file_path)
+        self.set(f"exact_path:{file_path}", True)
+
     def path_to_key(self, path: str) -> str:
         """Convert a filesystem path to a cache key.
 

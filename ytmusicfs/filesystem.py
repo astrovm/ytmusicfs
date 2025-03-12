@@ -436,10 +436,8 @@ class YouTubeMusicFS(Operations):
             if len(parts) == 5:
                 valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
                 if parts[3] in valid_categories:
-                    # For these paths, they're valid if:
-                    # 1. They exist in our cache already, or
-                    # 2. We're creating a new one via mkdir
-                    if self.cache.get(f"valid_dir:{path}"):
+                    # For search paths, use the cache's optimized path validation
+                    if self.cache.is_valid_path(path):
                         return True
 
                     # If the directory doesn't exist in our cache,
@@ -451,75 +449,8 @@ class YouTubeMusicFS(Operations):
                         )
                         return True
 
-        # Extract directory and filename
-        dir_path = os.path.dirname(path)
-        filename = os.path.basename(path)
-
-        # If no filename, it might be a directory - check if we know it's valid
-        if not filename:
-            # Check if we've seen this directory before
-            if self.cache.get(f"valid_dir:{path}"):
-                return True
-
-            # For directories we haven't validated yet, we'll need to check them normally
-            return True
-
-        # Check if we've already validated this exact path before
-        if self.cache.get(f"exact_path:{path}"):
-            return True
-
-        # If this is a search path, be more permissive
-        if path.startswith("/search/"):
-            self.logger.debug(f"Being permissive with search path validation: {path}")
-            return True
-
-        # Check for known valid base filenames in this directory
-        valid_base_names_key = f"valid_base_names:{dir_path}"
-        valid_base_names_cached = self.cache.get(valid_base_names_key)
-        valid_base_names = (
-            set(valid_base_names_cached) if valid_base_names_cached else set()
-        )
-
-        # If we have a pattern with numbers in parentheses
-        match = re.search(r"(.*?)\s*\((\d+)\)(\.[^.]+)?$", filename)
-        if match:
-            base_name, number, extension = match.groups()
-            # Check if base name is in our set of valid base names
-            if valid_base_names and base_name in valid_base_names:
-                # We've seen this base name before, but is this the exact valid filename?
-                cache_key = f"valid_path:{dir_path}/{base_name}"
-                cached_valid_path = self.cache.get(cache_key)
-
-                if cached_valid_path is not None:
-                    # If we have a cached valid path for this base name,
-                    # check if the current path is different
-                    if path != cached_valid_path:
-                        self.logger.debug(
-                            f"Rejecting invalid path probe: {path}, valid path is {cached_valid_path}"
-                        )
-                        return False
-            elif valid_base_names and base_name not in valid_base_names:
-                # We've processed this directory before and this base name wasn't valid
-                self.logger.debug(
-                    f"Rejecting invalid base filename: {base_name} in {dir_path}"
-                )
-                return False
-
-        # If this is a file in a directory we know is valid
-        if dir_path and self.cache.get(f"valid_dir:{dir_path}"):
-            parent_dir_filenames_cached = self.cache.get(f"valid_files:{dir_path}")
-            parent_dir_filenames = (
-                set(parent_dir_filenames_cached)
-                if parent_dir_filenames_cached
-                else set()
-            )
-            if parent_dir_filenames and filename not in parent_dir_filenames:
-                self.logger.debug(
-                    f"Rejecting file not in valid file list: {filename} in {dir_path}"
-                )
-                return False
-
-        return True
+        # Use the cache's optimized path validation for all other paths
+        return self.cache.is_valid_path(path)
 
     def _cache_valid_path(self, path: str) -> None:
         """Cache a valid path to help with quick validation.
@@ -530,8 +461,8 @@ class YouTubeMusicFS(Operations):
         dir_path = os.path.dirname(path)
         filename = os.path.basename(path)
 
-        # Mark this exact path as valid
-        self.cache.set(f"exact_path:{path}", True)
+        # Mark this exact path as valid using the optimized method
+        self.cache.add_valid_file(path)
 
         # Add to directory's valid files list
         valid_files_cached = self.cache.get(f"valid_files:{dir_path}")
@@ -565,14 +496,14 @@ class YouTubeMusicFS(Operations):
         Args:
             dir_path: The directory path to cache as valid
         """
-        # Mark the directory as valid
-        self.cache.set(f"valid_dir:{dir_path}", True)
+        # Mark the directory as valid using the optimized method
+        self.cache.add_valid_dir(dir_path)
 
         # Also mark parent directories as valid
         parts = dir_path.split("/")
         for i in range(1, len(parts)):
             parent = "/".join(parts[:i]) or "/"
-            self.cache.set(f"valid_dir:{parent}", True)
+            self.cache.add_valid_dir(parent)
 
     # Helper method to cache all valid filenames in a directory
     def _cache_valid_filenames(self, dir_path: str, filenames: List[str]) -> None:
@@ -593,7 +524,7 @@ class YouTubeMusicFS(Operations):
         for filename in filenames:
             # Mark each path as exactly valid
             path = f"{dir_path}/{filename}"
-            self.cache.set(f"exact_path:{path}", True)
+            self.cache.add_valid_file(path)
 
             # Process base names for paths with number patterns
             match = re.search(r"(.*?)\s*\((\d+)\)(\.[^.]+)?$", filename)
@@ -2495,6 +2426,9 @@ class YouTubeMusicFS(Operations):
                     # Clean up path validation caches
                     self.cache.delete(f"valid_dir:{path}")
                     self.cache.delete(f"exact_path:{path}")
+
+                    # Remove from optimized valid paths set
+                    self.cache.remove_valid_path(path)
 
                     return 0
                 else:
