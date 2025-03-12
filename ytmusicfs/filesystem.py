@@ -203,6 +203,9 @@ class YouTubeMusicFS(Operations):
             {}
         )  # Track download progress: {video_id: bytes_downloaded or status}
 
+        # Track download threads - needed for interrupting downloads
+        self.download_threads = {}  # Track download threads: {video_id: Thread}
+
         # Register exact path handlers
         self.router.register(
             "/",
@@ -2081,8 +2084,10 @@ class YouTubeMusicFS(Operations):
                     self.open_files[fh]["status"] = "ready"
                     self.open_files[fh]["initialized_event"].set()
 
-            # Initialize download status and start the download
-            if video_id not in self.download_progress:
+            # Initialize download status and start the download only if not already interrupted
+            if video_id not in self.download_progress or self.download_progress[
+                video_id
+            ] not in ["interrupted", "complete"]:
                 self.download_progress[video_id] = 0
                 self._start_background_download(video_id, stream_url, cache_path)
 
@@ -2140,6 +2145,13 @@ class YouTubeMusicFS(Operations):
                 # If initialization is taking too long, try direct streaming if possible
                 stream_url = file_info.get("stream_url")
                 if stream_url:
+                    # Don't stream if download was interrupted
+                    if self.download_progress.get(video_id) == "interrupted":
+                        self.logger.debug(
+                            f"Download interrupted for {path}, stopping read"
+                        )
+                        raise OSError(errno.EIO, "File access interrupted")
+
                     self.logger.debug(
                         f"Streaming directly during initialization: {path}"
                     )
@@ -2167,6 +2179,11 @@ class YouTubeMusicFS(Operations):
         # Now check download status - use video_id to get download progress
         download_status = self.download_progress.get(video_id)
 
+        # If download was interrupted, stop the read
+        if download_status == "interrupted":
+            self.logger.debug(f"Download interrupted for {path}, stopping read")
+            raise OSError(errno.EIO, "File access interrupted")
+
         # If download is complete, read from cache
         if download_status == "complete":
             with open(cache_path, "rb") as f:
@@ -2192,7 +2209,7 @@ class YouTubeMusicFS(Operations):
         return self._stream_content(stream_url, offset, size)
 
     def release(self, path: str, fh: int) -> int:
-        """Release (close) a file handle.
+        """Release (close) a file handle and stop any ongoing download.
 
         Args:
             path: The file path
@@ -2201,12 +2218,22 @@ class YouTubeMusicFS(Operations):
         Returns:
             0 on success
         """
+        self.logger.debug(f"Releasing file handle {fh} for {path}")
         with self.file_handle_lock:
             if fh in self.open_files:
+                video_id = self.open_files[fh].get("video_id")
                 del self.open_files[fh]
                 # Remove path_to_fh entry for this path
                 if path in self.path_to_fh and self.path_to_fh[path] == fh:
                     del self.path_to_fh[path]
+
+                # Stop the download if it's ongoing
+                if video_id and video_id in self.download_threads:
+                    self.logger.debug(f"Stopping download for {video_id}")
+                    # Mark download as interrupted
+                    self.download_progress[video_id] = "interrupted"
+                    # Note: Threading in Python can't be forcefully stopped; we rely on the task checking status
+                    del self.download_threads[video_id]
         return 0
 
     def _auto_refresh_cache(self, cache_key: str, refresh_interval: int = 600) -> None:
@@ -2347,6 +2374,12 @@ class YouTubeMusicFS(Operations):
 
                     with open(cache_path, "wb") as f:
                         for chunk in response.iter_content(chunk_size=4096):
+                            # Check if download should be interrupted
+                            if self.download_progress.get(video_id) == "interrupted":
+                                self.logger.debug(
+                                    f"Download interrupted for {video_id}"
+                                )
+                                return
                             f.write(chunk)
                             # Update download progress
                             self.download_progress[video_id] = f.tell()
@@ -2366,8 +2399,10 @@ class YouTubeMusicFS(Operations):
                 # Mark download as failed
                 self.download_progress[video_id] = "failed"
 
-        # Start the download in a background thread
-        self.thread_pool.submit(download_task)
+        # Start the download in a background thread and store the reference
+        download_thread = threading.Thread(target=download_task)
+        download_thread.start()
+        self.download_threads[video_id] = download_thread
 
     def _stream_content(self, stream_url, offset, size):
         """Stream content directly from URL (fallback if download is too slow)."""
