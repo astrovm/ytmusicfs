@@ -20,7 +20,7 @@ class CacheManager:
         self,
         cache_dir: Optional[str] = None,
         cache_timeout: int = 2592000,
-        maxsize: int = 1000,
+        maxsize: int = 10000,
         logger: Optional[logging.Logger] = None,
     ):
         """Initialize the cache manager.
@@ -28,7 +28,7 @@ class CacheManager:
         Args:
             cache_dir: Directory for persistent cache (default: ~/.cache/ytmusicfs)
             cache_timeout: Time in seconds before cached data expires (default: 30 days)
-            maxsize: Maximum number of items to keep in memory cache (default: 1000)
+            maxsize: Maximum number of items to keep in memory cache (default: 10000)
             logger: Logger instance to use
         """
         # Set up logger
