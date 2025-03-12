@@ -123,13 +123,14 @@ class YouTubeMusicFS(Operations):
     def __init__(
         self,
         auth_file: str,
-        client_id: Optional[str] = None,
-        client_secret: Optional[str] = None,
-        cache_dir: Optional[str] = None,
+        client_id: str = None,
+        client_secret: str = None,
+        cache_dir: str = None,
         cache_timeout: int = 2592000,
         max_workers: int = 8,
-        browser: Optional[str] = None,
+        browser: str = None,
         cache_maxsize: int = 10000,
+        preload_cache: bool = True,
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
@@ -142,6 +143,7 @@ class YouTubeMusicFS(Operations):
             max_workers: Maximum number of worker threads (default: 8)
             browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
             cache_maxsize: Maximum number of items to keep in memory cache (default: 10000)
+            preload_cache: Whether to preload cache data at startup (default: True)
         """
         # Get the logger
         self.logger = logging.getLogger("YTMusicFS")
@@ -220,6 +222,93 @@ class YouTubeMusicFS(Operations):
             lambda path, *args: [".", ".."] + self._readdir_album_content(path),
         )
 
+        # Preload cache if requested
+        if preload_cache:
+            self.preload_cache()
+
+    def preload_cache(self) -> None:
+        """Preload important cache data at startup.
+
+        This method loads playlist, liked songs, artists, and albums data into cache
+        to avoid on-demand loading when the filesystem is accessed.
+        """
+        self.logger.info("Preloading cache data...")
+
+        # Use a thread pool to load data in parallel
+        futures = []
+
+        # Start loading each data type
+        futures.append(self.thread_pool.submit(self._readdir_playlists))
+        futures.append(self.thread_pool.submit(self._readdir_liked_songs))
+        futures.append(self.thread_pool.submit(self._readdir_artists))
+        futures.append(self.thread_pool.submit(self._readdir_albums))
+
+        # Wait for all preload tasks to complete
+        for future in futures:
+            try:
+                future.result()
+            except Exception as e:
+                self.logger.error(f"Error during cache preloading: {e}")
+
+        # Optimize path validation by caching known directory structure
+        self.optimize_path_validation()
+
+        self.logger.info("Cache preloading completed")
+
+    def optimize_path_validation(self):
+        """Optimize path validation by caching entire directory structure.
+
+        This method traverses the directory structure and caches all valid paths
+        to reduce the overhead of path validation during filesystem operations.
+        """
+        self.logger.info("Optimizing path validation...")
+
+        # Mark root dir as valid
+        self._cache_valid_dir("/")
+
+        # Mark main category directories as valid
+        main_dirs = ["/playlists", "/liked_songs", "/artists", "/albums"]
+        for dir_path in main_dirs:
+            self._cache_valid_dir(dir_path)
+
+        # Prevalidate playlists
+        try:
+            playlists = self.cache.get("/playlists")
+            if playlists:
+                for playlist in playlists:
+                    playlist_name = self.processor.sanitize_filename(playlist["title"])
+                    playlist_path = f"/playlists/{playlist_name}"
+                    # Mark the playlist directory as valid
+                    self._cache_valid_dir(playlist_path)
+        except Exception as e:
+            self.logger.error(f"Error prevalidating playlists: {e}")
+
+        # Prevalidate artists
+        try:
+            artists = self.cache.get("/artists")
+            if artists:
+                for artist in artists:
+                    artist_name = self.processor.sanitize_filename(artist["artist"])
+                    artist_path = f"/artists/{artist_name}"
+                    # Mark the artist directory as valid
+                    self._cache_valid_dir(artist_path)
+        except Exception as e:
+            self.logger.error(f"Error prevalidating artists: {e}")
+
+        # Prevalidate albums
+        try:
+            albums = self.cache.get("/albums")
+            if albums:
+                for album in albums:
+                    album_name = self.processor.sanitize_filename(album["title"])
+                    album_path = f"/albums/{album_name}"
+                    # Mark the album directory as valid
+                    self._cache_valid_dir(album_path)
+        except Exception as e:
+            self.logger.error(f"Error prevalidating albums: {e}")
+
+        self.logger.info("Path validation optimization completed")
+
     def cached_data(self, cache_key: str, fetch_func: Callable, *args, **kwargs):
         """Manage cache fetching and updating.
 
@@ -271,10 +360,12 @@ class YouTubeMusicFS(Operations):
         # Check for known valid base filenames in this directory
         valid_base_names_key = f"valid_base_names:{dir_path}"
         valid_base_names_cached = self.cache.get(valid_base_names_key)
-        valid_base_names = set(valid_base_names_cached) if valid_base_names_cached else set()
+        valid_base_names = (
+            set(valid_base_names_cached) if valid_base_names_cached else set()
+        )
 
         # If we have a pattern with numbers in parentheses
-        match = re.search(r'(.*?)\s*\((\d+)\)(\.[^.]+)?$', filename)
+        match = re.search(r"(.*?)\s*\((\d+)\)(\.[^.]+)?$", filename)
         if match:
             base_name, number, extension = match.groups()
             # Check if base name is in our set of valid base names
@@ -287,19 +378,29 @@ class YouTubeMusicFS(Operations):
                     # If we have a cached valid path for this base name,
                     # check if the current path is different
                     if path != cached_valid_path:
-                        self.logger.debug(f"Rejecting invalid path probe: {path}, valid path is {cached_valid_path}")
+                        self.logger.debug(
+                            f"Rejecting invalid path probe: {path}, valid path is {cached_valid_path}"
+                        )
                         return False
             elif valid_base_names and base_name not in valid_base_names:
                 # We've processed this directory before and this base name wasn't valid
-                self.logger.debug(f"Rejecting invalid base filename: {base_name} in {dir_path}")
+                self.logger.debug(
+                    f"Rejecting invalid base filename: {base_name} in {dir_path}"
+                )
                 return False
 
         # If this is a file in a directory we know is valid
         if dir_path and self.cache.get(f"valid_dir:{dir_path}"):
             parent_dir_filenames_cached = self.cache.get(f"valid_files:{dir_path}")
-            parent_dir_filenames = set(parent_dir_filenames_cached) if parent_dir_filenames_cached else set()
+            parent_dir_filenames = (
+                set(parent_dir_filenames_cached)
+                if parent_dir_filenames_cached
+                else set()
+            )
             if parent_dir_filenames and filename not in parent_dir_filenames:
-                self.logger.debug(f"Rejecting file not in valid file list: {filename} in {dir_path}")
+                self.logger.debug(
+                    f"Rejecting file not in valid file list: {filename} in {dir_path}"
+                )
                 return False
 
         return True
@@ -323,7 +424,7 @@ class YouTubeMusicFS(Operations):
         # Convert set to list for JSON serialization
         self.cache.set(f"valid_files:{dir_path}", list(valid_files))
 
-        match = re.search(r'(.*?)\s*\((\d+)\)(\.[^.]+)?$', filename)
+        match = re.search(r"(.*?)\s*\((\d+)\)(\.[^.]+)?$", filename)
         if match:
             base_name, _, _ = match.groups()
             # Cache the specific valid path
@@ -333,7 +434,9 @@ class YouTubeMusicFS(Operations):
             # Also add this base name to our set of valid base names for this directory
             valid_base_names_key = f"valid_base_names:{dir_path}"
             valid_base_names_cached = self.cache.get(valid_base_names_key)
-            valid_base_names = set(valid_base_names_cached) if valid_base_names_cached else set()
+            valid_base_names = (
+                set(valid_base_names_cached) if valid_base_names_cached else set()
+            )
             valid_base_names.add(base_name)
             # Convert set to list for JSON serialization
             self.cache.set(valid_base_names_key, list(valid_base_names))
@@ -350,9 +453,9 @@ class YouTubeMusicFS(Operations):
         self.cache.set(f"valid_dir:{dir_path}", True)
 
         # Also mark parent directories as valid
-        parts = dir_path.split('/')
+        parts = dir_path.split("/")
         for i in range(1, len(parts)):
-            parent = '/'.join(parts[:i]) or '/'
+            parent = "/".join(parts[:i]) or "/"
             self.cache.set(f"valid_dir:{parent}", True)
 
     # Helper method to cache all valid filenames in a directory
@@ -377,7 +480,7 @@ class YouTubeMusicFS(Operations):
             self.cache.set(f"exact_path:{path}", True)
 
             # Process base names for paths with number patterns
-            match = re.search(r'(.*?)\s*\((\d+)\)(\.[^.]+)?$', filename)
+            match = re.search(r"(.*?)\s*\((\d+)\)(\.[^.]+)?$", filename)
             if match:
                 base_name, _, _ = match.groups()
                 valid_base_names.add(base_name)
@@ -389,7 +492,9 @@ class YouTubeMusicFS(Operations):
             valid_base_names_key = f"valid_base_names:{dir_path}"
             # Convert set to list for JSON serialization
             self.cache.set(valid_base_names_key, list(valid_base_names))
-            self.logger.debug(f"Cached {len(valid_base_names)} valid base names for {dir_path}")
+            self.logger.debug(
+                f"Cached {len(valid_base_names)} valid base names for {dir_path}"
+            )
 
     def readdir(self, path: str, fh: Optional[int] = None) -> List[str]:
         """Read directory contents.
@@ -419,7 +524,9 @@ class YouTubeMusicFS(Operations):
 
             # Mark this as a valid directory and cache all valid filenames for future validation
             if path != "/" and len(result) > 2:  # More than just "." and ".."
-                self._cache_valid_filenames(path, [entry for entry in result if entry not in [".", ".."]])
+                self._cache_valid_filenames(
+                    path, [entry for entry in result if entry not in [".", ".."]]
+                )
                 self._cache_valid_dir(path)
 
             return result
@@ -1527,7 +1634,7 @@ class YouTubeMusicFS(Operations):
         self.cache.auto_refresh_cache(
             cache_key=cache_key,
             refresh_method=self.refresh_cache,
-            refresh_interval=refresh_interval
+            refresh_interval=refresh_interval,
         )
 
     def refresh_liked_songs_cache(self) -> None:
@@ -1730,12 +1837,13 @@ def mount_ytmusicfs(
     client_secret: str,
     foreground: bool = False,
     debug: bool = False,
-    cache_dir: Optional[str] = None,
+    cache_dir: str = None,
     cache_timeout: int = 2592000,
     max_workers: int = 8,
-    browser: Optional[str] = None,
-    credentials_file: Optional[str] = None,
+    browser: str = None,
+    credentials_file: str = None,
     cache_maxsize: int = 10000,
+    preload_cache: bool = True,
 ) -> None:
     """Mount the YouTube Music filesystem.
 
@@ -1751,7 +1859,8 @@ def mount_ytmusicfs(
         max_workers: Maximum number of worker threads for parallel operations
         browser: Browser to use for cookies
         credentials_file: Path to the client credentials file (default: None)
-        cache_maxsize: Maximum number of items to keep in memory cache (default: 1000)
+        cache_maxsize: Maximum number of items to keep in memory cache (default: 10000)
+        preload_cache: Whether to preload cache data at startup (default: True)
     """
     FUSE(
         YouTubeMusicFS(
@@ -1763,6 +1872,7 @@ def mount_ytmusicfs(
             max_workers=max_workers,
             browser=browser,
             cache_maxsize=cache_maxsize,
+            preload_cache=preload_cache,
         ),
         mount_point,
         foreground=foreground,
