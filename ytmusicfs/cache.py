@@ -4,11 +4,13 @@ from cachetools import LRUCache
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional, Callable, Dict, List
+import hashlib
 import json
 import logging
+import os
+import re
 import threading
 import time
-import hashlib
 
 
 class CacheManager:
@@ -203,25 +205,23 @@ class CacheManager:
             self.logger.warning(f"Failed to delete disk cache for {path}: {e}")
 
     def delete_pattern(self, pattern: str) -> int:
-        """Delete all cache entries matching a pattern.
+        """Delete all cache keys matching a pattern.
 
         Args:
-            pattern: The pattern to match (e.g., "/search/*")
+            pattern: The pattern to match, e.g. "/search/*"
 
         Returns:
-            Number of entries deleted
+            Number of cache keys deleted
         """
         count = 0
 
         # First handle memory cache
+        pattern_re = pattern.replace("*", ".*")
         with self.cache_lock:
-            # Create a list of keys to delete (can't modify dict during iteration)
-            keys_to_delete = []
-            for key in self.cache.keys():
-                if key.startswith(pattern.replace("*", "")):
-                    keys_to_delete.append(key)
-
-            # Delete the keys
+            # Find all matching keys in memory cache
+            keys_to_delete = [
+                k for k in self.cache.keys() if re.match(f"^{pattern_re}$", k)
+            ]
             for key in keys_to_delete:
                 del self.cache[key]
                 count += 1
@@ -252,6 +252,61 @@ class CacheManager:
 
         self.logger.debug(f"Deleted {count} cache entries matching pattern: {pattern}")
         return count
+
+    def get_keys_by_pattern(self, pattern: str) -> List[str]:
+        """Get all cache keys matching a pattern.
+
+        Args:
+            pattern: The pattern to match, e.g. "valid_dir:/search/*"
+
+        Returns:
+            List of matching cache keys
+        """
+        matching_keys = []
+        pattern_re = pattern.replace("*", ".*")
+
+        # First check memory cache
+        with self.cache_lock:
+            for key in self.cache.keys():
+                if re.match(f"^{pattern_re}$", key):
+                    matching_keys.append(key)
+
+        # Also check disk cache for keys not in memory
+        try:
+            prefix = pattern.replace("*", "")
+            base_key = self.path_to_key(prefix)
+
+            # Find all matching files in the cache directory
+            for cache_file in self.cache_dir.glob(f"{base_key}*.json"):
+                if cache_file.exists():
+                    # Convert filename back to key
+                    filename = cache_file.stem  # Get filename without extension
+                    key = self.key_to_path(filename)
+                    if re.match(f"^{pattern_re}$", key) and key not in matching_keys:
+                        matching_keys.append(key)
+
+            # Also check the hashed directory if it exists
+            hashed_dir = self.cache_dir / "hashed"
+            if hashed_dir.exists():
+                for cache_file in hashed_dir.glob(f"{base_key}*.json"):
+                    if cache_file.exists():
+                        # Need to get the original path from the hash mapping
+                        filename = cache_file.stem
+                        original_path = self.get_original_path(filename)
+                        if (
+                            original_path
+                            and re.match(f"^{pattern_re}$", original_path)
+                            and original_path not in matching_keys
+                        ):
+                            matching_keys.append(original_path)
+
+        except Exception as e:
+            self.logger.warning(f"Failed to get keys matching pattern {pattern}: {e}")
+
+        self.logger.debug(
+            f"Found {len(matching_keys)} keys matching pattern: {pattern}"
+        )
+        return matching_keys
 
     def get_metadata(self, cache_key: str, metadata_key: str) -> Any:
         """Get metadata associated with a cache key.
@@ -706,3 +761,42 @@ class CacheManager:
             self.logger.warning(f"Failed to retrieve hash mapping: {e}")
 
         return None
+
+    def clean_path_metadata(self, path: str) -> None:
+        """Clean up all cache metadata entries related to a specific path.
+
+        This is particularly useful when forcing recreation of a path that might
+        have stale cache entries preventing it from being recognized as new.
+
+        Args:
+            path: The path to clean from the cache
+        """
+        self.logger.debug(f"Cleaning all path metadata for: {path}")
+
+        # List of all cache keys that might affect path existence checks
+        key_patterns = [
+            f"valid_dir:{path}",
+            f"exact_path:{path}",
+            f"valid_path:{path}",
+            f"{path}_metadata",
+            f"{path}_processed",
+        ]
+
+        # Clean up parent directory metadata that might reference this path
+        parent_dir = os.path.dirname(path)
+        if parent_dir:
+            filename = os.path.basename(path)
+            key_patterns.extend(
+                [f"valid_files:{parent_dir}", f"valid_base_names:{parent_dir}"]
+            )
+
+        # Delete each key
+        for key_pattern in key_patterns:
+            # Delete exact match first
+            self.delete(key_pattern)
+
+            # Then delete any pattern match (for wildcards)
+            if "*" in key_pattern:
+                self.delete_pattern(key_pattern)
+
+        self.logger.debug(f"Finished cleaning path metadata for: {path}")

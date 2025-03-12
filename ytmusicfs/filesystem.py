@@ -16,6 +16,8 @@ import requests
 import stat
 import threading
 import time
+import inspect
+import traceback
 
 
 class PathRouter:
@@ -394,6 +396,21 @@ class YouTubeMusicFS(Operations):
         Returns:
             Boolean indicating if the path might be valid
         """
+        # Get the context for better decision making
+        context = inspect.currentframe().f_back.f_code.co_name
+        self.logger.debug(f"_is_valid_path called from {context} for {path}")
+
+        # Check for mkdir in stack trace for better detection
+        stack = traceback.format_stack()
+        is_mkdir_in_stack = any("mkdir" in frame for frame in stack)
+
+        # For mkdir operations, most paths should be considered valid
+        # This allows the mkdir operation to proceed and then fail at its own validation
+        # instead of getting blocked early by path validation
+        if context == "mkdir" or "mkdir" in context or is_mkdir_in_stack:
+            self.logger.debug(f"Allowing path as valid due to mkdir context: {path}")
+            return True
+
         # Root and main category directories are always valid
         if path == "/" or path in [
             "/playlists",
@@ -406,9 +423,33 @@ class YouTubeMusicFS(Operations):
         ]:
             return True
 
-        # Search paths are always initially valid for exploration
-        if path.startswith("/search/"):
-            return True
+        # Search category paths are valid
+        if path.startswith("/search/library/") or path.startswith("/search/catalog/"):
+            parts = path.split("/")
+            # Category paths like /search/library/songs
+            if len(parts) == 4:
+                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+                if parts[3] in valid_categories:
+                    return True
+
+            # Search query paths like /search/library/songs/query
+            if len(parts) == 5:
+                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+                if parts[3] in valid_categories:
+                    # For these paths, they're valid if:
+                    # 1. They exist in our cache already, or
+                    # 2. We're creating a new one via mkdir
+                    if self.cache.get(f"valid_dir:{path}"):
+                        return True
+
+                    # If the directory doesn't exist in our cache,
+                    # we'll still consider it potentially valid for certain operations
+                    if context == "getattr":
+                        # For getattr, let it decide existence based on cache
+                        self.logger.debug(
+                            f"Directing path validation to getattr: {path}"
+                        )
+                        return True
 
         # Extract directory and filename
         dir_path = os.path.dirname(path)
@@ -425,6 +466,11 @@ class YouTubeMusicFS(Operations):
 
         # Check if we've already validated this exact path before
         if self.cache.get(f"exact_path:{path}"):
+            return True
+
+        # If this is a search path, be more permissive
+        if path.startswith("/search/"):
+            self.logger.debug(f"Being permissive with search path validation: {path}")
             return True
 
         # Check for known valid base filenames in this directory
@@ -570,13 +616,24 @@ class YouTubeMusicFS(Operations):
         """Read directory contents.
 
         Args:
-            path: The directory path
+            path: Directory path
             fh: File handle (unused)
 
         Returns:
             List of directory entries
         """
         self.logger.debug(f"readdir: {path}")
+
+        # Defensive check for unusual file extensions that might be probed by file managers
+        if any(
+            path.endswith(ext)
+            for ext in [".tar.gz", ".zip", ".jpg", ".png", ".bmp", ".gif", ".tgz"]
+        ):
+            self.logger.debug(
+                f"Rejecting unsupported file extension in readdir: {path}"
+            )
+            # Just return empty directory for these special files
+            return [".", ".."]
 
         # Check if this request is too soon after the last one
         operation_key = f"readdir:{path}"
@@ -629,8 +686,6 @@ class YouTubeMusicFS(Operations):
             return result
         except Exception as e:
             self.logger.error(f"Error in readdir for {path}: {e}")
-            import traceback
-
             self.logger.error(traceback.format_exc())
             result = [".", ".."]
             with self.last_access_lock:
@@ -1076,6 +1131,10 @@ class YouTubeMusicFS(Operations):
             self.logger.error(f"Invalid search path: {path}")
             return []
 
+        # Initialize variables that may be used later
+        filter_type = None
+        search_query = None
+
         # Handle library and catalog directory cases
         if parts[2] == "library" or parts[2] == "catalog":
             # These are special scope directories, return categories to place searches in
@@ -1087,8 +1146,31 @@ class YouTubeMusicFS(Operations):
                 category = parts[3]
                 categories = ["songs", "videos", "albums", "artists", "playlists"]
                 if category in categories:
-                    # This is a category folder, user should create search query inside
-                    return []
+                    # This is a category folder
+                    # List existing search queries (directories) in this category
+
+                    # We need to identify directories that represent search queries
+                    # Look through our cache for keys that match this search path pattern
+                    query_dirs = []
+                    prefix = f"/search/{parts[2]}/{parts[3]}/"
+
+                    # Find all valid directories under this path
+                    pattern = f"valid_dir:{prefix}*"
+                    valid_dir_keys = self.cache.get_keys_by_pattern(pattern)
+
+                    for key in valid_dir_keys:
+                        # Extract the query name from the key
+                        # The key format is "valid_dir:/search/library/songs/query"
+                        query_name = key.replace(f"valid_dir:{prefix}", "")
+                        if (
+                            query_name and "/" not in query_name
+                        ):  # Ensure no subdirectories
+                            query_dirs.append(query_name)
+
+                    self.logger.debug(
+                        f"Found {len(query_dirs)} search query directories in {path}"
+                    )
+                    return query_dirs
 
             # If we're in /search/library/songs/query or /search/catalog/songs/query
             if len(parts) >= 5:
@@ -1099,10 +1181,16 @@ class YouTubeMusicFS(Operations):
                 scope = "library" if parts[2] == "library" else None
 
                 # Set filter type based on category - keep plural form
-                filter_type = None
                 if category in ["songs", "videos", "albums", "artists", "playlists"]:
                     # Use the category directly without changing to singular
                     filter_type = category  # Keep plural form as expected by the API
+
+            # Check if we have enough information to proceed with search
+            if not search_query:
+                self.logger.debug(
+                    f"Not enough information to perform search for path: {path}"
+                )
+                return []
 
             # Generate the appropriate cache key based on scope and filter
             scope_suffix = f"_library" if scope == "library" else ""
@@ -1452,6 +1540,22 @@ class YouTubeMusicFS(Operations):
         """
         self.logger.debug(f"getattr: {path}")
 
+        # Defensive check for unusual file extensions that might be probed by file managers
+        if any(
+            path.endswith(ext)
+            for ext in [".tar.gz", ".zip", ".jpg", ".png", ".bmp", ".gif", ".tgz"]
+        ):
+            self.logger.debug(
+                f"Rejecting unsupported file extension in getattr: {path}"
+            )
+            raise OSError(errno.ENOENT, "No such file or directory")
+
+        # For debugging, check if we have a stack trace involved in a mkdir operation
+        stack = traceback.format_stack()
+        is_mkdir_in_stack = any("mkdir" in frame for frame in stack)
+        if is_mkdir_in_stack:
+            self.logger.debug(f"mkdir detected in call stack for getattr {path}")
+
         # Check if this request is too soon after the last one
         operation_key = f"getattr:{path}"
         current_time = time.time()
@@ -1468,6 +1572,33 @@ class YouTubeMusicFS(Operations):
 
             # Update the last access time for this operation
             self.last_access_time[operation_key] = current_time
+
+        # Check if this is coming from mkdir or another operation
+        # that requires existence checking rather than creating
+        # This is essential to avoid blocking directory creation
+        context = (
+            inspect.currentframe().f_back.f_code.co_name
+            if inspect.currentframe().f_back
+            else "unknown"
+        )
+        self.logger.debug(f"getattr called from context: {context}")
+
+        # More aggressive detection for mkdir operations
+        is_mkdir_context = context == "mkdir" or "mkdir" in context or is_mkdir_in_stack
+
+        # Special handling for search paths during mkdir operations
+        if is_mkdir_context and path.startswith("/search/"):
+            parts = path.split("/")
+            # Check if this is a search query path (like /search/catalog/songs/query)
+            if len(parts) == 5 and parts[2] in ["library", "catalog"]:
+                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+                if parts[3] in valid_categories:
+                    # During mkdir, ALWAYS report the path doesn't exist
+                    # This is critical to ensure mkdir operations can proceed
+                    self.logger.debug(
+                        f"mkdir context detected, forcing non-existence for {path}"
+                    )
+                    raise OSError(errno.ENOENT, "No such file or directory")
 
         # Quick validation to reject invalid paths
         if not self._is_valid_path(path):
@@ -1499,19 +1630,49 @@ class YouTubeMusicFS(Operations):
             return attr
 
         # Search paths - special handling for search functionality
-        if (
-            path == "/search"
-            or path.startswith("/search/")
-            or path == "/search/library"
-            or path == "/search/catalog"
-            or path.startswith("/search/library/")
-            or path.startswith("/search/catalog/")
-        ):
+        if path == "/search" or path == "/search/library" or path == "/search/catalog":
             attr["st_mode"] = stat.S_IFDIR | 0o755
             attr["st_size"] = 0
             with self.last_access_lock:
                 self.last_access_results[operation_key] = attr.copy()
             return attr
+
+        # Special handling for search category and search query paths
+        if path.startswith("/search/library/") or path.startswith("/search/catalog/"):
+            parts = path.split("/")
+            # Category directories (like /search/catalog/songs)
+            if len(parts) == 4:
+                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+                if parts[3] in valid_categories:
+                    attr["st_mode"] = stat.S_IFDIR | 0o755
+                    attr["st_size"] = 0
+                    with self.last_access_lock:
+                        self.last_access_results[operation_key] = attr.copy()
+                    return attr
+
+            # Search query directories (like /search/catalog/songs/queen)
+            if len(parts) == 5:
+                # When checking if a directory exists, we need to be careful about mkdir operations
+                if is_mkdir_context:
+                    # During mkdir, we need to report that the directory doesn't exist
+                    # so mkdir can create it
+                    self.logger.debug(
+                        f"mkdir context detected for {path}, reporting non-existence"
+                    )
+                    raise OSError(errno.ENOENT, "No such file or directory")
+
+                # Check if this is a valid/existing search directory
+                valid_dir_cached = self.cache.get(f"valid_dir:{path}")
+                if valid_dir_cached:
+                    attr["st_mode"] = stat.S_IFDIR | 0o755
+                    attr["st_size"] = 0
+                    with self.last_access_lock:
+                        self.last_access_results[operation_key] = attr.copy()
+                    return attr
+
+                # If it's not in cache as a valid directory, it doesn't exist yet
+                # This ensures mkdir can create new search directories without conflict
+                raise OSError(errno.ENOENT, "No such file or directory")
 
         # Check if this is a song file (ends with .m4a)
         if path.lower().endswith(".m4a"):
@@ -2127,6 +2288,239 @@ class YouTubeMusicFS(Operations):
             return True
 
         return False
+
+    def mkdir(self, path, mode):
+        """Create a directory in the FUSE filesystem.
+
+        This implementation primarily supports creating search query directories
+        in the search path structure.
+
+        Args:
+            path: The directory path to create
+            mode: Directory permissions mode
+
+        Returns:
+            0 on success
+        """
+        self.logger.debug(f"mkdir: {path} with mode {mode}")
+
+        # For debugging, log the stack
+        stack = traceback.format_stack()
+        self.logger.debug(f"mkdir stack trace: {stack}")
+
+        # Handle search path directories
+        if path.startswith("/search/"):
+            parts = path.split("/")
+
+            # Don't allow creating directories with invalid path structure
+            if len(parts) < 3:
+                raise OSError(errno.EINVAL, "Invalid search path")
+
+            # /search/library or /search/catalog are valid
+            if len(parts) == 3 and parts[2] in ["library", "catalog"]:
+                self.logger.debug(f"Creating search scope directory: {parts[2]}")
+                # Allow creating these directories (they're already virtually handled)
+                return 0
+
+            # /search/library/songs, /search/catalog/songs, etc.
+            if len(parts) == 4 and parts[2] in ["library", "catalog"]:
+                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+                if parts[3] in valid_categories:
+                    self.logger.debug(f"Creating search category directory: {parts[3]}")
+                    # Allow creating category directories
+                    return 0
+                else:
+                    raise OSError(errno.EINVAL, "Invalid search category")
+
+            # /search/library/songs/query or /search/catalog/songs/query - this is the actual search query
+            if len(parts) == 5 and parts[2] in ["library", "catalog"]:
+                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+                if parts[3] in valid_categories:
+                    search_query = parts[4]
+                    scope = "library" if parts[2] == "library" else None
+                    filter_type = parts[3]  # Keep plural form as expected by the API
+
+                    # Log key cache state BEFORE cleanup for debugging
+                    valid_dir_key = f"valid_dir:{path}"
+                    has_valid_dir = self.cache.get(valid_dir_key)
+                    self.logger.debug(
+                        f"BEFORE cleanup: valid_dir:{path} exists = {has_valid_dir is not None}"
+                    )
+
+                    # Add extra logging to check for possible other causes
+                    parent_dir = os.path.dirname(path)
+                    parent_valid_files = self.cache.get(f"valid_files:{parent_dir}")
+                    parent_base_names = self.cache.get(f"valid_base_names:{parent_dir}")
+                    filename = os.path.basename(path)
+                    self.logger.debug(f"Parent dir valid files: {parent_valid_files}")
+                    self.logger.debug(f"Parent dir base names: {parent_base_names}")
+                    self.logger.debug(f"Creating filename: {filename}")
+
+                    # SUPER AGGRESSIVE CLEANUP - Clean ALL cache entries related to this path and search query
+                    # First, use our structured cleanup method
+                    self.logger.debug(f"STARTING aggressive cleanup for {path}")
+                    self.cache.clean_path_metadata(path)
+
+                    # Then, directly target ALL variations of cache keys
+                    scope_suffix = f"_library" if scope == "library" else ""
+                    filter_suffix = f"_{filter_type}" if filter_type else ""
+                    cache_key = f"/search/{search_query}{scope_suffix}{filter_suffix}"
+                    processed_cache_key = f"{path}_processed"
+
+                    # Force cleaning EVERY cache key that might interfere
+                    cache_keys_to_clear = [
+                        valid_dir_key,
+                        f"exact_path:{path}",
+                        f"valid_path:{parent_dir}/{filename}",
+                        cache_key,
+                        processed_cache_key,
+                        f"filesize:{path}",
+                        f"valid_files:{parent_dir}",
+                        f"valid_base_names:{parent_dir}",
+                        f"valid_path:{parent_dir}",
+                        f"last_access_time:getattr:{path}",
+                        f"last_access_time:readdir:{path}",
+                    ]
+
+                    # Clean all the keys
+                    for key in cache_keys_to_clear:
+                        self.cache.delete(key)
+                        # Also try pattern matching for similar keys
+                        self.cache.delete_pattern(f"{key}*")
+
+                    # Also eliminate all last_access_results data
+                    with self.last_access_lock:
+                        keys_to_remove = []
+                        for k in self.last_access_results.keys():
+                            if path in k:
+                                keys_to_remove.append(k)
+                        for k in keys_to_remove:
+                            del self.last_access_results[k]
+
+                    # Log key cache state AFTER cleanup for debugging
+                    has_valid_dir_after = self.cache.get(valid_dir_key)
+                    self.logger.debug(
+                        f"AFTER cleanup: valid_dir:{path} exists = {has_valid_dir_after is not None}"
+                    )
+
+                    # Log the operation
+                    self.logger.info(
+                        f"Creating search query directory: {search_query} with scope {scope} and filter {filter_type}"
+                    )
+
+                    # Perform the search and cache the results
+                    try:
+                        # Use a direct, fresh search to ensure we're not getting cached results
+                        search_results = self._perform_search(
+                            search_query, scope, filter_type
+                        )
+
+                        # Set the cache with fresh results
+                        self.cache.set(cache_key, search_results)
+                        self.logger.debug(
+                            f"Search results cached with key: {cache_key}"
+                        )
+
+                        # Only now mark the directory as valid - AFTER everything else is set up
+                        self._cache_valid_dir(path)
+                        self.logger.debug(
+                            f"Successfully created and marked directory as valid: {path}"
+                        )
+
+                        # Verify the directory is properly marked as valid
+                        has_valid_dir_final = self.cache.get(valid_dir_key)
+                        self.logger.debug(
+                            f"FINAL check: valid_dir:{path} exists = {has_valid_dir_final is not None}"
+                        )
+
+                        return 0
+                    except Exception as e:
+                        self.logger.error(f"Error performing search for mkdir: {e}")
+                        raise OSError(errno.EIO, f"Search failed: {str(e)}")
+                else:
+                    raise OSError(errno.EINVAL, "Invalid search category")
+
+        # Disallow creating directories in other parts of the filesystem
+        self.logger.warning(f"Attempt to create directory not in search path: {path}")
+        raise OSError(errno.EPERM, "Cannot create directory outside of search paths")
+
+    def rmdir(self, path):
+        """Remove a directory from the FUSE filesystem.
+
+        This implementation primarily supports removing search query directories.
+
+        Args:
+            path: The directory path to remove
+
+        Returns:
+            0 on success
+        """
+        self.logger.debug(f"rmdir: {path}")
+
+        # Handle search path directories
+        if path.startswith("/search/"):
+            parts = path.split("/")
+
+            # Don't allow removing the base search directory
+            if path == "/search":
+                raise OSError(errno.EPERM, "Cannot remove base search directory")
+
+            # /search/library or /search/catalog - can be removed
+            if len(parts) == 3 and parts[2] in ["library", "catalog"]:
+                self.logger.debug(f"Removing search scope directory: {parts[2]}")
+                return 0
+
+            # /search/library/songs, etc. - can be removed
+            if len(parts) == 4 and parts[2] in ["library", "catalog"]:
+                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+                if parts[3] in valid_categories:
+                    self.logger.debug(f"Removing search category directory: {parts[3]}")
+                    return 0
+                else:
+                    raise OSError(errno.EINVAL, "Invalid search category")
+
+            # /search/library/songs/query - this is a search query, remove from cache
+            if len(parts) == 5 and parts[2] in ["library", "catalog"]:
+                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+                if parts[3] in valid_categories:
+                    search_query = parts[4]
+                    scope = "library" if parts[2] == "library" else None
+                    filter_type = parts[3]
+
+                    self.logger.info(f"Removing search query directory: {search_query}")
+
+                    # Generate the cache key
+                    scope_suffix = f"_library" if scope == "library" else ""
+                    filter_suffix = f"_{filter_type}" if filter_type else ""
+                    cache_key = f"/search/{search_query}{scope_suffix}{filter_suffix}"
+
+                    # Delete the processed cache as well
+                    processed_cache_key = f"{path}_processed"
+
+                    # Remove from cache
+                    self.cache.delete(cache_key)
+                    self.cache.delete(processed_cache_key)
+                    self.logger.debug(f"Removed search results from cache: {cache_key}")
+
+                    # Clean up path validation caches
+                    self.cache.delete(f"valid_dir:{path}")
+                    self.cache.delete(f"exact_path:{path}")
+
+                    return 0
+                else:
+                    raise OSError(errno.EINVAL, "Invalid search category")
+
+        # Check if directory is empty
+        try:
+            entries = self.readdir(path, None)
+            if len(entries) > 2:  # More than "." and ".."
+                raise OSError(errno.ENOTEMPTY, "Directory not empty")
+        except Exception as e:
+            self.logger.error(f"Error checking if directory is empty: {e}")
+
+        # Disallow removing directories in other parts of the filesystem
+        self.logger.warning(f"Attempt to remove directory not in search path: {path}")
+        raise OSError(errno.EPERM, "Cannot remove directory outside of search paths")
 
 
 def mount_ytmusicfs(
