@@ -43,33 +43,40 @@ class CacheManager:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.logger.info(f"Using cache directory: {self.cache_dir}")
 
+        # Initialize locks
+        self.cache_lock = threading.RLock()  # Lock for in-memory cache access
+        self.db_lock = threading.RLock()  # Dedicated lock for database operations
+
         # Initialize SQLite database
         self.db_path = self.cache_dir / "cache.db"
         self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL;")
-        self.conn.execute(
+
+        # Create a single cursor for all operations
+        with self.db_lock:
+            self.cursor = self.conn.cursor()
+            self.cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cache_entries (
+                    key TEXT PRIMARY KEY,
+                    entry TEXT
+                )
             """
-            CREATE TABLE IF NOT EXISTS cache_entries (
-                key TEXT PRIMARY KEY,
-                entry TEXT
             )
-        """
-        )
-        self.conn.execute(
+            self.cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hash_mappings (
+                    hashed_key TEXT PRIMARY KEY,
+                    original_path TEXT
+                )
             """
-            CREATE TABLE IF NOT EXISTS hash_mappings (
-                hashed_key TEXT PRIMARY KEY,
-                original_path TEXT
             )
-        """
-        )
-        self.conn.commit()
+            self.conn.commit()
 
         self.cache = LRUCache(
             maxsize=maxsize
         )  # In-memory cache with LRU eviction strategy
         self.cache_timeout = cache_timeout
-        self.cache_lock = threading.RLock()  # Lock for cache access
 
     def path_to_key(self, path: str) -> str:
         """Convert a filesystem path to a cache key.
@@ -78,12 +85,12 @@ class CacheManager:
             path: The filesystem path
 
         Returns:
-            Sanitized cache key suitable for filesystem storage
+            Sanitized cache key suitable for database storage
         """
-        # First replace slashes with underscores for basic path conversion
-        key = path.replace("/", "_")
+        # Enhanced sanitization: replace slashes and special characters
+        key = path.replace("/", "_").replace("'", "''").replace(" ", "_")
 
-        # If the key is too long (> 200 chars), hash it to avoid filename length issues
+        # If the key is too long (> 200 chars), hash it to avoid key length issues
         # Keep a prefix to make it somewhat readable/debuggable
         MAX_KEY_LENGTH = 200
         if len(key) > MAX_KEY_LENGTH:
@@ -117,7 +124,11 @@ class CacheManager:
             return key  # Return as is if we can't reconstruct the original
 
         # Regular key - just replace underscores with slashes
-        return key.replace("_", "/")
+        # We need to reverse any special character handling here
+        path = key.replace("_", "/")
+        # Restore single quotes if they were escaped
+        path = path.replace("''", "'")
+        return path
 
     def get(self, path: str) -> Optional[Any]:
         """Get data from cache if it's still valid.
@@ -139,20 +150,24 @@ class CacheManager:
 
         # Then check SQLite cache
         key = self.path_to_key(path)
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute("SELECT entry FROM cache_entries WHERE key = ?", (key,))
-            row = cursor.fetchone()
-            if row:
-                cache_data = json.loads(row[0])
-                if time.time() - cache_data["time"] < self.cache_timeout:
-                    self.logger.debug(f"Cache hit (disk) for {path}")
-                    # Also update memory cache
-                    with self.cache_lock:
-                        self.cache[path] = cache_data
-                    return cache_data["data"]
-        except Exception as e:
-            self.logger.debug(f"Failed to read database cache for {path}: {e}")
+        with self.db_lock:
+            try:
+                self.cursor.execute(
+                    "SELECT entry FROM cache_entries WHERE key = ?", (key,)
+                )
+                row = self.cursor.fetchone()
+                if row:
+                    cache_data = json.loads(row[0])
+                    if time.time() - cache_data["time"] < self.cache_timeout:
+                        self.logger.debug(f"Cache hit (disk) for {path}")
+                        # Also update memory cache
+                        with self.cache_lock:
+                            self.cache[path] = cache_data
+                        return cache_data["data"]
+            except sqlite3.Error as e:
+                self.logger.debug(
+                    f"Failed to read database cache for {path}: {e.__class__.__name__}: {e}"
+                )
 
         return None
 
@@ -169,21 +184,24 @@ class CacheManager:
         with self.cache_lock:
             self.cache[path] = cache_entry
 
-        # Update SQLite cache
-        try:
-            key = self.path_to_key(path)
-            entry_str = json.dumps(cache_entry)
-            cursor = self.conn.cursor()
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO cache_entries (key, entry)
-                VALUES (?, ?)
-                """,
-                (key, entry_str),
-            )
-            self.conn.commit()
-        except Exception as e:
-            self.logger.warning(f"Failed to write database cache for {path}: {e}")
+        # Update SQLite cache with a dedicated lock
+        key = self.path_to_key(path)
+        entry_str = json.dumps(cache_entry)
+
+        with self.db_lock:
+            try:
+                self.cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO cache_entries (key, entry)
+                    VALUES (?, ?)
+                    """,
+                    (key, entry_str),
+                )
+                self.conn.commit()
+            except sqlite3.Error as e:
+                self.logger.warning(
+                    f"Failed to write database cache for {path}: {e.__class__.__name__}: {e}"
+                )
 
     def delete(self, path: str) -> None:
         """Delete data from cache.
@@ -195,14 +213,16 @@ class CacheManager:
             if path in self.cache:
                 del self.cache[path]
 
-        # Also delete from SQLite cache
-        try:
-            key = self.path_to_key(path)
-            cursor = self.conn.cursor()
-            cursor.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
-            self.conn.commit()
-        except Exception as e:
-            self.logger.warning(f"Failed to delete from database cache for {path}: {e}")
+        # Also delete from SQLite cache with a dedicated lock
+        key = self.path_to_key(path)
+        with self.db_lock:
+            try:
+                self.cursor.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
+                self.conn.commit()
+            except sqlite3.Error as e:
+                self.logger.warning(
+                    f"Failed to delete from database cache for {path}: {e.__class__.__name__}: {e}"
+                )
 
     def is_hashed_key(self, key: str) -> bool:
         """Check if a key is a hashed key.
@@ -239,27 +259,32 @@ class CacheManager:
                     matching_keys.append(key)
 
         # Also check SQLite database for keys not in memory
-        try:
-            # Fetch all keys from the database
-            cursor = self.conn.cursor()
-            cursor.execute("SELECT key FROM cache_entries")
-            all_keys = [row[0] for row in cursor.fetchall()]
+        with self.db_lock:
+            try:
+                # Fetch all keys from the database
+                self.cursor.execute("SELECT key FROM cache_entries")
+                all_keys = [row[0] for row in self.cursor.fetchall()]
 
-            for key in all_keys:
-                # For hashed keys, get the original path and check against pattern
-                if self.is_hashed_key(key):
-                    original_path = self.get_original_path(key)
-                    if original_path and re.match(f"^{pattern_re}$", original_path):
-                        if original_path not in matching_keys:
-                            matching_keys.append(original_path)
-                else:
-                    # For regular keys, convert back to path and check against pattern
-                    path = self.key_to_path(key)
-                    if re.match(f"^{pattern_re}$", path) and path not in matching_keys:
-                        matching_keys.append(path)
+                for key in all_keys:
+                    # For hashed keys, get the original path and check against pattern
+                    if self.is_hashed_key(key):
+                        original_path = self.get_original_path(key)
+                        if original_path and re.match(f"^{pattern_re}$", original_path):
+                            if original_path not in matching_keys:
+                                matching_keys.append(original_path)
+                    else:
+                        # For regular keys, convert back to path and check against pattern
+                        path = self.key_to_path(key)
+                        if (
+                            re.match(f"^{pattern_re}$", path)
+                            and path not in matching_keys
+                        ):
+                            matching_keys.append(path)
 
-        except Exception as e:
-            self.logger.warning(f"Failed to get keys matching pattern {pattern}: {e}")
+            except sqlite3.Error as e:
+                self.logger.warning(
+                    f"Failed to get keys matching pattern {pattern}: {e.__class__.__name__}: {e}"
+                )
 
         self.logger.debug(
             f"Found {len(matching_keys)} keys matching pattern: {pattern}"
@@ -291,16 +316,20 @@ class CacheManager:
         # Get all matching paths - leveraging our updated get_keys_by_pattern method
         matching_paths = self.get_keys_by_pattern(pattern)
 
-        # Delete each matching path from the database
-        for path in matching_paths:
+        # Delete each matching path from the database within a single transaction
+        with self.db_lock:
             try:
-                key = self.path_to_key(path)
-                cursor = self.conn.cursor()
-                cursor.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
+                for path in matching_paths:
+                    key = self.path_to_key(path)
+                    self.cursor.execute(
+                        "DELETE FROM cache_entries WHERE key = ?", (key,)
+                    )
+                    count += 1
                 self.conn.commit()
-                count += 1
-            except Exception as e:
-                self.logger.warning(f"Failed to delete {path} from database: {e}")
+            except sqlite3.Error as e:
+                self.logger.warning(
+                    f"Failed to delete pattern {pattern} from database: {e.__class__.__name__}: {e}"
+                )
 
         self.logger.debug(f"Deleted {count} cache entries matching pattern: {pattern}")
         return count
@@ -331,6 +360,73 @@ class CacheManager:
         metadata = self.get(metadata_cache_key) or {}
         metadata[metadata_key] = value
         self.set(metadata_cache_key, metadata)
+
+    def _store_hash_mapping(self, hashed_key: str, original_path: str) -> None:
+        """Store a mapping between a hashed key and its original path.
+
+        Args:
+            hashed_key: The hashed key created for a long path
+            original_path: The original path that was hashed
+        """
+        try:
+            # Store in memory for quick lookups
+            with self.cache_lock:
+                if not hasattr(self, "hash_to_path"):
+                    self.hash_to_path = {}
+                self.hash_to_path[hashed_key] = original_path
+
+            # Store in SQLite database with a dedicated lock
+            with self.db_lock:
+                self.cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO hash_mappings (hashed_key, original_path)
+                    VALUES (?, ?)
+                    """,
+                    (hashed_key, original_path),
+                )
+                self.conn.commit()
+
+        except sqlite3.Error as e:
+            self.logger.warning(
+                f"Failed to store hash mapping: {e.__class__.__name__}: {e}"
+            )
+
+    def get_original_path(self, hashed_key: str) -> Optional[str]:
+        """Retrieve the original path for a hashed key.
+
+        Args:
+            hashed_key: The hashed key to look up
+
+        Returns:
+            The original path if found, None otherwise
+        """
+        # First check in-memory cache
+        with self.cache_lock:
+            if hasattr(self, "hash_to_path") and hashed_key in self.hash_to_path:
+                return self.hash_to_path[hashed_key]
+
+        # Then check in SQLite database with a dedicated lock
+        with self.db_lock:
+            try:
+                self.cursor.execute(
+                    "SELECT original_path FROM hash_mappings WHERE hashed_key = ?",
+                    (hashed_key,),
+                )
+                row = self.cursor.fetchone()
+                if row:
+                    original_path = row[0]
+                    # Also update in-memory cache for next time
+                    with self.cache_lock:
+                        if not hasattr(self, "hash_to_path"):
+                            self.hash_to_path = {}
+                        self.hash_to_path[hashed_key] = original_path
+                    return original_path
+            except sqlite3.Error as e:
+                self.logger.warning(
+                    f"Failed to retrieve hash mapping: {e.__class__.__name__}: {e}"
+                )
+
+        return None
 
     def auto_refresh_cache(
         self, cache_key: str, refresh_method: Callable, refresh_interval: int = 600
@@ -692,69 +788,6 @@ class CacheManager:
 
             return result
 
-    def _store_hash_mapping(self, hashed_key: str, original_path: str) -> None:
-        """Store a mapping between a hashed key and its original path.
-
-        Args:
-            hashed_key: The hashed key created for a long path
-            original_path: The original path that was hashed
-        """
-        try:
-            # Store in memory for quick lookups
-            with self.cache_lock:
-                if not hasattr(self, "hash_to_path"):
-                    self.hash_to_path = {}
-                self.hash_to_path[hashed_key] = original_path
-
-            # Store in SQLite database
-            cursor = self.conn.cursor()
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO hash_mappings (hashed_key, original_path)
-                VALUES (?, ?)
-                """,
-                (hashed_key, original_path),
-            )
-            self.conn.commit()
-
-        except Exception as e:
-            self.logger.warning(f"Failed to store hash mapping: {e}")
-
-    def get_original_path(self, hashed_key: str) -> Optional[str]:
-        """Retrieve the original path for a hashed key.
-
-        Args:
-            hashed_key: The hashed key to look up
-
-        Returns:
-            The original path if found, None otherwise
-        """
-        # First check in-memory cache
-        with self.cache_lock:
-            if hasattr(self, "hash_to_path") and hashed_key in self.hash_to_path:
-                return self.hash_to_path[hashed_key]
-
-        # Then check in SQLite database
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(
-                "SELECT original_path FROM hash_mappings WHERE hashed_key = ?",
-                (hashed_key,),
-            )
-            row = cursor.fetchone()
-            if row:
-                original_path = row[0]
-                # Also update in-memory cache for next time
-                with self.cache_lock:
-                    if not hasattr(self, "hash_to_path"):
-                        self.hash_to_path = {}
-                    self.hash_to_path[hashed_key] = original_path
-                return original_path
-        except Exception as e:
-            self.logger.warning(f"Failed to retrieve hash mapping: {e}")
-
-        return None
-
     def clean_path_metadata(self, path: str) -> None:
         """Clean up all cache metadata entries related to a specific path.
 
@@ -793,3 +826,12 @@ class CacheManager:
                 self.delete_pattern(key_pattern)
 
         self.logger.debug(f"Finished cleaning path metadata for: {path}")
+
+    def __del__(self):
+        """Clean up resources when the object is deleted."""
+        try:
+            if hasattr(self, "conn") and self.conn:
+                self.conn.close()
+        except Exception as e:
+            # We can't log here as the logger might be gone
+            pass
