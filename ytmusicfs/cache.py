@@ -45,10 +45,6 @@ class CacheManager:
         # Initialize a single lock for most operations
         self.lock = threading.RLock()
 
-        # Path-specific locks - only created when needed
-        self.path_locks = {}
-        self.path_locks_lock = threading.RLock()
-
         # Initialize SQLite database
         self.db_path = self.cache_dir / "cache.db"
         self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
@@ -982,8 +978,8 @@ class CacheManager:
         Returns:
             Dictionary mapping filenames to their attributes, or None if not cached
         """
-        # Use appropriate lock based on the path
-        with self.get_path_lock(path):
+        # Use the main lock for thread safety
+        with self.lock:
             return self.get(f"{path}_listing_with_attrs")
 
     def set_directory_listing_with_attrs(
@@ -995,8 +991,8 @@ class CacheManager:
             path: Directory path
             listing_with_attrs: Dictionary mapping filenames to their attributes
         """
-        # Use appropriate lock based on the path
-        with self.get_path_lock(path):
+        # Use the main lock for thread safety
+        with self.lock:
             self.set(f"{path}_listing_with_attrs", listing_with_attrs)
 
     def get_file_attrs_from_parent_dir(self, path: str) -> Optional[Dict[str, Any]]:
@@ -1070,35 +1066,3 @@ class CacheManager:
         except Exception as e:
             # We can't log here as the logger might be gone
             pass
-
-    def get_path_lock(self, path: str) -> threading.RLock:
-        """Get a path-specific lock for a given path.
-
-        For frequently accessed directories, this provides finer-grained locking
-        than the global lock.
-
-        Args:
-            path: The path to get a lock for
-
-        Returns:
-            A threading.RLock specific to this path or category of paths
-        """
-        # For most paths, just use the main lock - only create specific locks
-        # for known high-contention paths
-        if not path.startswith("/playlists") and not path.startswith("/liked_songs"):
-            return self.lock
-
-        # Extract the top-level directory for this path
-        if "/" in path:
-            top_level = path.split("/")[1]
-            if not top_level:
-                return self.lock
-            top_level = f"/{top_level}"
-        else:
-            return self.lock
-
-        # Get or create a lock for this top-level path
-        with self.path_locks_lock:
-            if top_level not in self.path_locks:
-                self.path_locks[top_level] = threading.RLock()
-            return self.path_locks[top_level]
