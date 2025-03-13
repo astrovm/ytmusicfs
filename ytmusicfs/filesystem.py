@@ -2224,21 +2224,19 @@ class YouTubeMusicFS(Operations):
                     # Initialization completed
                     break
 
-                # After a few iterations, try direct streaming if possible
-                if i >= 10:  # After ~1 second
-                    stream_url = file_info.get("stream_url")
-                    if stream_url:
-                        # Don't stream if download was interrupted
-                        if self.download_progress.get(video_id) == "interrupted":
-                            self.logger.debug(
-                                f"Download interrupted for {path}, stopping read"
-                            )
-                            raise OSError(errno.EIO, "File access interrupted")
-
+                stream_url = file_info.get("stream_url")
+                if stream_url:
+                    # Don't stream if download was interrupted
+                    if self.download_progress.get(video_id) == "interrupted":
                         self.logger.debug(
-                            f"Streaming directly during initialization: {path}"
+                            f"Download interrupted for {path}, stopping read"
                         )
-                        return self._stream_content(stream_url, offset, size)
+                        raise OSError(errno.EIO, "File access interrupted")
+
+                    self.logger.debug(
+                        f"Streaming directly during initialization: {path}"
+                    )
+                    return self._stream_content(stream_url, offset, size)
 
             # Check status after waiting
             if file_info.get("status") == "error":
