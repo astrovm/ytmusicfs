@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 
-import json
-import logging
-import subprocess
 from typing import Dict, Optional, List
+from yt_dlp import YoutubeDL
+import logging
 import threading
 
 
@@ -47,48 +46,40 @@ class DurationFetcher:
             playlist_url = f"https://music.youtube.com/playlist?list={playlist_id}"
             self.logger.info(f"Fetching durations for playlist: {playlist_url}")
 
-            cmd = [
-                "yt-dlp",
-                "--flat-playlist",
-                "--dump-single-json",
-            ]
+            ydl_opts = {
+                "extract_flat": True,
+                "quiet": True,
+                "no_warnings": True,
+                "ignoreerrors": True,
+            }
 
             # Add browser cookies if specified
             if self.browser:
-                cmd.extend(["--cookies-from-browser", self.browser])
-
-            # Add the playlist URL
-            cmd.append(playlist_url)
-
-            self.logger.debug(f"Running command: {' '.join(cmd)}")
-            process = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-            )
-            output, error = process.communicate()
-
-            if process.returncode != 0:
-                self.logger.error(f"Error fetching durations: {error}")
-                return {}
+                ydl_opts["cookiesfrombrowser"] = (self.browser,)
 
             durations = {}
             try:
-                data = json.loads(output)
-                if "entries" in data:
-                    for entry in data["entries"]:
-                        video_id = entry.get("id")
-                        duration = entry.get("duration")
-                        if video_id and duration is not None:
-                            durations[video_id] = int(duration)
-                            # Update callback if provided
-                            if update_callback:
-                                update_callback(video_id, int(duration))
-                    self.logger.info(
-                        f"Fetched {len(durations)} durations for playlist {playlist_id}"
-                    )
-                else:
-                    self.logger.warning(f"No entries found in playlist {playlist_id}")
-            except json.decoder.JSONDecodeError:
-                self.logger.error(f"Failed to parse JSON output from yt-dlp")
+                with YoutubeDL(ydl_opts) as ydl:
+                    result = ydl.extract_info(playlist_url, download=False)
+
+                    if "entries" in result:
+                        for entry in result["entries"]:
+                            video_id = entry.get("id")
+                            duration = entry.get("duration")
+                            if video_id and duration is not None:
+                                durations[video_id] = int(duration)
+                                # Update callback if provided
+                                if update_callback:
+                                    update_callback(video_id, int(duration))
+                        self.logger.info(
+                            f"Fetched {len(durations)} durations for playlist {playlist_id}"
+                        )
+                    else:
+                        self.logger.warning(
+                            f"No entries found in playlist {playlist_id}"
+                        )
+            except Exception as e:
+                self.logger.error(f"Failed to extract info from YoutubeDL: {str(e)}")
                 return {}
 
             return durations
@@ -124,35 +115,29 @@ class DurationFetcher:
             video_url = f"https://music.youtube.com/watch?v={video_id}"
             self.logger.debug(f"Fetching duration for video: {video_url}")
 
-            cmd = [
-                "yt-dlp",
-                "--skip-download",
-                "--print",
-                "duration",
-            ]
+            ydl_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "skip_download": True,
+            }
 
             # Add browser cookies if specified
             if self.browser:
-                cmd.extend(["--cookies-from-browser", self.browser])
+                ydl_opts["cookiesfrombrowser"] = (self.browser,)
 
-            # Add the video URL
-            cmd.append(video_url)
-
-            self.logger.debug(f"Running command: {' '.join(cmd)}")
-            process = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-            )
-            output, error = process.communicate()
-
-            if process.returncode != 0:
-                self.logger.error(f"Error fetching duration: {error}")
-                return None
-
-            duration_str = output.strip()
+            self.logger.debug(f"Fetching info for video: {video_url}")
             try:
-                return int(duration_str)
-            except (ValueError, TypeError):
-                self.logger.error(f"Invalid duration format: {duration_str}")
+                with YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(video_url, download=False)
+                    duration = info.get("duration")
+
+                    if duration is not None:
+                        return int(duration)
+                    else:
+                        self.logger.error(f"No duration found for video {video_id}")
+                        return None
+            except Exception as e:
+                self.logger.error(f"Error extracting info: {str(e)}")
                 return None
         except Exception as e:
             self.logger.error(f"Exception fetching duration: {str(e)}")
