@@ -188,7 +188,7 @@ class FileHandler:
         self.logger.debug(f"open: {path} with video_id {video_id}")
 
         # Check if the audio file is already cached completely
-        cache_path = Path(self.cache_dir / "audio" / f"{video_id}.m4a")
+        cache_path = self.cache_dir / "audio" / f"{video_id}.m4a"
         cache_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Set up the file handle with initial information
@@ -230,154 +230,88 @@ class FileHandler:
             path: File path
         """
         try:
-            # Get file info from handle
             file_info = self.open_files.get(fh)
             if not file_info:
                 self.logger.error(f"File handle {fh} no longer exists")
                 return
 
-            cache_path = file_info["cache_path"]
-
-            # Create a queue for communication between processes
-            result_queue = multiprocessing.Queue()
-
-            # Define the process function to run yt-dlp
-            def extract_stream_url_process(video_id, browser, result_queue):
-                try:
-                    # Use yt-dlp to get the audio stream URL
-                    ydl_opts = {
-                        "format": "141/bestaudio[ext=m4a]",
-                        "extractor_args": {
-                            "youtube": {
-                                "formats": ["missing_pot"],
-                            },
-                        },
-                    }
-
-                    # Add browser cookies if a browser is specified
-                    if browser:
-                        ydl_opts["cookiesfrombrowser"] = (browser,)
-
-                    url = f"https://music.youtube.com/watch?v={video_id}"
-
-                    with YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(url, download=False)
-                        stream_url = info["url"]
-                        result_queue.put(
-                            {"status": "success", "stream_url": stream_url}
-                        )
-                except Exception as e:
-                    result_queue.put({"status": "error", "error": str(e)})
-
-            # Start the process
+            queue = multiprocessing.Queue()
             process = multiprocessing.Process(
-                target=extract_stream_url_process,
-                args=(video_id, self.browser, result_queue),
+                target=self._extract_stream_url, args=(video_id, self.browser, queue)
             )
             process.daemon = True
             process.start()
 
-            # Store the process and queue for potential termination
-            self.download_processes[video_id] = process
-            self.download_queues[video_id] = result_queue
-
-            # Wait for the result with a timeout
+            stream_url = None
             try:
-                # Set a timeout to prevent hanging indefinitely
-                result = result_queue.get(timeout=30)
-
-                # Process is done, clean up
-                if video_id in self.download_processes:
-                    del self.download_processes[video_id]
-                if video_id in self.download_queues:
-                    del self.download_queues[video_id]
-
+                result = queue.get(timeout=30)
                 if result["status"] == "error":
                     raise Exception(result["error"])
-
                 stream_url = result["stream_url"]
 
-                if not stream_url:
-                    raise Exception("No suitable audio stream found")
-
-                self.logger.debug(f"Successfully got stream URL for {video_id}")
-
-                # Get the actual file size using a HEAD request
-                actual_size = None
-                try:
-                    head_response = requests.head(stream_url, timeout=10)
-                    if (
-                        head_response.status_code == 200
-                        and "content-length" in head_response.headers
-                    ):
-                        actual_size = int(head_response.headers["content-length"])
-                        self.logger.debug(
-                            f"Got actual file size for {video_id}: {actual_size} bytes"
-                        )
-                        # Update the file size cache
-                        self.update_file_size_callback(path, actual_size)
-                    else:
-                        self.logger.warning(
-                            f"Couldn't get file size from HEAD request for {video_id}"
-                        )
-                except Exception as e:
-                    self.logger.warning(
-                        f"Error getting file size for {video_id}: {str(e)}"
+                head_response = requests.head(stream_url, timeout=10)
+                if (
+                    head_response.status_code == 200
+                    and "content-length" in head_response.headers
+                ):
+                    actual_size = int(head_response.headers["content-length"])
+                    self.logger.debug(
+                        f"Got actual file size for {video_id}: {actual_size} bytes"
                     )
-                    # Continue even if we can't get the file size
-
-                # Update the file handle with the stream URL and status
-                with self.file_handle_lock:
-                    if fh in self.open_files:
-                        self.open_files[fh]["stream_url"] = stream_url
-                        self.open_files[fh]["status"] = "ready"
-                        self.open_files[fh]["initialized_event"].set()
-
-                # Initialize download status and start the download only if not already interrupted
-                if video_id not in self.download_progress or self.download_progress[
-                    video_id
-                ] not in ["interrupted", "complete"]:
-                    self.download_progress[video_id] = 0
-                    self.download_manager.start_download(video_id, stream_url, path)
-
-            except multiprocessing.queues.Empty:
-                # Timeout occurred
-                self.logger.error(f"Timeout while extracting stream URL for {video_id}")
-                # Clean up the process
-                if video_id in self.download_processes:
-                    process = self.download_processes[video_id]
-                    if process.is_alive():
-                        process.terminate()
-                    del self.download_processes[video_id]
-                if video_id in self.download_queues:
-                    del self.download_queues[video_id]
-
-                # Update file handle with error
+                    self.update_file_size_callback(path, actual_size)
+            except Exception as e:
+                self.logger.error(f"Error getting stream URL for {video_id}: {str(e)}")
                 with self.file_handle_lock:
                     if fh in self.open_files:
                         self.open_files[fh]["status"] = "error"
-                        self.open_files[fh][
-                            "error"
-                        ] = "Timeout while extracting stream URL"
+                        self.open_files[fh]["error"] = str(e)
                         self.open_files[fh]["initialized_event"].set()
+                return
 
+            with self.file_handle_lock:
+                if fh in self.open_files:
+                    self.open_files[fh]["stream_url"] = stream_url
+                    self.open_files[fh]["status"] = "ready"
+                    self.open_files[fh]["initialized_event"].set()
+
+            self.download_manager.start_download(video_id, stream_url, path)
         except Exception as e:
             self.logger.error(f"Error preparing file {video_id}: {str(e)}")
-            # Update file handle with error
             with self.file_handle_lock:
                 if fh in self.open_files:
                     self.open_files[fh]["status"] = "error"
                     self.open_files[fh]["error"] = str(e)
                     self.open_files[fh]["initialized_event"].set()
 
-            # Clean up any processes that might be running
-            if video_id in self.download_processes:
-                process = self.download_processes[video_id]
-                if process.is_alive():
-                    process.terminate()
-                del self.download_processes[video_id]
-            if video_id in self.download_queues:
-                del self.download_queues[video_id]
+    def _extract_stream_url(self, video_id: str, browser: str, queue):
+        """Extract stream URL from YouTube Music using yt-dlp.
+
+        Args:
+            video_id: YouTube video ID
+            browser: Browser to use for cookies
+            queue: Queue to communicate results back to main process
+        """
+        try:
+            ydl_opts = {
+                "format": "141/bestaudio[ext=m4a]",
+                "extractor_args": {
+                    "youtube": {
+                        "formats": ["missing_pot"],
+                    },
+                },
+            }
+
+            if browser:
+                ydl_opts["cookiesfrombrowser"] = (browser,)
+
+            url = f"https://music.youtube.com/watch?v={video_id}"
+
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                stream_url = info["url"]
+                queue.put({"status": "success", "stream_url": stream_url})
+        except Exception as e:
+            queue.put({"status": "error", "error": str(e)})
 
     def _stream_content(
         self, stream_url: str, offset: int, size: int, retries: int = 3
@@ -469,22 +403,23 @@ class FileHandler:
         """
         self.logger.debug(f"Releasing file handle {fh} for {path}")
         with self.file_handle_lock:
-            if fh in self.open_files:
-                video_id = self.open_files[fh].get("video_id")
-                del self.open_files[fh]
-                # Remove path_to_fh entry for this path
-                if path in self.path_to_fh and self.path_to_fh[path] == fh:
-                    del self.path_to_fh[path]
+            if fh not in self.open_files:
+                return 0
+            video_id = self.open_files[fh].get("video_id")
+            del self.open_files[fh]
+            # Remove path_to_fh entry for this path
+            if path in self.path_to_fh and self.path_to_fh[path] == fh:
+                del self.path_to_fh[path]
 
-                # Stop the download if it's ongoing
-                if video_id:
-                    self.logger.debug(f"Stopping download for {video_id}")
-                    # Stop the download using the download manager
-                    self.download_manager.stop_download(video_id)
+            # Stop the download if it's ongoing
+            if video_id:
+                self.logger.debug(f"Stopping download for {video_id}")
+                # Stop the download using the download manager
+                self.download_manager.stop_download(video_id)
 
-                    # For compatibility with existing code
-                    if video_id in self.download_threads:
-                        del self.download_threads[video_id]
+                # For compatibility with existing code
+                if video_id in self.download_threads:
+                    del self.download_threads[video_id]
         return 0
 
     def _check_cached_audio(self, video_id):
