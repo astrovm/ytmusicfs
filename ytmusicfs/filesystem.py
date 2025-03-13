@@ -9,6 +9,7 @@ from ytmusicfs.cache import CacheManager
 from ytmusicfs.client import YouTubeMusicClient
 from ytmusicfs.processor import TrackProcessor
 from ytmusicfs.path_router import PathRouter
+from ytmusicfs.content_fetcher import ContentFetcher
 import errno
 import inspect
 import logging
@@ -77,6 +78,17 @@ class YouTubeMusicFS(Operations):
         # Initialize the track processor component
         self.processor = TrackProcessor(logger=self.logger)
 
+        # Initialize the content fetcher component
+        self.fetcher = ContentFetcher(
+            client=self.client,
+            processor=self.processor,
+            cache=self.cache,
+            logger=self.logger,
+        )
+
+        # Set the callback for caching directory listings with attributes
+        self.fetcher.cache_directory_callback = self._cache_directory_listing_with_attrs
+
         # Initialize the path router
         self.router = PathRouter()
 
@@ -129,77 +141,83 @@ class YouTubeMusicFS(Operations):
             ],
         )
         self.router.register(
-            "/playlists", lambda: [".", ".."] + self._readdir_playlists()
+            "/playlists", lambda: [".", ".."] + self.fetcher.readdir_playlists()
         )
         self.router.register(
-            "/liked_songs", lambda: [".", ".."] + self._readdir_liked_songs()
+            "/liked_songs", lambda: [".", ".."] + self.fetcher.readdir_liked_songs()
         )
-        self.router.register("/artists", lambda: [".", ".."] + self._readdir_artists())
-        self.router.register("/albums", lambda: [".", ".."] + self._readdir_albums())
         self.router.register(
-            "/search", lambda: [".", ".."] + self._readdir_search_categories()
+            "/artists", lambda: [".", ".."] + self.fetcher.readdir_artists()
+        )
+        self.router.register(
+            "/albums", lambda: [".", ".."] + self.fetcher.readdir_albums()
+        )
+        self.router.register(
+            "/search", lambda: [".", ".."] + self.fetcher.readdir_search_categories()
         )
         # Add handlers for /search/library and /search/catalog to show categories
         self.router.register(
             "/search/library",
-            lambda: [".", ".."] + self._readdir_search_category_options(),
+            lambda: [".", ".."] + self.fetcher.readdir_search_category_options(),
         )
         self.router.register(
             "/search/catalog",
-            lambda: [".", ".."] + self._readdir_search_category_options(),
+            lambda: [".", ".."] + self.fetcher.readdir_search_category_options(),
         )
 
         # Register dynamic handlers with wildcard capture
         self.router.register_dynamic(
             "/playlists/*",
-            lambda path, *args: [".", ".."] + self._readdir_playlist_content(path),
+            lambda path, *args: [".", ".."]
+            + self.fetcher.readdir_playlist_content(path),
         )
         self.router.register_dynamic(
             "/artists/*",
-            lambda path, *args: [".", ".."] + self._readdir_artist_content(path),
+            lambda path, *args: [".", ".."] + self.fetcher.readdir_artist_content(path),
         )
         self.router.register_dynamic(
             "/artists/*/*",
-            lambda path, *args: [".", ".."] + self._readdir_album_content(path),
+            lambda path, *args: [".", ".."] + self.fetcher.readdir_album_content(path),
         )
         self.router.register_dynamic(
             "/albums/*",
-            lambda path, *args: [".", ".."] + self._readdir_album_content(path),
+            lambda path, *args: [".", ".."] + self.fetcher.readdir_album_content(path),
         )
         # Search routes - focused on library and catalog paths only
         self.router.register_dynamic(
             "/search/*",
-            lambda path, *args: [".", ".."] + self._readdir_search_results(path, *args),
+            lambda path, *args: [".", ".."]
+            + self.fetcher.readdir_search_results(path, *args),
         )
         self.router.register_dynamic(
             "/search/library/*",
             lambda path, *args: [".", ".."]
-            + self._readdir_search_results(path, *args, scope="library"),
+            + self.fetcher.readdir_search_results(path, *args, scope="library"),
         )
         self.router.register_dynamic(
             "/search/catalog/*",
             lambda path, *args: [".", ".."]
-            + self._readdir_search_results(path, *args, scope=None),
+            + self.fetcher.readdir_search_results(path, *args, scope=None),
         )
         self.router.register_dynamic(
             "/search/library/*/*",
             lambda path, *args: [".", ".."]
-            + self._readdir_search_item_content(path, *args, scope="library"),
+            + self.fetcher.readdir_search_item_content(path, *args, scope="library"),
         )
         self.router.register_dynamic(
             "/search/catalog/*/*",
             lambda path, *args: [".", ".."]
-            + self._readdir_search_item_content(path, *args, scope=None),
+            + self.fetcher.readdir_search_item_content(path, *args, scope=None),
         )
         self.router.register_dynamic(
             "/search/library/*/*/*",
             lambda path, *args: [".", ".."]
-            + self._readdir_search_item_content(path, *args, scope="library"),
+            + self.fetcher.readdir_search_item_content(path, *args, scope="library"),
         )
         self.router.register_dynamic(
             "/search/catalog/*/*/*",
             lambda path, *args: [".", ".."]
-            + self._readdir_search_item_content(path, *args, scope=None),
+            + self.fetcher.readdir_search_item_content(path, *args, scope=None),
         )
 
         # Preload cache if requested
@@ -218,13 +236,15 @@ class YouTubeMusicFS(Operations):
         futures = []
 
         # Start loading each data type
-        futures.append(self.thread_pool.submit(self._readdir_playlists))
-        futures.append(self.thread_pool.submit(self._readdir_liked_songs))
-        futures.append(self.thread_pool.submit(self._readdir_artists))
-        futures.append(self.thread_pool.submit(self._readdir_albums))
-        futures.append(self.thread_pool.submit(self._readdir_search_categories))
+        futures.append(self.thread_pool.submit(self.fetcher.readdir_playlists))
+        futures.append(self.thread_pool.submit(self.fetcher.readdir_liked_songs))
+        futures.append(self.thread_pool.submit(self.fetcher.readdir_artists))
+        futures.append(self.thread_pool.submit(self.fetcher.readdir_albums))
+        futures.append(self.thread_pool.submit(self.fetcher.readdir_search_categories))
         # Also preload search category options
-        futures.append(self.thread_pool.submit(self._readdir_search_category_options))
+        futures.append(
+            self.thread_pool.submit(self.fetcher.readdir_search_category_options)
+        )
 
         # Wait for all preload tasks to complete
         for future in futures:
@@ -539,874 +559,6 @@ class YouTubeMusicFS(Operations):
             with self.last_access_lock:
                 self.last_access_results[operation_key] = result
             return result
-
-    def _readdir_playlists(self) -> List[str]:
-        """Handle listing playlists.
-
-        Returns:
-            List of playlist names
-        """
-
-        # Define a processing function for the playlists data
-        def process_playlists(playlists):
-            return [
-                self.processor.sanitize_filename(playlist["title"])
-                for playlist in playlists
-            ]
-
-        # Use the centralized helper to fetch and process playlists
-        return self._fetch_and_cache(
-            path="/playlists",
-            fetch_func=self.client.get_library_playlists,
-            limit=100,
-            process_func=process_playlists,
-        )
-
-    def _readdir_liked_songs(self) -> List[str]:
-        """Handle listing liked songs.
-
-        Returns:
-            List of liked song filenames
-        """
-        # First check if we have processed tracks in cache
-        processed_tracks = self.cache.get("/liked_songs_processed")
-        if processed_tracks:
-            self.logger.debug(
-                f"Using {len(processed_tracks)} cached processed tracks for /liked_songs"
-            )
-            # Cache directory listing with attributes for efficient getattr lookups
-            self._cache_directory_listing_with_attrs("/liked_songs", processed_tracks)
-            return [track["filename"] for track in processed_tracks]
-
-        # Use the centralized helper to fetch liked songs
-        liked_songs = self._fetch_and_cache(
-            path="/liked_songs",
-            fetch_func=self.client.get_liked_songs,
-            limit=10000,
-            auto_refresh=True,
-        )
-
-        # Continue with processing the data
-        if not liked_songs or "tracks" not in liked_songs:
-            self.logger.warning("No liked songs found or invalid response format")
-            return []
-
-        tracks = liked_songs.get("tracks", [])
-        self.logger.info(f"Processing {len(tracks)} liked songs")
-
-        # Process the tracks outside of any locks
-        processed_tracks = self.processor.process_tracks(tracks)
-
-        # Cache the processed tracks
-        self.cache.set("/liked_songs_processed", processed_tracks)
-
-        # Cache directory listing with attributes for efficient getattr lookups
-        self._cache_directory_listing_with_attrs("/liked_songs", processed_tracks)
-
-        return [track["filename"] for track in processed_tracks]
-
-    def _readdir_playlist_content(self, path: str) -> List[str]:
-        """Handle listing contents of a specific playlist.
-
-        Args:
-            path: Playlist path
-
-        Returns:
-            List of track filenames in the playlist
-        """
-        # Check for cached processed tracks first
-        processed_tracks = self.cache.get(path)
-        if processed_tracks:
-            self.logger.debug(
-                f"Using {len(processed_tracks)} cached processed tracks for {path}"
-            )
-            # Cache directory listing with attributes for efficient getattr lookups
-            self._cache_directory_listing_with_attrs(path, processed_tracks)
-            return [track["filename"] for track in processed_tracks]
-
-        # Extract playlist ID from path
-        playlist_name = path.split("/")[2]
-
-        # Locate the playlist ID using the sanitized name - do this outside of locks
-        playlist_id = None
-
-        # Fetch playlists data outside of locks
-        playlists = self.cache.get("/playlists")
-        if not playlists:
-            self.logger.debug("Fetching playlists data from API")
-            playlists = self.client.get_library_playlists(limit=10000)
-            self.cache.set("/playlists", playlists)
-
-        # Find matching playlist ID
-        for playlist in playlists:
-            if self.processor.sanitize_filename(playlist["title"]) == playlist_name:
-                playlist_id = playlist["playlistId"]
-                break
-
-        if not playlist_id:
-            self.logger.error(f"Could not find playlist ID for playlist: {path}")
-            return []
-
-        # Fetch the playlist tracks outside of locks
-        self.logger.debug(f"Fetching tracks for playlist ID: {playlist_id}")
-        playlist_data = self.client.get_playlist(playlist_id, limit=10000)
-
-        # Process the playlist tracks outside of locks
-        tracks_to_process = playlist_data.get("tracks", [])
-        processed_tracks, filenames = self.processor.process_tracks(tracks_to_process)
-
-        # Cache the processed playlist tracks
-        self.cache.set(path, processed_tracks)
-
-        # Cache directory listing with attributes for efficient getattr lookups
-        self._cache_directory_listing_with_attrs(path, processed_tracks)
-
-        return filenames
-
-    def _readdir_artists(self) -> List[str]:
-        """Handle listing artists.
-
-        Returns:
-            List of artist names
-        """
-        # Use the helper method to handle cache auto-refreshing
-        self._auto_refresh_cache("/artists")
-
-        # First check if we have cached artists
-        artists = self.cache.get("/artists")
-        if not artists:
-            # Fetch artists data outside of any locks
-            self.logger.debug("Fetching artists data from API")
-            artists = self.client.get_library_artists()
-            self.cache.set("/artists", artists)
-
-        # Process artist data outside of locks
-        artist_names = [
-            self.processor.sanitize_filename(artist["artist"]) for artist in artists
-        ]
-
-        return artist_names
-
-    def _readdir_albums(self) -> List[str]:
-        """Handle listing albums.
-
-        Returns:
-            List of album names
-        """
-
-        # Define a processing function for albums
-        def process_albums(albums):
-            return [
-                self.processor.sanitize_filename(album["title"]) for album in albums
-            ]
-
-        # Use the centralized helper to fetch and process albums
-        return self._fetch_and_cache(
-            path="/albums",
-            fetch_func=self.client.get_library_albums,
-            process_func=process_albums,
-        )
-
-    def _readdir_artist_content(self, path: str) -> List[str]:
-        """Handle listing contents of a specific artist.
-
-        Args:
-            path: Artist path
-
-        Returns:
-            List of directory entries for artist content
-        """
-        # Check if we have cached content
-        cached_content = self.cache.get(f"{path}_content")
-        if cached_content:
-            self.logger.debug(f"Using cached content for {path}")
-            result = list(cached_content)  # Make a copy to avoid modifying cache
-
-            # For directories, cache directory listings with attributes
-            for entry in cached_content:
-                if not entry.endswith(".m4a"):  # This is a subdirectory
-                    subdir_path = f"{path}/{entry}"
-                    # We need to preemptively mark this as a valid directory
-                    self._cache_valid_dir(subdir_path)
-
-            return result
-
-        # Extract artist ID from path
-        artist_name = os.path.basename(path)
-
-        # Find artist ID - do this outside of locks
-        artist_id = None
-
-        # Fetch artists data first (check cache, then API if needed)
-        artists = self.cache.get("/artists")
-        if not artists:
-            self.logger.debug("Fetching artists data from API")
-            artists = self.client.get_library_artists(limit=10000)
-            self.cache.set("/artists", artists)
-
-        # Search for matching artist ID
-        for artist in artists:
-            if (
-                self.processor.sanitize_filename(
-                    artist.get("name") or artist.get("artist")
-                )
-                == artist_name
-            ):
-                artist_id = artist["browseId"]
-                break
-
-        if not artist_id:
-            self.logger.error(f"Could not find artist ID for {artist_name}")
-            return []
-
-        # Get artist's singles and albums
-        artist_content = []
-        discography = []
-
-        # Add standard subdirectories
-        artist_content.extend(["singles", "albums"])
-
-        # Cache the singles and albums for this artist
-        artist_singles_cache_key = f"{path}/singles"
-        artist_albums_cache_key = f"{path}/albums"
-
-        # Fetch artist albums outside of locks
-        artist_albums = self.cache.get(artist_albums_cache_key)
-        if not artist_albums:
-            self.logger.debug(f"Fetching albums for artist ID: {artist_id}")
-            artist_albums = self.client.get_artist_albums(artist_id, limit=50)
-            self.cache.set(artist_albums_cache_key, artist_albums)
-
-        # Process album information outside of locks
-        if artist_albums:
-            # Create album directories
-            albums = []
-            for album in artist_albums:
-                if album.get("title"):
-                    album_name = self.processor.sanitize_filename(album["title"])
-                    albums.append(album_name)
-
-            # Cache album directories for album listing
-            album_dirs = list(set(albums))  # Remove duplicates
-            self.cache.set(f"{path}/albums_dirs", album_dirs)
-
-            # Mark this content as valid for future validation
-            self._cache_valid_dir(f"{path}/albums")
-            self._cache_valid_filenames(f"{path}/albums", album_dirs)
-
-            # Cache directory listing with attributes for efficient getattr lookups
-            album_listing_with_attrs = {}
-            now = time.time()
-            for album_name in album_dirs:
-                album_listing_with_attrs[album_name] = {
-                    "st_mode": stat.S_IFDIR | 0o755,
-                    "st_atime": now,
-                    "st_ctime": now,
-                    "st_mtime": now,
-                    "st_nlink": 2,
-                    "st_size": 0,
-                }
-            self.cache.set_directory_listing_with_attrs(
-                f"{path}/albums", album_listing_with_attrs
-            )
-
-        # Cache the content list
-        self.cache.set(f"{path}_content", artist_content)
-
-        return artist_content
-
-    def _readdir_album_content(self, path: str) -> List[str]:
-        """Handle listing contents of a specific album.
-
-        Args:
-            path: Album path
-
-        Returns:
-            List of track filenames in the album
-        """
-        # Check for cached processed tracks first
-        processed_tracks = self.cache.get(path)
-        if processed_tracks:
-            self.logger.debug(
-                f"Using {len(processed_tracks)} cached processed tracks for {path}"
-            )
-            # Cache directory listing with attributes for efficient getattr lookups
-            self._cache_directory_listing_with_attrs(path, processed_tracks)
-            return [track["filename"] for track in processed_tracks]
-
-        # Determine if this is an artist's album or a library album
-        is_artist_album = path.startswith("/artists/")
-        album_id = None
-        album_title = None  # Store the album title for metadata
-        artist_albums = []  # Initialize as empty list by default
-
-        # Check for hidden files
-        path_parts = path.split("/")
-        for part in path_parts:
-            if part and part.startswith("."):
-                self.logger.debug(f"Ignoring hidden album path: {path}")
-                return []
-
-        if is_artist_album:
-            parts = path.split("/")
-            artist_name = parts[2]
-            album_name = parts[3]
-
-            # Find the artist ID - do this outside of locks
-            artist_id = None
-
-            # Get artists from cache or API
-            artists = self.cache.get("/artists")
-            if not artists:
-                self.logger.debug("Fetching artists data from API")
-                artists = self.client.get_library_artists(limit=10000)
-                self.cache.set("/artists", artists)
-
-            # Find matching artist
-            for artist in artists:
-                if self.processor.sanitize_filename(artist["artist"]) == artist_name:
-                    # Safely access ID fields with fallbacks
-                    artist_id = artist.get("artistId")
-                    if not artist_id:
-                        artist_id = artist.get("browseId")
-                    if not artist_id:
-                        artist_id = artist.get("id")
-                    break
-
-            if not artist_id:
-                self.logger.error(f"Could not find artist ID for {artist_name}")
-                return []
-
-            # Get the artist's albums - outside of locks
-            artist_cache_key = f"/artist/{artist_id}"
-
-            # Check if we have cached artist albums
-            artist_albums = self.cache.get(artist_cache_key)
-            if not artist_albums:
-                # Fetch artist data outside of locks
-                self.logger.debug(f"Fetching data for artist ID: {artist_id}")
-                artist_data = self.client.get_artist(artist_id)
-                artist_albums = []
-
-                # Get albums
-                if "albums" in artist_data:
-                    for album in artist_data["albums"]["results"]:
-                        artist_albums.append(
-                            {
-                                "title": album.get("title", "Unknown Album"),
-                                "year": album.get("year", ""),
-                                "type": "album",
-                                "browseId": album.get("browseId"),
-                            }
-                        )
-
-                # Get singles
-                if "singles" in artist_data:
-                    for single in artist_data["singles"]["results"]:
-                        artist_albums.append(
-                            {
-                                "title": single.get("title", "Unknown Single"),
-                                "year": single.get("year", ""),
-                                "type": "single",
-                                "browseId": single.get("browseId"),
-                            }
-                        )
-
-                # Cache the artist albums
-                self.cache.set(artist_cache_key, artist_albums)
-
-            # Find the album ID
-            for album in artist_albums:
-                if self.processor.sanitize_filename(album["title"]) == album_name:
-                    album_id = album["browseId"]
-                    album_title = album["title"]
-                    break
-        else:
-            # Regular album path
-            album_name = path.split("/")[2]
-
-            # Find the album ID - do this outside of locks
-            # Get albums from cache or API
-            albums = self.cache.get("/albums")
-            if not albums:
-                self.logger.debug("Fetching albums data from API")
-                albums = self.client.get_library_albums(limit=10000)
-                self.cache.set("/albums", albums)
-
-            # Find matching album
-            for album in albums:
-                if self.processor.sanitize_filename(album["title"]) == album_name:
-                    album_id = album["browseId"]
-                    album_title = album["title"]
-                    break
-
-        if not album_id:
-            self.logger.error(f"Could not find album ID for album in path: {path}")
-            return []
-
-        # Get the album tracks - outside of locks
-        album_cache_key = f"/album/{album_id}"
-
-        # Check if we have cached album tracks
-        album_tracks = self.cache.get(album_cache_key)
-        if not album_tracks:
-            # Fetch album tracks outside of locks
-            self.logger.debug(f"Fetching tracks for album ID: {album_id}")
-            album_data = self.client.get_album(album_id)
-            album_tracks = album_data.get("tracks", [])
-            self.cache.set(album_cache_key, album_tracks)
-
-        # Process tracks outside of locks
-        processed_tracks, filenames = self.processor.process_tracks(album_tracks)
-
-        # Add additional album-specific information
-        for track in processed_tracks:
-            # Override album title with the one from the path
-            if album_title:
-                track["album"] = album_title
-
-            # For artist albums, try to find the album year if available
-            if is_artist_album and artist_albums and not track.get("year"):
-                for album in artist_albums:
-                    if self.processor.sanitize_filename(album["title"]) == album_name:
-                        track["year"] = album.get("year")
-                        break
-
-        # Cache the processed track list for this album
-        self.cache.set(path, processed_tracks)
-
-        # Cache directory listing with attributes for efficient getattr lookups
-        self._cache_directory_listing_with_attrs(path, processed_tracks)
-
-        return filenames
-
-    def _readdir_search_categories(self) -> List[str]:
-        """Handle listing search categories.
-
-        Returns:
-            List of search categories
-        """
-        # Return only the two scope options - library and catalog
-        categories = [
-            "library",  # Search within your library
-            "catalog",  # Search the entire YouTube Music catalog
-        ]
-
-        return categories
-
-    def _readdir_search_category_options(self) -> List[str]:
-        """Handle listing search category options (songs, videos, etc.).
-
-        Returns:
-            List of search category options
-        """
-        # Return the search category options
-        categories = [
-            "songs",  # Search for songs
-            "videos",  # Search for videos
-            "albums",  # Search for albums
-            "artists",  # Search for artists
-            "playlists",  # Search for playlists
-        ]
-
-        # Make sure these categories are recognized as valid directories
-        path_parts = inspect.stack()[1].frame.f_locals.get("path", "").split("/")
-        if len(path_parts) >= 3:
-            prefix = f"/search/{path_parts[2]}"
-            for category in categories:
-                self._cache_valid_dir(f"{prefix}/{category}")
-
-        return categories
-
-    def _readdir_search_results(
-        self, path: str, *args, scope: Optional[str] = None
-    ) -> List[str]:
-        """Handle listing search results.
-
-        Args:
-            path: Path to the search query
-            scope: Optional scope ('library' or 'catalog') for the search
-
-        Returns:
-            List of directory entries for search results
-        """
-        # Extract query from path
-        path_parts = path.split("/")
-        if len(path_parts) < 5:
-            self.logger.error(f"Invalid search path: {path}")
-            return []
-
-        # Check if we have a scope and type
-        scope = scope or path_parts[2]
-        search_type = path_parts[3]
-        query = path_parts[4]
-
-        # Handle empty query
-        if not query:
-            return []
-
-        # Validate search category
-        valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
-        if search_type not in valid_categories:
-            self.logger.error(f"Invalid search type: {search_type}")
-            return []
-
-        # Check if we have cached results
-        cache_key = f"{path}_results"
-        cached_results = self.cache.get(cache_key)
-        if cached_results:
-            self.logger.debug(f"Using cached search results for {path}")
-
-            # For search result directories, cache directory listings with attributes
-            if search_type in ["albums", "artists", "playlists"]:
-                # These search results are directories
-                now = time.time()
-                listing_with_attrs = {}
-                for entry in cached_results:
-                    if not entry.endswith(".m4a"):  # This is a subdirectory
-                        listing_with_attrs[entry] = {
-                            "st_mode": stat.S_IFDIR | 0o755,
-                            "st_atime": now,
-                            "st_ctime": now,
-                            "st_mtime": now,
-                            "st_nlink": 2,
-                            "st_size": 0,
-                        }
-                self.cache.set_directory_listing_with_attrs(path, listing_with_attrs)
-
-            return cached_results
-
-        # Perform the search
-        search_results = self._perform_search(query, scope, search_type)
-
-        # Process the results based on the category
-        results = self._process_search_result_items(search_results, search_type, path)
-
-        # Cache the results
-        self.cache.set(cache_key, results)
-
-        # Mark this directory as valid to avoid future validation overhead
-        self._cache_valid_dir(path)
-        self._cache_valid_filenames(path, results)
-
-        # For search result directories, cache directory listings with attributes
-        if search_type in ["albums", "artists", "playlists"]:
-            # These search results are directories
-            now = time.time()
-            listing_with_attrs = {}
-            for entry in results:
-                if not entry.endswith(".m4a"):  # This is a subdirectory
-                    listing_with_attrs[entry] = {
-                        "st_mode": stat.S_IFDIR | 0o755,
-                        "st_atime": now,
-                        "st_ctime": now,
-                        "st_mtime": now,
-                        "st_nlink": 2,
-                        "st_size": 0,
-                    }
-            self.cache.set_directory_listing_with_attrs(path, listing_with_attrs)
-
-        return results
-
-    def _readdir_search_item_content(
-        self, path: str, *args, scope: Optional[str] = None
-    ) -> List[str]:
-        """Handle listing contents of a specific search result item.
-
-        Args:
-            path: Search result item path
-            args: Additional arguments from wildcard match
-            scope: Search scope (None for entire catalog, 'library' for just library)
-
-        Returns:
-            List of track filenames in the search result item
-        """
-        # Check for cached processed tracks first
-        processed_tracks = self.cache.get(path)
-        if processed_tracks:
-            self.logger.debug(
-                f"Using {len(processed_tracks)} cached processed tracks for {path}"
-            )
-            # Cache directory listing with attributes for efficient getattr lookups
-            self._cache_directory_listing_with_attrs(path, processed_tracks)
-            return [track["filename"] for track in processed_tracks]
-
-        # Extract path parts
-        parts = path.split("/")
-        if len(parts) < 4:
-            self.logger.error(f"Invalid search item path: {path}")
-            return []
-
-        filter_type = None
-        search_query = None
-        item_category = None
-
-        # Handle nested library/catalog paths with categories (like /search/catalog/songs/Linkin)
-        if parts[2] == "library" or parts[2] == "catalog":
-            # Set scope based on which path we're in
-            scope = "library" if parts[2] == "library" else None
-
-            if len(parts) == 5:  # /search/catalog/songs/Linkin
-                category = parts[3]
-                search_query = parts[4]
-
-                # Get filter type based on category - use the category directly without changing to singular
-                if category in ["songs", "videos", "albums", "artists", "playlists"]:
-                    filter_type = category  # Keep plural form as expected by the API
-
-                # For direct category searches, we need to return the search results
-                # in the category folder directly, not as a subcategory
-                scope_suffix = f"_library" if scope == "library" else ""
-                filter_suffix = f"_{filter_type}" if filter_type else ""
-                cache_key = f"/search/{search_query}{scope_suffix}{filter_suffix}"
-
-                # Get cached search results or perform search
-                search_results = self.cache.get(cache_key)
-                if not search_results:
-                    # Need to perform the search
-                    search_results = self._perform_search(
-                        search_query, scope, filter_type
-                    )
-                    self.cache.set(cache_key, search_results)
-
-                # For a direct category search, use the category as the item_category
-                item_category = category
-                result_items = self._process_search_result_items(
-                    search_results, item_category, path
-                )
-
-                return result_items
-
-            elif len(parts) >= 6:  # /search/catalog/songs/query/results
-                category = parts[3]
-                search_query = parts[4]
-                item_category = parts[5]
-
-                # Get filter type based on category - keep plural form
-                if category in ["songs", "videos", "albums", "artists", "playlists"]:
-                    filter_type = category  # Keep plural form as expected by the API
-            else:
-                self.logger.error(f"Invalid nested search path: {path}")
-                return []
-        else:
-            # Standard path (like /search/query/results)
-            search_query = parts[2]
-            item_category = parts[3]
-
-            # If scope was not explicitly passed, try to determine it from the path
-            if scope is None:
-                # Default is to search entire catalog (None)
-                pass
-
-        # Generate the appropriate cache key based on scope and filter
-        scope_suffix = f"_library" if scope == "library" else ""
-        filter_suffix = f"_{filter_type}" if filter_type else ""
-        cache_key = f"/search/{search_query}{scope_suffix}{filter_suffix}"
-
-        # Get cached search results
-        search_results = self.cache.get(cache_key)
-
-        if not search_results:
-            # Need to perform the search again
-            search_results = self._perform_search(search_query, scope, filter_type)
-            self.cache.set(cache_key, search_results)
-
-        # Process the items based on category
-        result_items = self._process_search_result_items(
-            search_results, item_category, path
-        )
-
-        return result_items
-
-    def _process_search_results_to_dirs(
-        self, search_results: Dict[str, List]
-    ) -> List[str]:
-        """Process search results into directory names.
-
-        Args:
-            search_results: Categorized search results
-
-        Returns:
-            List of directory names
-        """
-        result_dirs = []
-
-        # Add a directory for each category that has results
-        for category, items in search_results.items():
-            if items:
-                count = len(items)
-                result_dirs.append(f"{category}_{count}")
-
-        return result_dirs
-
-    def _perform_search(
-        self,
-        search_query: str,
-        scope: Optional[str] = None,
-        filter_type: Optional[str] = None,
-    ) -> Dict[str, List]:
-        """Perform a search and organize results by category.
-
-        Args:
-            search_query: The search query
-            scope: The search scope (None for entire catalog, 'library' for just library)
-            filter_type: The filter type for specific content (songs, videos, albums, etc.)
-
-        Returns:
-            Dictionary mapping categories to results
-        """
-        self.logger.info(
-            f"Performing search for '{search_query}' with scope '{scope}' and filter '{filter_type}'"
-        )
-
-        # Perform search with appropriate scope and filter
-        results = self.client.search(
-            search_query, filter_type=filter_type, scope=scope, limit=100
-        )
-
-        # Organize results by category
-        categorized_results = {
-            "songs": [],
-            "videos": [],
-            "albums": [],
-            "artists": [],
-            "playlists": [],
-        }
-
-        # Map between API result types and our category names
-        result_type_map = {
-            "song": "songs",
-            "video": "videos",
-            "album": "albums",
-            "artist": "artists",
-            "playlist": "playlists",
-        }
-
-        # Process and categorize results
-        for item in results:
-            result_type = item.get("resultType")
-            if result_type in result_type_map:
-                category = result_type_map[result_type]
-                categorized_results[category].append(item)
-
-        self.logger.debug(
-            f"Search categorized results: {[(k, len(v)) for k, v in categorized_results.items()]}"
-        )
-        return categorized_results
-
-    def _process_search_result_items(
-        self, search_results: Dict[str, List], item_category: str, path: str
-    ) -> List[str]:
-        """Process search result items for a specific category.
-
-        Args:
-            search_results: Categorized search results
-            item_category: The category to process
-            path: The full path (used for caching)
-
-        Returns:
-            List of filenames
-        """
-        # Check if we already processed this category
-        processed_cache_key = f"{path}_processed"
-        processed_items = self.cache.get(processed_cache_key)
-        if processed_items:
-            self.logger.debug(f"Using cached processed items for {item_category}")
-            return [item["filename"] for item in processed_items]
-
-        # Parse the category (it may include a count suffix)
-        category_base = item_category.split("_")[0]
-
-        # Get items for the specific category
-        items_to_process = search_results.get(category_base, [])
-
-        if not items_to_process:
-            self.logger.warning(f"No items found for category: {category_base}")
-            return []
-
-        # Process the items based on their type
-        if category_base in ["songs", "videos"]:
-            # For songs and videos, process them as tracks
-            processed_tracks, filenames = self.processor.process_tracks(
-                items_to_process
-            )
-
-            # Cache the processed tracks
-            self.cache.set(processed_cache_key, processed_tracks)
-
-            return filenames
-
-        elif category_base == "albums":
-            # For albums, create a list of album names
-            album_names = []
-            processed_albums = []
-
-            for i, album in enumerate(items_to_process):
-                album_title = album.get("title", f"Unknown Album {i+1}")
-                album_name = self.processor.sanitize_filename(album_title)
-
-                # Store the browse ID to fetch album contents later
-                processed_album = {
-                    "title": album_title,
-                    "browseId": album.get("browseId"),
-                    "filename": album_name,
-                }
-                processed_albums.append(processed_album)
-                album_names.append(album_name)
-
-            # Cache the processed albums
-            self.cache.set(processed_cache_key, processed_albums)
-
-            return album_names
-
-        elif category_base == "artists":
-            # For artists, create a list of artist names
-            artist_names = []
-            processed_artists = []
-
-            for i, artist in enumerate(items_to_process):
-                artist_name = artist.get("artist", f"Unknown Artist {i+1}")
-                sanitized_name = self.processor.sanitize_filename(artist_name)
-
-                # Store the browse ID to fetch artist contents later
-                processed_artist = {
-                    "artist": artist_name,
-                    "browseId": artist.get("browseId"),
-                    "filename": sanitized_name,
-                }
-                processed_artists.append(processed_artist)
-                artist_names.append(sanitized_name)
-
-            # Cache the processed artists
-            self.cache.set(processed_cache_key, processed_artists)
-
-            return artist_names
-
-        elif category_base == "playlists":
-            # For playlists, create a list of playlist names
-            playlist_names = []
-            processed_playlists = []
-
-            for i, playlist in enumerate(items_to_process):
-                playlist_title = playlist.get("title", f"Unknown Playlist {i+1}")
-                playlist_name = self.processor.sanitize_filename(playlist_title)
-
-                # Store the browse ID to fetch playlist contents later
-                processed_playlist = {
-                    "title": playlist_title,
-                    "playlistId": playlist.get("playlistId"),
-                    "browseId": playlist.get("browseId"),
-                    "filename": playlist_name,
-                }
-                processed_playlists.append(processed_playlist)
-                playlist_names.append(playlist_name)
-
-            # Cache the processed playlists
-            self.cache.set(processed_cache_key, processed_playlists)
-
-            return playlist_names
-
-        return []
 
     def getattr(self, path: str, fh: Optional[int] = None) -> Dict[str, Any]:
         """Get file attributes.
@@ -2744,44 +1896,6 @@ class YouTubeMusicFS(Operations):
         # Disallow removing directories in other parts of the filesystem
         self.logger.warning(f"Attempt to remove directory not in search path: {path}")
         raise OSError(errno.EPERM, "Cannot remove directory outside of search paths")
-
-    def _fetch_and_cache(
-        self,
-        path: str,
-        fetch_func: Callable,
-        limit: int = 10000,
-        process_func: Optional[Callable] = None,
-        auto_refresh: bool = True,
-    ):
-        """Centralized helper to fetch and cache data with consistent logic.
-
-        Args:
-            path: The cache path to use
-            fetch_func: Function to call to fetch the data if not cached
-            limit: Limit parameter to pass to fetch_func
-            process_func: Optional function to process data after fetching
-            auto_refresh: Whether to enable auto-refresh for this cache entry
-
-        Returns:
-            The cached or fetched data, optionally processed
-        """
-        # Handle cache auto-refreshing if enabled
-        if auto_refresh:
-            self._auto_refresh_cache(path)
-
-        # Check if we have cached data
-        data = self.cache.get(path)
-        if not data:
-            # Fetch data outside of any locks
-            self.logger.debug(f"Fetching data from API for {path}")
-            data = fetch_func(limit=limit)
-            self.cache.set(path, data)
-
-        # Process data if a processing function is provided
-        if process_func and data:
-            return process_func(data)
-
-        return data
 
 
 def mount_ytmusicfs(
