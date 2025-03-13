@@ -60,13 +60,17 @@ def main(args=None):
 
         args = parser.parse_args()
 
-    # Configure logging
-    log_level = logging.DEBUG if args.debug else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    logger = logging.getLogger("YTMusicFS OAuth")
+    # Use provided logger or create a new one
+    if hasattr(args, "logger") and args.logger:
+        logger = args.logger
+    else:
+        # Configure logging
+        log_level = logging.DEBUG if args.debug else logging.INFO
+        logging.basicConfig(
+            level=log_level,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        )
+        logger = logging.getLogger("YTMusicFS OAuth")
 
     logger.info("YTMusicFS OAuth Setup")
     logger.info("=====================")
@@ -122,14 +126,14 @@ def main(args=None):
 
     if not client_id or not client_secret:
         logger.error("Error: Client ID and Client Secret are required.")
-        return 1
+        return 1, logger
 
     # Check if file exists
     if output_file.exists():
         overwrite = input(f"File {output_file} already exists. Overwrite? (y/n): ")
         if overwrite.lower() != "y":
             logger.info("Aborted.")
-            return 1
+            return 1, logger
 
     try:
         logger.info("Starting OAuth setup...")
@@ -202,7 +206,7 @@ def main(args=None):
                 "The OAuth setup completed but there was an error testing the connection."
             )
             logger.error("You might need to re-run the setup.")
-            return 1
+            return 1, logger
 
         logger.info("")
         logger.info("You can now use YTMusicFS with the following command:")
@@ -210,14 +214,14 @@ def main(args=None):
             f"ytmusicfs mount --mount-point <mount_point> --auth-file {output_file}"
         )
 
-        return 0
+        return 0, logger
 
     except Exception as e:
         logger.error(f"Error during OAuth setup: {e}")
         import traceback
 
         logger.error(traceback.format_exc())
-        return 1
+        return 1, logger
 
 
 if __name__ == "__main__":

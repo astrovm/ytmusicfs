@@ -135,6 +135,7 @@ class YouTubeMusicFS(Operations):
         cache_maxsize: int = 10000,
         preload_cache: bool = True,
         request_cooldown: int = 1000,
+        logger: Optional[logging.Logger] = None,
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
@@ -149,9 +150,10 @@ class YouTubeMusicFS(Operations):
             cache_maxsize: Maximum number of items to keep in memory cache (default: 10000)
             preload_cache: Whether to preload cache data at startup (default: True)
             request_cooldown: Time in milliseconds between allowed repeated requests to the same path (default: 1000)
+            logger: Logger instance to use (default: creates a new logger)
         """
-        # Get the logger
-        self.logger = logging.getLogger("YTMusicFS")
+        # Get or create the logger
+        self.logger = logger or logging.getLogger("YTMusicFS")
 
         # Initialize the client component
         self.client = YouTubeMusicClient(
@@ -2895,6 +2897,7 @@ def mount_ytmusicfs(
     cache_maxsize: int = 10000,
     preload_cache: bool = True,
     request_cooldown: int = 1000,
+    logger: Optional[logging.Logger] = None,
 ) -> None:
     """Mount the YouTube Music filesystem.
 
@@ -2913,6 +2916,7 @@ def mount_ytmusicfs(
         cache_maxsize: Maximum number of items to keep in memory cache (default: 10000)
         preload_cache: Whether to preload cache data at startup (default: True)
         request_cooldown: Time in milliseconds between allowed repeated requests to the same path (default: 1000)
+        logger: Logger instance to use (default: None, creates a new logger)
     """
     # Set fuse logger to WARNING level to suppress debug messages about unsupported operations
     logging.getLogger("fuse").setLevel(logging.WARNING)
@@ -2929,6 +2933,7 @@ def mount_ytmusicfs(
             cache_maxsize=cache_maxsize,
             preload_cache=preload_cache,
             request_cooldown=request_cooldown,
+            logger=logger,
         ),
         mount_point,
         foreground=foreground,

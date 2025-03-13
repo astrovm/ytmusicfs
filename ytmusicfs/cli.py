@@ -95,6 +95,7 @@ class MountCommandHandler:
                     if self.config.credentials_file
                     else None
                 ),
+                logger=self.logger,
             )
             return 0
         except Exception as e:
@@ -166,10 +167,27 @@ def main() -> int:
     oauth_parser.add_argument(
         "--debug", "-d", action="store_true", help="Enable debug output"
     )
-    oauth_parser.set_defaults(func=oauth_setup)
+    oauth_parser.set_defaults(
+        func=lambda args: oauth_with_logger(args, setup_logging(args))
+    )
 
     args = parser.parse_args()
     return args.func(args)
+
+
+def oauth_with_logger(args, logger):
+    """Wrapper function to pass the logger to the oauth_setup function.
+
+    Args:
+        args: Command line arguments
+        logger: Logger instance
+
+    Returns:
+        Exit code
+    """
+    args.logger = logger
+    result, _ = oauth_setup(args)
+    return result
 
 
 if __name__ == "__main__":
