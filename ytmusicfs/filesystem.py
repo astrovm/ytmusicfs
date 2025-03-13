@@ -338,21 +338,15 @@ class YouTubeMusicFS(Operations):
         """Optimize path validation by pre-caching known valid paths.
 
         This method creates a set of known valid paths to avoid repeated validation
-        and improve performance.
+        and improve performance. Static paths that are always valid are checked directly
+        in the _is_valid_path method and don't need caching.
         """
         self.logger.info("Optimizing path validation...")
 
-        # Cache the basic directory structure
-        self._cache_valid_dir("/")
-        self._cache_valid_dir("/playlists")
-        self._cache_valid_dir("/liked_songs")
-        self._cache_valid_dir("/artists")
-        self._cache_valid_dir("/albums")
-        self._cache_valid_dir("/search")
-        self._cache_valid_dir("/search/library")
-        self._cache_valid_dir("/search/catalog")
+        # We no longer need to cache these static directories since they're checked directly in _is_valid_path
+        # Only cache dynamic paths that need validation
 
-        # Cache search category directories
+        # Cache search category directories - these are still cached to preserve compatibility with other code
         for category in ["songs", "videos", "albums", "artists", "playlists"]:
             self._cache_valid_dir(f"/search/library/{category}")
             self._cache_valid_dir(f"/search/catalog/{category}")
@@ -385,18 +379,12 @@ class YouTubeMusicFS(Operations):
         context = inspect.currentframe().f_back.f_code.co_name
         self.logger.debug(f"_is_valid_path called from {context} for {path}")
 
-        # Check for mkdir in stack trace for better detection
-        stack = traceback.format_stack()
-        is_mkdir_in_stack = any("mkdir" in frame for frame in stack)
-
-        # For mkdir operations, most paths should be considered valid
-        # This allows the mkdir operation to proceed and then fail at its own validation
-        # instead of getting blocked early by path validation
-        if context == "mkdir" or "mkdir" in context or is_mkdir_in_stack:
+        # For mkdir operations, always return true to let mkdir's own validation handle it
+        if context == "mkdir" or "mkdir" in context:
             self.logger.debug(f"Allowing path as valid due to mkdir context: {path}")
             return True
 
-        # Root and main category directories are always valid
+        # Root and main category directories are always valid - no need to cache these
         if path == "/" or path in [
             "/playlists",
             "/liked_songs",
@@ -408,31 +396,25 @@ class YouTubeMusicFS(Operations):
         ]:
             return True
 
-        # Search category paths are valid
+        # Search category paths are valid - simplified logic
         if path.startswith("/search/library/") or path.startswith("/search/catalog/"):
             parts = path.split("/")
+
             # Category paths like /search/library/songs
             if len(parts) == 4:
                 valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
                 if parts[3] in valid_categories:
                     return True
 
-            # Search query paths like /search/library/songs/query
-            if len(parts) == 5:
+            # Search query paths - simplified
+            if len(parts) >= 5:
                 valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
                 if parts[3] in valid_categories:
-                    # For search paths, use the cache's optimized path validation
-                    if self.cache.is_valid_path(path):
-                        return True
-
-                    # If the directory doesn't exist in our cache,
-                    # we'll still consider it potentially valid for certain operations
+                    # For getattr, consider it potentially valid to allow further validation
                     if context == "getattr":
-                        # For getattr, let it decide existence based on cache
-                        self.logger.debug(
-                            f"Directing path validation to getattr: {path}"
-                        )
                         return True
+                    # For other operations, rely on cache
+                    return self.cache.is_valid_path(path)
 
         # For file paths, check if they exist in parent directory's listings with attributes
         if "." in path and path.lower().endswith(".m4a"):
@@ -442,9 +424,6 @@ class YouTubeMusicFS(Operations):
             # Check if file exists in parent directory's cached listing with attributes
             dir_listing = self.cache.get_directory_listing_with_attrs(parent_dir)
             if dir_listing and filename in dir_listing:
-                self.logger.debug(
-                    f"Found {filename} in {parent_dir} directory listing with attributes"
-                )
                 return True
 
         # Use the cache's optimized path validation for all other paths
@@ -663,24 +642,21 @@ class YouTubeMusicFS(Operations):
         Returns:
             List of playlist names
         """
-        # Use the helper method to handle cache auto-refreshing
-        self._auto_refresh_cache("/playlists")
 
-        # Check if we have cached playlists
-        playlists = self.cache.get("/playlists")
-        if not playlists:
-            # Fetch playlists data outside of any locks
-            self.logger.debug("Fetching playlists data from API")
-            playlists = self.client.get_library_playlists(limit=100)
-            self.cache.set("/playlists", playlists)
+        # Define a processing function for the playlists data
+        def process_playlists(playlists):
+            return [
+                self.processor.sanitize_filename(playlist["title"])
+                for playlist in playlists
+            ]
 
-        # Process playlist data outside of locks
-        playlist_names = [
-            self.processor.sanitize_filename(playlist["title"])
-            for playlist in playlists
-        ]
-
-        return playlist_names
+        # Use the centralized helper to fetch and process playlists
+        return self._fetch_and_cache(
+            path="/playlists",
+            fetch_func=self.client.get_library_playlists,
+            limit=100,
+            process_func=process_playlists,
+        )
 
     def _readdir_liked_songs(self) -> List[str]:
         """Handle listing liked songs.
@@ -688,9 +664,6 @@ class YouTubeMusicFS(Operations):
         Returns:
             List of liked song filenames
         """
-        # Use the helper method to handle cache auto-refreshing
-        self._auto_refresh_cache("/liked_songs")
-
         # First check if we have processed tracks in cache
         processed_tracks = self.cache.get("/liked_songs_processed")
         if processed_tracks:
@@ -701,33 +674,32 @@ class YouTubeMusicFS(Operations):
             self._cache_directory_listing_with_attrs("/liked_songs", processed_tracks)
             return [track["filename"] for track in processed_tracks]
 
-        # If no processed tracks in cache, fetch data outside of any locks
-        self.logger.debug("Fetching liked songs data from API")
-        liked_songs = self.client.get_liked_songs(limit=10000)
-
-        # Process the raw liked songs data outside of any locks
-        self.logger.debug(f"Processing raw liked songs data: {type(liked_songs)}")
-
-        # Handle both possible response formats from the API:
-        # 1. A dictionary with a 'tracks' key containing the list of tracks
-        # 2. A direct list of tracks
-        tracks_to_process = liked_songs
-        if isinstance(liked_songs, dict) and "tracks" in liked_songs:
-            tracks_to_process = liked_songs["tracks"]
-
-        # Use the track processor to process tracks and create filenames (outside of locks)
-        processed_tracks, filenames = self.processor.process_tracks(tracks_to_process)
-
-        # Cache the processed song list with filename mappings
-        self.logger.debug(
-            f"Caching {len(processed_tracks)} processed tracks for /liked_songs"
+        # Use the centralized helper to fetch liked songs
+        liked_songs = self._fetch_and_cache(
+            path="/liked_songs",
+            fetch_func=self.client.get_liked_songs,
+            limit=10000,
+            auto_refresh=True,
         )
+
+        # Continue with processing the data
+        if not liked_songs or "tracks" not in liked_songs:
+            self.logger.warning("No liked songs found or invalid response format")
+            return []
+
+        tracks = liked_songs.get("tracks", [])
+        self.logger.info(f"Processing {len(tracks)} liked songs")
+
+        # Process the tracks outside of any locks
+        processed_tracks = self.processor.process_tracks(tracks)
+
+        # Cache the processed tracks
         self.cache.set("/liked_songs_processed", processed_tracks)
 
         # Cache directory listing with attributes for efficient getattr lookups
         self._cache_directory_listing_with_attrs("/liked_songs", processed_tracks)
 
-        return filenames
+        return [track["filename"] for track in processed_tracks]
 
     def _readdir_playlist_content(self, path: str) -> List[str]:
         """Handle listing contents of a specific playlist.
@@ -817,23 +789,19 @@ class YouTubeMusicFS(Operations):
         Returns:
             List of album names
         """
-        # Use the helper method to handle cache auto-refreshing
-        self._auto_refresh_cache("/albums")
 
-        # First check if we have cached albums
-        albums = self.cache.get("/albums")
-        if not albums:
-            # Fetch albums data outside of any locks
-            self.logger.debug("Fetching albums data from API")
-            albums = self.client.get_library_albums()
-            self.cache.set("/albums", albums)
+        # Define a processing function for albums
+        def process_albums(albums):
+            return [
+                self.processor.sanitize_filename(album["title"]) for album in albums
+            ]
 
-        # Process album data outside of locks
-        album_names = [
-            self.processor.sanitize_filename(album["title"]) for album in albums
-        ]
-
-        return album_names
+        # Use the centralized helper to fetch and process albums
+        return self._fetch_and_cache(
+            path="/albums",
+            fetch_func=self.client.get_library_albums,
+            process_func=process_albums,
+        )
 
     def _readdir_artist_content(self, path: str) -> List[str]:
         """Handle listing contents of a specific artist.
@@ -2872,6 +2840,44 @@ class YouTubeMusicFS(Operations):
         # Disallow removing directories in other parts of the filesystem
         self.logger.warning(f"Attempt to remove directory not in search path: {path}")
         raise OSError(errno.EPERM, "Cannot remove directory outside of search paths")
+
+    def _fetch_and_cache(
+        self,
+        path: str,
+        fetch_func: Callable,
+        limit: int = 10000,
+        process_func: Optional[Callable] = None,
+        auto_refresh: bool = True,
+    ):
+        """Centralized helper to fetch and cache data with consistent logic.
+
+        Args:
+            path: The cache path to use
+            fetch_func: Function to call to fetch the data if not cached
+            limit: Limit parameter to pass to fetch_func
+            process_func: Optional function to process data after fetching
+            auto_refresh: Whether to enable auto-refresh for this cache entry
+
+        Returns:
+            The cached or fetched data, optionally processed
+        """
+        # Handle cache auto-refreshing if enabled
+        if auto_refresh:
+            self._auto_refresh_cache(path)
+
+        # Check if we have cached data
+        data = self.cache.get(path)
+        if not data:
+            # Fetch data outside of any locks
+            self.logger.debug(f"Fetching data from API for {path}")
+            data = fetch_func(limit=limit)
+            self.cache.set(path, data)
+
+        # Process data if a processing function is provided
+        if process_func and data:
+            return process_func(data)
+
+        return data
 
 
 def mount_ytmusicfs(

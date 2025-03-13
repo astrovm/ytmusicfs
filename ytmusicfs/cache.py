@@ -162,15 +162,27 @@ class CacheManager:
         Returns:
             True if the path is valid, False otherwise
         """
-        # Root is always valid
-        if path == "/":
+        # Fast path for common static paths - avoid cache lookup
+        if path == "/" or path.startswith("/search/"):
             return True
 
-        # Search paths are dynamically generated and always considered valid
-        if path.startswith("/search/"):
+        # Common top-level paths that are always valid
+        if path in ["/playlists", "/liked_songs", "/artists", "/albums"]:
             return True
 
-        # Check if in our precomputed valid paths set with minimal lock time
+        # Second-level paths under search that are always valid
+        if path == "/search/library" or path == "/search/catalog":
+            return True
+
+        # Common category paths under search that are always valid
+        for category in ["songs", "videos", "albums", "artists", "playlists"]:
+            if (
+                path == f"/search/library/{category}"
+                or path == f"/search/catalog/{category}"
+            ):
+                return True
+
+        # Check in the precomputed valid paths set with minimal lock time
         with self.cache_lock:
             return path in self.valid_paths
 
