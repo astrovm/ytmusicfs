@@ -42,15 +42,12 @@ class CacheManager:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.logger.info(f"Using cache directory: {self.cache_dir}")
 
-        # Initialize locks
-        self.cache_lock = threading.RLock()  # Lock for in-memory cache access
-        self.db_lock = threading.RLock()  # Dedicated lock for database operations
+        # Initialize a single lock for most operations
+        self.lock = threading.RLock()
 
-        # Initialize path-specific locks for frequently accessed directories
+        # Path-specific locks - only created when needed
         self.path_locks = {}
-        self.path_locks_lock = (
-            threading.RLock()
-        )  # Meta-lock for the path_locks dictionary
+        self.path_locks_lock = threading.RLock()
 
         # Initialize SQLite database
         self.db_path = self.cache_dir / "cache.db"
@@ -58,7 +55,7 @@ class CacheManager:
         self.conn.execute("PRAGMA journal_mode=WAL;")
 
         # Create a single cursor for all operations
-        with self.db_lock:
+        with self.lock:
             self.cursor = self.conn.cursor()
             self.cursor.execute(
                 """
@@ -92,7 +89,7 @@ class CacheManager:
         self.logger.debug("Loading valid paths from SQLite into memory...")
         valid_paths_count = 0
 
-        with self.db_lock:
+        with self.lock:
             try:
                 # Load paths from valid_dir: entries
                 self.cursor.execute(
@@ -124,17 +121,14 @@ class CacheManager:
         Args:
             path: The path to mark as valid
         """
-        # Get the path-specific lock
-        path_lock = self.get_path_lock(path)
-
         # Add to in-memory set with minimal locking
         add_to_cache = False
-        with self.cache_lock:
+        with self.lock:
             if path not in self.valid_paths:
                 self.valid_paths.add(path)
                 add_to_cache = True
 
-        # Only persist to database if needed (outside the cache_lock)
+        # Only persist to database if needed
         if add_to_cache:
             self.set(f"valid_dir:{path}", True)
 
@@ -145,7 +139,7 @@ class CacheManager:
             path: The path to remove from valid paths
         """
         # Remove from in-memory set
-        with self.cache_lock:
+        with self.lock:
             if path in self.valid_paths:
                 self.valid_paths.remove(path)
 
@@ -183,7 +177,7 @@ class CacheManager:
                 return True
 
         # Check in the precomputed valid paths set with minimal lock time
-        with self.cache_lock:
+        with self.lock:
             return path in self.valid_paths
 
     def add_valid_dir(self, dir_path: str) -> None:
@@ -218,11 +212,10 @@ class CacheManager:
         Returns:
             Sanitized cache key suitable for database storage
         """
-        # Enhanced sanitization: replace slashes and special characters
+        # Simple sanitization: replace slashes and special characters
         key = path.replace("/", "_").replace("'", "''").replace(" ", "_")
 
-        # If the key is too long (> 200 chars), hash it to avoid key length issues
-        # Keep a prefix to make it somewhat readable/debuggable
+        # Only hash if the key is too long (> 200 chars)
         MAX_KEY_LENGTH = 200
         if len(key) > MAX_KEY_LENGTH:
             # Get the first 30 chars for readability
@@ -246,18 +239,22 @@ class CacheManager:
         Returns:
             Original filesystem path
         """
-        # If this is a hashed key, try to look up the original path
-        if self.is_hashed_key(key):
+        # Fast path: most keys aren't hashed
+        if (
+            "_" in key
+            and len(key) > 30
+            and key[30:31] == "_"
+            and len(key) - key.rfind("_") == 33
+        ):
+            # This is a hashed key, try to look up the original path
             original_path = self.get_original_path(key)
             if original_path:
                 return original_path
             self.logger.warning(f"Cannot convert hashed key back to path: {key}")
             return key  # Return as is if we can't reconstruct the original
 
-        # Regular key - just replace underscores with slashes
-        # We need to reverse any special character handling here
+        # Regular key - just replace underscores with slashes and restore quotes
         path = key.replace("_", "/")
-        # Restore single quotes if they were escaped
         path = path.replace("''", "'")
         return path
 
@@ -271,18 +268,18 @@ class CacheManager:
             The cached data if valid, None otherwise
         """
         # First check memory cache with minimal lock time
-        with self.cache_lock:
+        with self.lock:
             if path in self.cache:
                 cache_entry = self.cache[path]
                 if time.time() - cache_entry["time"] < self.cache_timeout:
                     self.logger.debug(f"Cache hit (memory) for {path}")
                     return cache_entry["data"]
 
-        # Then check SQLite cache (outside the cache_lock)
+        # Then check SQLite cache (outside the lock)
         key = self.path_to_key(path)
         cache_data = None
 
-        with self.db_lock:
+        with self.lock:
             try:
                 self.cursor.execute(
                     "SELECT entry FROM cache_entries WHERE key = ?", (key,)
@@ -299,7 +296,7 @@ class CacheManager:
         if cache_data and time.time() - cache_data["time"] < self.cache_timeout:
             self.logger.debug(f"Cache hit (disk) for {path}")
             # Update memory cache with minimal lock time
-            with self.cache_lock:
+            with self.lock:
                 self.cache[path] = cache_data
             return cache_data["data"]
 
@@ -316,7 +313,7 @@ class CacheManager:
         cache_entry = {"data": data, "time": time.time()}
 
         # Update memory cache with minimal lock time
-        with self.cache_lock:
+        with self.lock:
             self.cache[path] = cache_entry
 
         # Prepare SQLite data outside of lock
@@ -324,7 +321,7 @@ class CacheManager:
         entry_str = json.dumps(cache_entry)
 
         # Update SQLite cache with a dedicated lock
-        with self.db_lock:
+        with self.lock:
             try:
                 self.cursor.execute(
                     """
@@ -345,13 +342,13 @@ class CacheManager:
         Args:
             path: The path to delete from cache
         """
-        with self.cache_lock:
+        with self.lock:
             if path in self.cache:
                 del self.cache[path]
 
         # Also delete from SQLite cache with a dedicated lock
         key = self.path_to_key(path)
-        with self.db_lock:
+        with self.lock:
             try:
                 self.cursor.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
                 self.conn.commit()
@@ -359,22 +356,6 @@ class CacheManager:
                 self.logger.warning(
                     f"Failed to delete from database cache for {path}: {e.__class__.__name__}: {e}"
                 )
-
-    def is_hashed_key(self, key: str) -> bool:
-        """Check if a key is a hashed key.
-
-        Args:
-            key: The key to check
-
-        Returns:
-            True if the key is a hashed key, False otherwise
-        """
-        return (
-            "_" in key
-            and len(key) > 30
-            and key[30:31] == "_"
-            and len(key) - key.rfind("_") == 33
-        )
 
     def get_keys_by_pattern(self, pattern: str) -> List[str]:
         """Get all cache keys matching a pattern.
@@ -390,7 +371,7 @@ class CacheManager:
 
         # First check memory cache with minimal lock time
         memory_keys = []
-        with self.cache_lock:
+        with self.lock:
             memory_keys = list(self.cache.keys())
 
         # Process keys outside the lock
@@ -400,7 +381,7 @@ class CacheManager:
 
         # Also check SQLite database for keys not in memory
         db_keys = []
-        with self.db_lock:
+        with self.lock:
             try:
                 # Fetch all keys from the database
                 self.cursor.execute("SELECT key FROM cache_entries")
@@ -413,7 +394,13 @@ class CacheManager:
         # Process database keys outside the lock
         for key in db_keys:
             # For hashed keys, get the original path and check against pattern
-            if self.is_hashed_key(key):
+            is_hashed = (
+                "_" in key
+                and len(key) > 30
+                and key[30:31] == "_"
+                and len(key) - key.rfind("_") == 33
+            )
+            if is_hashed:
                 original_path = self.get_original_path(key)
                 if original_path and re.match(f"^{pattern_re}$", original_path):
                     if original_path not in matching_keys:
@@ -443,7 +430,7 @@ class CacheManager:
 
         # First identify keys to delete from memory cache (minimal lock time)
         keys_to_delete = []
-        with self.cache_lock:
+        with self.lock:
             # Find all matching keys in memory cache
             keys_to_delete = [
                 k for k in self.cache.keys() if re.match(f"^{pattern_re}$", k)
@@ -451,7 +438,7 @@ class CacheManager:
 
         # Then delete them with minimal lock time
         if keys_to_delete:
-            with self.cache_lock:
+            with self.lock:
                 for key in keys_to_delete:
                     if key in self.cache:  # Check again in case it was removed
                         del self.cache[key]
@@ -463,7 +450,7 @@ class CacheManager:
 
         # Delete each matching path from the database within a single transaction
         if matching_paths:
-            with self.db_lock:
+            with self.lock:
                 try:
                     for path in matching_paths:
                         key = self.path_to_key(path)
@@ -516,13 +503,13 @@ class CacheManager:
         """
         try:
             # Store in memory for quick lookups
-            with self.cache_lock:
+            with self.lock:
                 if not hasattr(self, "hash_to_path"):
                     self.hash_to_path = {}
                 self.hash_to_path[hashed_key] = original_path
 
             # Store in SQLite database with a dedicated lock
-            with self.db_lock:
+            with self.lock:
                 self.cursor.execute(
                     """
                     INSERT OR REPLACE INTO hash_mappings (hashed_key, original_path)
@@ -547,12 +534,12 @@ class CacheManager:
             The original path if found, None otherwise
         """
         # First check in-memory cache
-        with self.cache_lock:
+        with self.lock:
             if hasattr(self, "hash_to_path") and hashed_key in self.hash_to_path:
                 return self.hash_to_path[hashed_key]
 
         # Then check in SQLite database with a dedicated lock
-        with self.db_lock:
+        with self.lock:
             try:
                 self.cursor.execute(
                     "SELECT original_path FROM hash_mappings WHERE hashed_key = ?",
@@ -562,7 +549,7 @@ class CacheManager:
                 if row:
                     original_path = row[0]
                     # Also update in-memory cache for next time
-                    with self.cache_lock:
+                    with self.lock:
                         if not hasattr(self, "hash_to_path"):
                             self.hash_to_path = {}
                         self.hash_to_path[hashed_key] = original_path
@@ -978,7 +965,7 @@ class CacheManager:
                 self.delete_pattern(key_pattern)
 
         # Remove from in-memory valid paths set
-        with self.cache_lock:
+        with self.lock:
             if path in self.valid_paths:
                 self.valid_paths.remove(path)
 
@@ -995,7 +982,7 @@ class CacheManager:
         Returns:
             Dictionary mapping filenames to their attributes, or None if not cached
         """
-        # Use path-specific lock for this operation
+        # Use appropriate lock based on the path
         with self.get_path_lock(path):
             return self.get(f"{path}_listing_with_attrs")
 
@@ -1008,7 +995,7 @@ class CacheManager:
             path: Directory path
             listing_with_attrs: Dictionary mapping filenames to their attributes
         """
-        # Use path-specific lock for this operation
+        # Use appropriate lock based on the path
         with self.get_path_lock(path):
             self.set(f"{path}_listing_with_attrs", listing_with_attrs)
 
@@ -1068,7 +1055,7 @@ class CacheManager:
         """Get a path-specific lock for a given path.
 
         For frequently accessed directories, this provides finer-grained locking
-        than the global cache_lock.
+        than the global lock.
 
         Args:
             path: The path to get a lock for
@@ -1076,16 +1063,19 @@ class CacheManager:
         Returns:
             A threading.RLock specific to this path or category of paths
         """
-        # Get the top-level directory for this path
-        if path == "/":
-            top_level = "/"
+        # For most paths, just use the main lock - only create specific locks
+        # for known high-contention paths
+        if not path.startswith("/playlists") and not path.startswith("/liked_songs"):
+            return self.lock
+
+        # Extract the top-level directory for this path
+        if "/" in path:
+            top_level = path.split("/")[1]
+            if not top_level:
+                return self.lock
+            top_level = f"/{top_level}"
         else:
-            parts = path.split("/")
-            if len(parts) > 1 and parts[1]:
-                # Use first directory level as the lock category
-                top_level = f"/{parts[1]}"
-            else:
-                top_level = path
+            return self.lock
 
         # Get or create a lock for this top-level path
         with self.path_locks_lock:
