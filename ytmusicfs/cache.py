@@ -254,14 +254,15 @@ class CacheManager:
         path = path.replace("''", "'")
         return path
 
-    def get(self, path: str) -> Optional[Any]:
+    def get(self, path: str, include_metadata: bool = False) -> Optional[Any]:
         """Get data from cache if it's still valid.
 
         Args:
             path: The path to retrieve from cache
+            include_metadata: If True, return (data, metadata) tuple
 
         Returns:
-            The cached data if valid, None otherwise
+            The cached data if valid, or (data, metadata) tuple if include_metadata is True, None otherwise
         """
         # First check memory cache with minimal lock time
         with self.lock:
@@ -269,6 +270,9 @@ class CacheManager:
                 cache_entry = self.cache[path]
                 if time.time() - cache_entry["time"] < self.cache_timeout:
                     self.logger.debug(f"Cache hit (memory) for {path}")
+                    if include_metadata:
+                        metadata = self.get(f"{path}_search_metadata")
+                        return cache_entry["data"], metadata
                     return cache_entry["data"]
 
         # Then check SQLite cache (outside the lock)
@@ -294,6 +298,9 @@ class CacheManager:
             # Update memory cache with minimal lock time
             with self.lock:
                 self.cache[path] = cache_data
+            if include_metadata:
+                metadata = self.get(f"{path}_search_metadata")
+                return cache_data["data"], metadata
             return cache_data["data"]
 
         return None
@@ -1057,6 +1064,26 @@ class CacheManager:
             timestamp: The timestamp of the refresh
         """
         self.set_metadata(cache_key, "last_refresh_time", timestamp)
+
+    def store_search_metadata(
+        self, path: str, query: str, scope: Optional[str], filter_type: Optional[str]
+    ) -> None:
+        """Store metadata for a search query.
+
+        Args:
+            path: The search path (e.g., '/search/library/songs/query')
+            query: The search query string
+            scope: 'library' or None for catalog
+            filter_type: Type of results (e.g., 'songs', 'albums')
+        """
+        metadata = {
+            "query": query,
+            "scope": scope,
+            "filter_type": filter_type,
+            "last_refresh": time.time(),
+        }
+        self.set(f"{path}_search_metadata", metadata)
+        self.logger.debug(f"Stored search metadata for {path}: {metadata}")
 
     def __del__(self):
         """Clean up resources when the object is deleted."""

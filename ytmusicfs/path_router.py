@@ -13,6 +13,26 @@ class PathRouter:
         self.subpath_handlers: List[tuple[str, Callable]] = []
         self.pattern_handlers: List[tuple[str, Callable]] = []  # For wildcard patterns
 
+        # Content fetcher will be set later by the filesystem
+        self.fetcher = None
+
+    def set_fetcher(self, fetcher):
+        """Set the content fetcher instance used by handlers.
+
+        Args:
+            fetcher: ContentFetcher instance
+        """
+        self.fetcher = fetcher
+
+        # Register dynamic handler for categorized search results
+        self.register_dynamic(
+            "/search/*/*/*/*",
+            lambda path, scope, category, query, subpath: [".", ".."]
+            + self.fetcher.readdir_search_item_content(
+                path, scope="library" if scope == "library" else None
+            ),
+        )
+
     def register(self, path: str, handler: Callable) -> None:
         """Register a handler for an exact path match.
 

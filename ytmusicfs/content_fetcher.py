@@ -499,18 +499,40 @@ class ContentFetcher:
             "podcasts",
         ]
 
+    def _cache_search_results(
+        self,
+        path: str,
+        results: List[Dict],
+        scope: Optional[str],
+        filter_type: str,
+        query: str,
+    ) -> None:
+        """Cache search results and metadata.
+
+        Args:
+            path: Full search path
+            results: Search results from API
+            scope: 'library' or None
+            filter_type: Result type (e.g., 'songs')
+            query: Search query string
+        """
+        cache_key = f"{path}_results"
+        self.cache.set(cache_key, results)
+        self.cache.store_search_metadata(path, query, scope, filter_type)
+        self.cache.add_valid_dir(path)  # Mark directory as valid
+        self.logger.debug(f"Cached search results and metadata for {path}")
+
     def readdir_search_results(
         self, path: str, *args, scope: Optional[str] = None
     ) -> List[str]:
-        """Handle listing search results.
+        """Handle listing search results with categorization.
 
         Args:
-            path: Path to the search directory
-            *args: Additional arguments
-            scope: Search scope (library or None for general)
+            path: Search path (e.g., '/search/library/songs/query')
+            scope: 'library' or None for catalog
 
         Returns:
-            List of search result categories/items
+            List of categorized directory entries
         """
         # Parse the search path
         parts = path.split("/")
@@ -527,9 +549,6 @@ class ContentFetcher:
 
             # If there's no search query provided
             if len(parts) == 4:
-                # Here we would typically return a message or placeholder
-                # But since we can't dynamically create files in this pass-through
-                # filesystem, we return a prompt
                 return ["search_query_placeholder"]
 
             # Extract search query from path
@@ -540,18 +559,64 @@ class ContentFetcher:
                     f"Performing search: '{search_query}' in {search_scope}/{filter_type}"
                 )
 
-                # Perform the search
-                search_results = self._perform_search(
-                    search_query,
-                    scope="library" if search_scope == "library" else None,
-                    filter_type=filter_type,
-                )
+                # Generate the full path for caching
+                full_path = f"/search/{search_scope}/{filter_type}/{search_query}"
+                cache_key = f"{full_path}_results"
 
-                # Process the search results into directory listings
+                # Check cache with metadata
+                cached_data = self.cache.get(cache_key)
+                metadata = self.cache.get(f"{full_path}_search_metadata")
+
+                if (
+                    cached_data
+                    and metadata
+                    and metadata.get("last_refresh", 0) > time.time() - 3600
+                ):  # 1-hour validity
+                    self.logger.debug(f"Using cached search results for {full_path}")
+                    search_results = cached_data
+                else:
+                    # Perform the search
+                    search_results = self._perform_search(
+                        search_query,
+                        scope="library" if search_scope == "library" else None,
+                        filter_type=filter_type,
+                    )
+
+                    # Cache the results with metadata
+                    if search_results:
+                        self._cache_search_results(
+                            full_path,
+                            search_results,
+                            "library" if search_scope == "library" else None,
+                            filter_type,
+                            search_query,
+                        )
+
+                # Process the search results into categorized directory listings
                 if search_results:
-                    return self._process_search_results_to_dirs(search_results)
+                    # Categorize results
+                    dirs = []
+                    for category, items in search_results.items():
+                        if items:
+                            if category == "top_result" and items:
+                                item = items[0]
+                                category_name = (
+                                    item.get("type", "unknown")
+                                    .lower()
+                                    .replace(" ", "_")
+                                )
+                                dirs.append(f"top_{category_name}")
+                            elif items:
+                                # Normalize the category name
+                                category_name = (
+                                    category.replace("_", "").lower().replace(" ", "_")
+                                )
+                                if category_name not in dirs:  # Avoid duplicates
+                                    dirs.append(category_name)
 
-        return []
+                    return [".", ".."] + dirs
+
+        return [".", ".."]
 
     def readdir_search_item_content(
         self, path: str, *args, scope: Optional[str] = None
@@ -642,7 +707,7 @@ class ContentFetcher:
         scope: Optional[str] = None,
         filter_type: Optional[str] = None,
     ) -> Dict[str, List]:
-        """Perform a search and cache the results.
+        """Perform a search and return the results.
 
         Args:
             search_query: The search query
@@ -670,29 +735,43 @@ class ContentFetcher:
             }
             api_filter = filter_map.get(filter_singular)
 
-        # Cache key for storing search results
-        cache_key = f"/search/{scope or 'catalog'}/{filter_type}/{search_query}_results"
+        # Full path for consistency with readdir_search_results
+        full_path = f"/search/{scope or 'catalog'}/{filter_type}/{search_query}"
+        cache_key = f"{full_path}_results"
 
-        # Check if we have cached results
-        results = self.cache.get(cache_key)
-        if results:
+        # Check if we have cached results with fresh metadata
+        cached_data = self.cache.get(cache_key)
+        metadata = self.cache.get(f"{full_path}_search_metadata")
+
+        if (
+            cached_data
+            and metadata
+            and metadata.get("last_refresh", 0) > time.time() - 3600
+        ):  # 1-hour validity
             self.logger.debug(f"Using cached search results for: {search_query}")
-            return results
+            return cached_data
 
         # Perform the search
         self.logger.info(
             f"Searching for '{search_query}' with filter: {api_filter}, scope: {scope}"
         )
 
-        if scope == "library":
-            results = self.client.search_library(query=search_query, filter=api_filter)
-        else:
-            results = self.client.search(query=search_query, filter=api_filter)
+        try:
+            if scope == "library":
+                results = self.client.search_library(
+                    query=search_query, filter=api_filter
+                )
+            else:
+                results = self.client.search(query=search_query, filter=api_filter)
 
-        # Cache the results
-        if results:
-            self.cache.set(cache_key, results)
-            return results
+            # Cache results using our dedicated method
+            if results:
+                self._cache_search_results(
+                    full_path, results, scope, filter_type or "", search_query
+                )
+                return results
+        except Exception as e:
+            self.logger.error(f"Search error for '{search_query}': {e}")
 
         return {}
 
