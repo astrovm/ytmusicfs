@@ -254,9 +254,11 @@ class ContentFetcher:
 
         # Define a processing function for the artists data
         def process_artists(artists):
-            return [
-                self.processor.sanitize_filename(artist["name"]) for artist in artists
-            ]
+            sanitized_names = []
+            for artist in artists:
+                name = artist.get("name", "Unknown Artist")  # Use .get() with default
+                sanitized_names.append(self.processor.sanitize_filename(name))
+            return sanitized_names
 
         # Use the centralized helper to fetch and process artists
         return self.fetch_and_cache(
