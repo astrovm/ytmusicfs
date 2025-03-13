@@ -2213,44 +2213,43 @@ class YouTubeMusicFS(Operations):
             self.logger.error(f"Error reading {path}: {error_msg}")
             raise OSError(errno.EIO, error_msg)
 
-        # If still initializing, wait for a short time for background initialization to complete
+        # If still initializing, wait for initialization to complete with periodic checks
         if status == "initializing":
-            # Wait up to 1 second for initialization to complete
-            init_wait_result = file_info["initialized_event"].wait(1.0)
-            if not init_wait_result:
-                # If initialization is taking too long, try direct streaming if possible
-                stream_url = file_info.get("stream_url")
-                if stream_url:
-                    # Don't stream if download was interrupted
-                    if self.download_progress.get(video_id) == "interrupted":
+            # Wait up to 5 seconds total, checking every 0.1 seconds
+            max_wait_time = 5.0  # seconds
+            check_interval = 0.1  # seconds
+            wait_iterations = int(max_wait_time / check_interval)
+
+            for i in range(wait_iterations):
+                # Check if initialization is complete
+                if file_info["initialized_event"].wait(check_interval):
+                    # Initialization completed
+                    break
+
+                # After a few iterations, try direct streaming if possible
+                if i >= 10:  # After ~1 second
+                    stream_url = file_info.get("stream_url")
+                    if stream_url:
+                        # Don't stream if download was interrupted
+                        if self.download_progress.get(video_id) == "interrupted":
+                            self.logger.debug(
+                                f"Download interrupted for {path}, stopping read"
+                            )
+                            raise OSError(errno.EIO, "File access interrupted")
+
                         self.logger.debug(
-                            f"Download interrupted for {path}, stopping read"
+                            f"Streaming directly during initialization: {path}"
                         )
-                        raise OSError(errno.EIO, "File access interrupted")
+                        return self._stream_content(stream_url, offset, size)
 
-                    self.logger.debug(
-                        f"Streaming directly during initialization: {path}"
-                    )
-                    return self._stream_content(stream_url, offset, size)
-                else:
-                    # Fall back to waiting longer if we must (up to 5 more seconds)
-                    self.logger.debug(f"Waiting for initialization to complete: {path}")
-                    file_info["initialized_event"].wait(5.0)
-
-                    # Check status again
-                    if file_info.get("status") == "error":
-                        error_msg = file_info.get(
-                            "error", "Unknown error preparing file"
-                        )
-                        self.logger.error(f"Error after waiting: {error_msg}")
-                        raise OSError(errno.EIO, error_msg)
-                    elif file_info.get("status") == "initializing":
-                        self.logger.error(
-                            f"Timeout waiting for file initialization: {path}"
-                        )
-                        raise OSError(
-                            errno.EIO, "Timeout waiting for file initialization"
-                        )
+            # Check status after waiting
+            if file_info.get("status") == "error":
+                error_msg = file_info.get("error", "Unknown error preparing file")
+                self.logger.error(f"Error after waiting: {error_msg}")
+                raise OSError(errno.EIO, error_msg)
+            elif file_info.get("status") == "initializing":
+                self.logger.error(f"Timeout waiting for file initialization: {path}")
+                raise OSError(errno.EIO, "Timeout waiting for file initialization")
 
         # Now check download status - use video_id to get download progress
         download_status = self.download_progress.get(video_id)
