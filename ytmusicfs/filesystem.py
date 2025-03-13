@@ -2926,12 +2926,5 @@ def mount_ytmusicfs(
         ),
         mount_point,
         foreground=foreground,
-        nothreads=False,  # Enable threading for better performance
-        big_writes=True,  # Use larger buffer sizes for better performance
-        max_read=4194304,  # 4MB max read size for better performance
-        max_write=4194304,  # 4MB max write size for better performance
-        max_readahead=4194304,  # Optimize readahead for streaming media
-        direct_io=False,  # Allow kernel caching for better performance
-        kernel_cache=True,  # Enable kernel caching
-        auto_cache=True,  # Enable automatic cache for data
+        nothreads=False,
     )
