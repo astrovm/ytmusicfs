@@ -2047,8 +2047,6 @@ class YouTubeMusicFS(Operations):
                                 "formats": ["missing_pot"],
                             },
                         },
-                        "quiet": True,
-                        "no_warnings": True,
                     }
 
                     # Add browser cookies if a browser is specified
