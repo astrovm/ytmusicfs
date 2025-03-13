@@ -155,21 +155,31 @@ class TrackProcessor:
         )
 
     def extract_track_info(self, track: Dict) -> Dict:
-        """Extract and format track information, prioritizing cached durations.
+        """Extract and format track information from yt-dlp metadata.
 
         Args:
-            track: Raw track dictionary.
+            track: Raw track dictionary which could be from yt-dlp or ytmusicapi.
 
         Returns:
             Dictionary with formatted track metadata.
         """
-        # Try to get the duration from the cache first
+        # Try to get the video ID from the track
         video_id = track.get("videoId")
+        
+        # Handle duration
         duration_seconds = None
         duration_formatted = "0:00"
 
-        # First priority: Check cache for duration
-        if video_id and self.cache_manager:
+        # First priority: Use track's provided duration_seconds if available (from yt-dlp)
+        if "duration_seconds" in track and track["duration_seconds"] is not None:
+            duration_seconds = track["duration_seconds"]
+            duration_formatted = self._format_duration(duration_seconds)
+            
+            # Cache the duration if we have a video ID and cache manager
+            if video_id and self.cache_manager:
+                self.cache_manager.set_duration(video_id, duration_seconds)
+        # Second priority: Check cache for duration
+        elif video_id and self.cache_manager:
             cached_duration = self.cache_manager.get_duration(video_id)
             if cached_duration is not None:
                 self.logger.debug(
@@ -177,9 +187,8 @@ class TrackProcessor:
                 )
                 duration_seconds = cached_duration
                 duration_formatted = self._format_duration(duration_seconds)
-
-        # Second priority: Parse from track data if not in cache
-        if duration_seconds is None:
+        # Third priority: Parse from track data if not in cache
+        else:
             duration_seconds, duration_formatted = self.parse_duration(track)
 
             # If we successfully parsed a duration and have a video ID, cache it for future use
@@ -188,18 +197,42 @@ class TrackProcessor:
                     f"Caching parsed duration for {video_id}: {duration_seconds}s"
                 )
                 self.cache_manager.set_duration(video_id, duration_seconds)
-
-        album, album_artist = self.extract_album_info(track)
+        
+        # Handle artist information
+        # yt-dlp flat extraction provides only uploader, not detailed artist info
+        if "artist" in track and isinstance(track["artist"], str):
+            # Already processed artist string from yt-dlp
+            artist = track["artist"]
+        elif "artists" in track and isinstance(track["artists"], list):
+            # ytmusicapi provides a list of artist objects
+            artist = self.clean_artists(track["artists"])
+        else:
+            # Fallback
+            artist = track.get("uploader", "Unknown Artist")
+            
+        # Get album info - try for existing data or use defaults
+        if "album" in track and isinstance(track["album"], str):
+            album = track["album"]
+            album_artist = track.get("album_artist", artist)
+        else:
+            # Try to extract from track data or use default
+            album, album_artist = self.extract_album_info(track)
+            
+        # Handle year - might not be available in yt-dlp flat extraction
+        if "year" in track and track["year"] is not None:
+            year = track["year"]
+        else:
+            year = self.extract_year(track)
 
         return {
             "title": track.get("title", "Unknown Title"),
-            "artist": self.clean_artists(track.get("artists", [])),
+            "artist": artist,
             "album": album,
             "album_artist": album_artist,
             "duration_seconds": duration_seconds,
             "duration_formatted": duration_formatted,
             "track_number": track.get("trackNumber", track.get("index", 0)),
-            "year": self.extract_year(track),
+            "year": year,
             "genre": track.get("genre", "Unknown Genre"),
             "videoId": video_id,  # Include the video ID in the track info for reference
         }

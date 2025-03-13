@@ -205,7 +205,7 @@ class ContentFetcher:
             )
 
     def readdir_playlist_content(self, path: str) -> List[str]:
-        """Handle listing playlist contents.
+        """Handle listing playlist contents using yt-dlp.
 
         Args:
             path: Path to the playlist directory
@@ -250,24 +250,58 @@ class ContentFetcher:
             self.logger.warning(f"Playlist not found: {playlist_name}")
             return []
 
-        # Fetch the playlist content
-        self.logger.debug(f"Fetching content for playlist ID: {playlist_id}")
-        tracks = self.client.get_playlist(playlistId=playlist_id, limit=5000)
+        # Use yt-dlp to fetch playlist content
+        self.logger.debug(f"Fetching content for playlist ID: {playlist_id} using yt-dlp")
+        playlist_url = f"https://music.youtube.com/playlist?list={playlist_id}"
+        ydl_opts = {
+            "extract_flat": True,  # Get metadata without downloading
+            "quiet": True,
+            "no_warnings": True,
+            "ignoreerrors": True,
+        }
+        if self.browser:
+            ydl_opts["cookiesfrombrowser"] = (self.browser,)
 
-        if not tracks or "tracks" not in tracks:
-            self.logger.warning(
-                f"No tracks found or invalid response format for playlist: {playlist_name}"
-            )
+        from yt_dlp import YoutubeDL
+        try:
+            with YoutubeDL(ydl_opts) as ydl:
+                result = ydl.extract_info(playlist_url, download=False)
+                
+                if not result or "entries" not in result:
+                    self.logger.warning(f"No tracks found for playlist: {playlist_name}")
+                    return []
+                
+                tracks = result["entries"]
+                self.logger.info(f"Fetched {len(tracks)} tracks from playlist: {playlist_name}")
+                
+                # Process tracks with yt-dlp metadata
+                processed_tracks = []
+                for entry in tracks:
+                    if not entry:
+                        continue
+                    
+                    track_info = {
+                        "title": entry.get("title", "Unknown Title"),
+                        "artist": entry.get("uploader", "Unknown Artist"),
+                        "videoId": entry.get("id"),
+                        "duration_seconds": int(entry.get("duration", 0)) if entry.get("duration") else None,
+                    }
+                    
+                    # Format the filename
+                    filename = self.processor.sanitize_filename(
+                        f"{track_info['artist']} - {track_info['title']}.m4a"
+                    )
+                    track_info["filename"] = filename
+                    
+                    # Process through the track processor to ensure consistent format
+                    processed_track = self.processor.extract_track_info(track_info)
+                    processed_track["filename"] = filename
+                    processed_tracks.append(processed_track)
+        except Exception as e:
+            self.logger.error(f"Error fetching playlist content with yt-dlp: {str(e)}")
             return []
 
-        # Process the tracks
-        track_items = tracks.get("tracks", [])
-        self.logger.info(
-            f"Processing {len(track_items)} tracks from playlist: {playlist_name}"
-        )
-        processed_tracks = self.processor.process_tracks(track_items)
-
-        # Cache the processed tracks
+        # Cache the processed tracks without stream URLs
         self.cache.set(cache_key, processed_tracks)
 
         # Cache directory listing with attributes for efficient getattr lookups
