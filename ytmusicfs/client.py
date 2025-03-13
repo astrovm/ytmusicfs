@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from typing import Dict, Optional, List
-from ytmusicfs.utils.oauth_adapter import YTMusicOAuthAdapter
+from ytmusicfs.oauth_adapter import YTMusicOAuthAdapter
 import logging
 
 
@@ -15,6 +15,7 @@ class YouTubeMusicClient:
         client_secret: Optional[str] = None,
         browser: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
+        credentials_file: Optional[str] = None,
     ):
         """Initialize the YouTube Music API client.
 
@@ -24,6 +25,7 @@ class YouTubeMusicClient:
             client_secret: OAuth client secret (required for OAuth authentication)
             browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
             logger: Logger instance to use
+            credentials_file: Path to the credentials file
         """
         # Set up logger
         self.logger = logger or logging.getLogger("YouTubeMusicClient")
@@ -36,12 +38,13 @@ class YouTubeMusicClient:
                 client_secret=client_secret,
                 logger=self.logger,
                 browser=browser,
+                credentials_file=credentials_file,
             )
             self.logger.info(f"Authentication successful with OAuth method!")
         except Exception as e:
             self.logger.error(f"Error during authentication: {e}")
             self.logger.error(
-                "Try regenerating your authentication file with ytmusicfs-oauth"
+                "Try regenerating your authentication file with ytmusicfs oauth"
             )
             raise
 

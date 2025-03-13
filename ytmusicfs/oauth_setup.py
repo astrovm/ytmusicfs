@@ -3,84 +3,63 @@
 from pathlib import Path
 from ytmusicapi import setup_oauth as ytmusic_setup_oauth
 from ytmusicapi import YTMusic, OAuthCredentials
+from ytmusicfs.config import ConfigManager
 import argparse
 import json
 import logging
-import os
 import sys
 import ytmusicapi
 
 
-def ensure_dir(path):
-    """Ensure directory exists, creating it if necessary."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-
-def save_credentials(client_id, client_secret, credentials_file=None, config_dir=None):
-    """Save client credentials to a separate file."""
-    if credentials_file:
-        cred_file = Path(credentials_file)
-    else:
-        cred_file = Path(config_dir) / "credentials.json"
-
-    # Ensure the directory exists
-    cred_file.parent.mkdir(parents=True, exist_ok=True)
-
-    credentials = {"client_id": client_id, "client_secret": client_secret}
-
-    with open(cred_file, "w") as f:
-        json.dump(credentials, f, indent=2)
-
-    return str(cred_file)
-
-
-def main():
+def main(args=None):
     """Command-line entry point for YTMusicFS OAuth setup."""
-    parser = argparse.ArgumentParser(
-        description="Set up OAuth authentication for YTMusicFS"
-    )
+    # If args are not provided, parse them from command line
+    if args is None:
+        parser = argparse.ArgumentParser(
+            description="Set up OAuth authentication for YTMusicFS"
+        )
 
-    parser.add_argument(
-        "--client-id",
-        "-i",
-        help="OAuth Client ID from Google Cloud Console",
-    )
-    parser.add_argument(
-        "--client-secret",
-        "-s",
-        help="OAuth Client Secret from Google Cloud Console",
-    )
-    parser.add_argument(
-        "--auth-file",
-        "-a",
-        help="Path to the OAuth token file (default: ~/.config/ytmusicfs/oauth.json)",
-    )
-    parser.add_argument(
-        "--credentials-file",
-        "-c",
-        help="Output file for the client credentials (default: same directory as auth-file with name 'credentials.json')",
-    )
-    parser.add_argument(
-        "--open-browser",
-        "-b",
-        action="store_true",
-        default=True,
-        help="Automatically open the browser for authentication",
-    )
-    parser.add_argument(
-        "--no-open-browser",
-        action="store_false",
-        dest="open_browser",
-        help="Do not automatically open the browser for authentication",
-    )
-    parser.add_argument(
-        "--debug",
-        "-d",
-        action="store_true",
-        help="Enable debug output",
-    )
+        parser.add_argument(
+            "--client-id",
+            "-i",
+            help="OAuth Client ID from Google Cloud Console",
+        )
+        parser.add_argument(
+            "--client-secret",
+            "-s",
+            help="OAuth Client Secret from Google Cloud Console",
+        )
+        parser.add_argument(
+            "--auth-file",
+            "-a",
+            help="Path to the OAuth token file (default: ~/.config/ytmusicfs/oauth.json)",
+        )
+        parser.add_argument(
+            "--credentials-file",
+            "-c",
+            help="Output file for the client credentials (default: same directory as auth-file with name 'credentials.json')",
+        )
+        parser.add_argument(
+            "--open-browser",
+            "-b",
+            action="store_true",
+            default=True,
+            help="Automatically open the browser for authentication",
+        )
+        parser.add_argument(
+            "--no-open-browser",
+            action="store_false",
+            dest="open_browser",
+            help="Do not automatically open the browser for authentication",
+        )
+        parser.add_argument(
+            "--debug",
+            "-d",
+            action="store_true",
+            help="Enable debug output",
+        )
 
-    args = parser.parse_args()
+        args = parser.parse_args()
 
     # Configure logging
     log_level = logging.DEBUG if args.debug else logging.INFO
@@ -88,27 +67,29 @@ def main():
         level=log_level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
-    logger = logging.getLogger("YTMusicFS-OAuth")
+    logger = logging.getLogger("YTMusicFS OAuth")
 
     logger.info("YTMusicFS OAuth Setup")
     logger.info("=====================")
     logger.info(f"ytmusicapi version: {ytmusicapi.__version__}")
     logger.info("")
 
-    # Determine output file
-    if args.auth_file:
-        output_file = Path(args.auth_file)
-    else:
-        output_file = Path(os.path.expanduser("~/.config/ytmusicfs/oauth.json"))
+    # Initialize the configuration manager
+    config = ConfigManager(
+        auth_file=args.auth_file, credentials_file=args.credentials_file, logger=logger
+    )
 
-    # Ensure directory exists
-    ensure_dir(output_file)
+    # Ensure directories exist
+    config.ensure_directories()
+
+    # Get the OAuth token file path
+    output_file = config.auth_file
 
     # Get client ID and secret
     client_id = args.client_id
     client_secret = args.client_secret
 
-    # If not provided, try to read them from the existing file
+    # If not provided, try to read them from the existing token file
     if (not client_id or not client_secret) and output_file.exists():
         try:
             with open(output_file, "r") as f:
@@ -118,6 +99,14 @@ def main():
             logger.info("Read client credentials from existing OAuth file")
         except Exception as e:
             logger.warning(f"Could not read credentials from existing file: {e}")
+
+    # If still not available, try to get them from config manager
+    if not client_id or not client_secret:
+        loaded_id, loaded_secret = config.get_credentials()
+        if loaded_id and loaded_secret:
+            client_id = client_id or loaded_id
+            client_secret = client_secret or loaded_secret
+            logger.info("Loaded client credentials from credentials file")
 
     # If still not available, prompt for them
     if not client_id or not client_secret:
@@ -174,14 +163,8 @@ def main():
             with open(output_file, "w") as f:
                 json.dump(oauth_data, f, indent=2)
 
-            # Save credentials to a separate file
-            cred_file = save_credentials(
-                client_id,
-                client_secret,
-                credentials_file=args.credentials_file,
-                config_dir=output_file.parent,
-            )
-            logger.info(f"Saved credentials to file: {cred_file}")
+            # Save credentials to the config manager
+            config.save_credentials(client_id, client_secret)
 
             # Keep the client credentials in memory for the OAuthCredentials object
             logger.info(
@@ -227,7 +210,9 @@ def main():
 
         logger.info("")
         logger.info("You can now use YTMusicFS with the following command:")
-        logger.info(f"ytmusicfs --mount-point <mount_point> --auth-file {output_file}")
+        logger.info(
+            f"ytmusicfs mount --mount-point <mount_point> --auth-file {output_file}"
+        )
 
         return 0
 

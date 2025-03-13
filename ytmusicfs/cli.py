@@ -3,6 +3,8 @@
 from pathlib import Path
 from ytmusicfs import __version__
 from ytmusicfs.filesystem import mount_ytmusicfs
+from ytmusicfs.oauth_setup import main as oauth_setup
+from ytmusicfs.config import ConfigManager
 import argparse
 import json
 import logging
@@ -10,108 +12,8 @@ import os
 import sys
 
 
-def load_credentials(config_dir, credentials_file=None):
-    """Load client credentials from a separate file."""
-    if credentials_file:
-        cred_file = Path(credentials_file)
-    else:
-        cred_file = Path(config_dir) / "credentials.json"
-
-    if not cred_file.exists():
-        return None, None
-
-    try:
-        with open(cred_file, "r") as f:
-            credentials = json.load(f)
-
-        return credentials.get("client_id"), credentials.get("client_secret")
-    except Exception:
-        return None, None
-
-
-def main():
-    """Command-line entry point for YTMusicFS."""
-    parser = argparse.ArgumentParser(
-        description="YTMusicFS - Mount YouTube Music as a filesystem"
-    )
-
-    # Mount point options
-    parser.add_argument(
-        "--mount-point",
-        "-m",
-        required=True,
-        help="Directory where the filesystem will be mounted",
-    )
-
-    # Authentication options
-    auth_group = parser.add_argument_group("Authentication Options")
-    auth_group.add_argument(
-        "--auth-file",
-        "-a",
-        default=os.path.expanduser("~/.config/ytmusicfs/oauth.json"),
-        help="Path to the OAuth token file (default: ~/.config/ytmusicfs/oauth.json)",
-    )
-    auth_group.add_argument(
-        "--credentials-file",
-        help="Path to the client credentials file (default: same directory as auth-file with name 'credentials.json')",
-    )
-    auth_group.add_argument(
-        "--client-id",
-        "-i",
-        help="OAuth client ID (required for OAuth authentication)",
-    )
-    auth_group.add_argument(
-        "--client-secret",
-        "-s",
-        help="OAuth client secret (required for OAuth authentication)",
-    )
-
-    # Cache options
-    cache_group = parser.add_argument_group("Cache Options")
-    cache_group.add_argument(
-        "--cache-dir",
-        "-c",
-        help="Directory to store cache files (default: ~/.cache/ytmusicfs)",
-    )
-    cache_group.add_argument(
-        "--cache-timeout",
-        "-t",
-        type=int,
-        default=2592000,
-        help="Cache timeout in seconds (default: 2592000)",
-    )
-
-    # Operational options
-    op_group = parser.add_argument_group("Operational Options")
-    op_group.add_argument(
-        "--foreground",
-        "-f",
-        action="store_true",
-        help="Run in the foreground (for debugging)",
-    )
-    op_group.add_argument(
-        "--debug",
-        "-d",
-        action="store_true",
-        help="Enable debug logging",
-    )
-    op_group.add_argument(
-        "--browser",
-        "-b",
-        help="Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave', etc.). If not specified, no browser cookies will be used",
-    )
-
-    # Version
-    parser.add_argument(
-        "--version",
-        "-v",
-        action="version",
-        version=f"YTMusicFS {__version__}",
-        help="Show version and exit",
-    )
-
-    args = parser.parse_args()
-
+def mount_command(args):
+    """Handle the default mount command."""
     # Set up logging
     log_level = logging.DEBUG if args.debug else logging.INFO
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -137,6 +39,15 @@ def main():
     logger = logging.getLogger("YTMusicFS")
     logger.info(f"YTMusicFS version {__version__}")
 
+    # Initialize configuration manager
+    config = ConfigManager(
+        auth_file=args.auth_file,
+        credentials_file=args.credentials_file,
+        cache_dir=args.cache_dir,
+        cache_timeout=args.cache_timeout,
+        logger=logger,
+    )
+
     # Check and create mount point
     mount_point = Path(args.mount_point)
     if not mount_point.exists():
@@ -144,12 +55,12 @@ def main():
         os.makedirs(mount_point, exist_ok=True)
 
     # Check for auth file
-    auth_file = Path(args.auth_file)
+    auth_file = config.auth_file
     if not auth_file.exists():
         logger.error(f"Authentication file not found: {auth_file}")
-        logger.error("Please run ytmusicfs-oauth to set up authentication:")
+        logger.error("Please run ytmusicfs oauth to set up authentication:")
         logger.error(
-            f"  ytmusicfs-oauth --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET"
+            f"  ytmusicfs oauth --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET"
         )
         return 1
 
@@ -157,11 +68,9 @@ def main():
     client_id = args.client_id
     client_secret = args.client_secret
 
-    # If not provided, try to load from separate credentials file
+    # If not provided, get from config manager
     if not client_id or not client_secret:
-        config_dir = auth_file.parent
-        loaded_id, loaded_secret = load_credentials(config_dir, args.credentials_file)
-
+        loaded_id, loaded_secret = config.get_credentials()
         if loaded_id and loaded_secret:
             client_id = loaded_id
             client_secret = loaded_secret
@@ -199,6 +108,10 @@ def main():
                         "Removed client credentials from OAuth token file for security"
                     )
 
+                    # Save them to the credentials file
+                    config.save_credentials(client_id, client_secret)
+                    logger.info("Saved extracted credentials to credentials file")
+
                 if client_id and client_secret:
                     logger.info("Using client credentials from OAuth token file")
         except Exception as e:
@@ -213,12 +126,12 @@ def main():
             "2. Set YTMUSICFS_CLIENT_ID and YTMUSICFS_CLIENT_SECRET environment variables"
         )
         logger.error(
-            "3. Use ytmusicfs-oauth to set up authentication with your credentials"
+            "3. Use ytmusicfs oauth to set up authentication with your credentials"
         )
         logger.error("")
         logger.error("To regenerate your OAuth token with credentials:")
         logger.error(
-            f"  ytmusicfs-oauth --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET"
+            f"  ytmusicfs oauth --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET"
         )
         return 1
 
@@ -233,10 +146,12 @@ def main():
             client_secret=client_secret,
             foreground=args.foreground,
             debug=args.debug,
-            cache_dir=args.cache_dir,
-            cache_timeout=args.cache_timeout,
+            cache_dir=str(config.cache_dir),
+            cache_timeout=config.cache_timeout,
             browser=args.browser,
-            credentials_file=args.credentials_file,
+            credentials_file=(
+                str(config.credentials_file) if config.credentials_file else None
+            ),
         )
 
         return 0
@@ -246,6 +161,161 @@ def main():
 
         logger.error(traceback.format_exc())
         return 1
+
+
+def oauth_command(args):
+    """Handle the oauth subcommand by delegating to oauth_setup"""
+    # Parse just the arguments needed for oauth_setup() and pass them through
+    return oauth_setup(args)
+
+
+def main():
+    """Command-line entry point for YTMusicFS."""
+    parser = argparse.ArgumentParser(
+        description="YTMusicFS - Mount YouTube Music as a filesystem"
+    )
+
+    # Add version argument to top-level parser
+    parser.add_argument(
+        "--version",
+        "-v",
+        action="version",
+        version=f"YTMusicFS {__version__}",
+        help="Show version and exit",
+    )
+
+    # Create subparsers for the different commands
+    subparsers = parser.add_subparsers(
+        dest="command",
+        help="Command to run",
+        required=True,  # Require explicit command - no backward compatibility
+    )
+
+    # Create the mount command
+    mount_parser = subparsers.add_parser(
+        "mount", help="Mount YouTube Music as a filesystem"
+    )
+
+    # Mount point options
+    mount_parser.add_argument(
+        "--mount-point",
+        "-m",
+        required=True,
+        help="Directory where the filesystem will be mounted",
+    )
+
+    # Authentication options
+    auth_group = mount_parser.add_argument_group("Authentication Options")
+    auth_group.add_argument(
+        "--auth-file",
+        "-a",
+        help=f"Path to the OAuth token file (default: {ConfigManager.DEFAULT_AUTH_FILE})",
+    )
+    auth_group.add_argument(
+        "--credentials-file",
+        help=f"Path to the client credentials file (default: {ConfigManager.DEFAULT_CRED_FILE})",
+    )
+    auth_group.add_argument(
+        "--client-id",
+        "-i",
+        help="OAuth client ID (required for OAuth authentication)",
+    )
+    auth_group.add_argument(
+        "--client-secret",
+        "-s",
+        help="OAuth client secret (required for OAuth authentication)",
+    )
+
+    # Cache options
+    cache_group = mount_parser.add_argument_group("Cache Options")
+    cache_group.add_argument(
+        "--cache-dir",
+        "-c",
+        help=f"Directory to store cache files (default: {ConfigManager.DEFAULT_CACHE_DIR})",
+    )
+    cache_group.add_argument(
+        "--cache-timeout",
+        "-t",
+        type=int,
+        default=ConfigManager.DEFAULT_CACHE_TIMEOUT,
+        help=f"Cache timeout in seconds (default: {ConfigManager.DEFAULT_CACHE_TIMEOUT})",
+    )
+
+    # Operational options
+    op_group = mount_parser.add_argument_group("Operational Options")
+    op_group.add_argument(
+        "--foreground",
+        "-f",
+        action="store_true",
+        help="Run in the foreground (for debugging)",
+    )
+    op_group.add_argument(
+        "--debug",
+        "-d",
+        action="store_true",
+        help="Enable debug logging",
+    )
+    op_group.add_argument(
+        "--browser",
+        "-b",
+        help="Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave', etc.). If not specified, no browser cookies will be used",
+    )
+
+    mount_parser.set_defaults(func=mount_command)
+
+    # Create the oauth command
+    oauth_parser = subparsers.add_parser(
+        "oauth", help="Set up OAuth authentication for YTMusicFS"
+    )
+
+    # Add OAuth options
+    oauth_parser.add_argument(
+        "--client-id",
+        "-i",
+        help="OAuth Client ID from Google Cloud Console",
+    )
+    oauth_parser.add_argument(
+        "--client-secret",
+        "-s",
+        help="OAuth Client Secret from Google Cloud Console",
+    )
+    oauth_parser.add_argument(
+        "--auth-file",
+        "-a",
+        help=f"Path to the OAuth token file (default: {ConfigManager.DEFAULT_AUTH_FILE})",
+    )
+    oauth_parser.add_argument(
+        "--credentials-file",
+        "-c",
+        help=f"Output file for the client credentials (default: {ConfigManager.DEFAULT_CRED_FILE})",
+    )
+    oauth_parser.add_argument(
+        "--open-browser",
+        "-b",
+        action="store_true",
+        default=True,
+        help="Automatically open the browser for authentication",
+    )
+    oauth_parser.add_argument(
+        "--no-open-browser",
+        action="store_false",
+        dest="open_browser",
+        help="Do not automatically open the browser for authentication",
+    )
+    oauth_parser.add_argument(
+        "--debug",
+        "-d",
+        action="store_true",
+        help="Enable debug output",
+    )
+
+    oauth_parser.set_defaults(func=oauth_command)
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    # Execute the appropriate command function
+    return args.func(args)
 
 
 if __name__ == "__main__":
