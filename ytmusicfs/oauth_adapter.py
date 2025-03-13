@@ -3,7 +3,6 @@
 from typing import Optional, Any
 from ytmusicapi import YTMusic, OAuthCredentials
 from ytmusicfs.config import ConfigManager
-import json
 import logging
 import os
 
