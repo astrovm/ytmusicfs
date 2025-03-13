@@ -1042,6 +1042,26 @@ class CacheManager:
                 f"Updated attributes for {filename} in {parent_dir} cache"
             )
 
+    def get_last_refresh(self, cache_key: str) -> Optional[float]:
+        """Get the last refresh time for a cache key.
+
+        Args:
+            cache_key: The cache key to check
+
+        Returns:
+            The timestamp of the last refresh, or None if never refreshed
+        """
+        return self.get_metadata(cache_key, "last_refresh_time")
+
+    def set_last_refresh(self, cache_key: str, timestamp: float) -> None:
+        """Set the last refresh time for a cache key.
+
+        Args:
+            cache_key: The cache key to update
+            timestamp: The timestamp of the refresh
+        """
+        self.set_metadata(cache_key, "last_refresh_time", timestamp)
+
     def __del__(self):
         """Clean up resources when the object is deleted."""
         try:

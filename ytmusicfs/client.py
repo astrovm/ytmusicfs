@@ -6,124 +6,132 @@ import logging
 
 
 class YouTubeMusicClient:
-    """Client for interacting with YouTube Music API."""
+    """Client for interacting with the YouTube Music API.
+
+    This class is responsible solely for making API calls to YouTube Music.
+    Authentication and configuration are handled externally.
+    """
 
     def __init__(
         self,
-        auth_file: str,
-        client_id: Optional[str] = None,
-        client_secret: Optional[str] = None,
-        browser: Optional[str] = None,
+        oauth_adapter: YTMusicOAuthAdapter,
         logger: Optional[logging.Logger] = None,
-        credentials_file: Optional[str] = None,
     ):
         """Initialize the YouTube Music API client.
 
         Args:
-            auth_file: Path to authentication file (OAuth token)
-            client_id: OAuth client ID (required for OAuth authentication)
-            client_secret: OAuth client secret (required for OAuth authentication)
-            browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
-            logger: Logger instance to use
-            credentials_file: Path to the credentials file
+            oauth_adapter: Configured YTMusicOAuthAdapter instance for authentication.
+            logger: Optional logger instance; defaults to a new logger if None.
         """
-        # Set up logger
         self.logger = logger or logging.getLogger("YouTubeMusicClient")
-
-        try:
-            # Use YTMusicOAuthAdapter for OAuth support
-            self.ytmusic = YTMusicOAuthAdapter(
-                auth_file=auth_file,
-                client_id=client_id,
-                client_secret=client_secret,
-                logger=self.logger,
-                browser=browser,
-                credentials_file=credentials_file,
-            )
-            self.logger.info(f"Authentication successful with OAuth method!")
-        except Exception as e:
-            self.logger.error(
-                f"Error during authentication: {e}. Try regenerating your authentication file with ytmusicfs oauth"
-            )
-            raise
+        self.ytmusic = oauth_adapter
+        self.logger.info("YouTubeMusicClient initialized with OAuth adapter")
 
     def get_library_playlists(self, limit: int = 100) -> List[Dict]:
-        """Get playlists from the user's library.
+        """Fetch playlists from the user's library.
 
         Args:
-            limit: Maximum number of playlists to fetch
+            limit: Maximum number of playlists to retrieve (default: 100).
 
         Returns:
-            List of playlist dictionaries
+            List of playlist dictionaries.
         """
-        return self.ytmusic.get_library_playlists(limit=limit)
+        try:
+            return self.ytmusic.get_library_playlists(limit=limit)
+        except Exception as e:
+            self.logger.error(f"Failed to fetch library playlists: {e}")
+            raise
 
     def get_liked_songs(self, limit: int = 10000) -> Dict:
-        """Get liked songs from the user's library.
+        """Fetch liked songs from the user's library.
 
         Args:
-            limit: Maximum number of songs to fetch
+            limit: Maximum number of songs to retrieve (default: 10000).
 
         Returns:
-            Dictionary containing liked songs data
+            Dictionary containing liked songs data.
         """
-        return self.ytmusic.get_liked_songs(limit=limit)
+        try:
+            return self.ytmusic.get_liked_songs(limit=limit)
+        except Exception as e:
+            self.logger.error(f"Failed to fetch liked songs: {e}")
+            raise
 
     def get_playlist(self, playlist_id: str, limit: int = 10000) -> Dict:
-        """Get a playlist by ID.
+        """Fetch a playlist by its ID.
 
         Args:
-            playlist_id: The playlist ID
-            limit: Maximum number of tracks to fetch
+            playlist_id: The playlist ID.
+            limit: Maximum number of tracks to retrieve (default: 10000).
 
         Returns:
-            Dictionary containing playlist data
+            Dictionary containing playlist data.
         """
-        return self.ytmusic.get_playlist(playlist_id, limit=limit)
+        try:
+            return self.ytmusic.get_playlist(playlist_id, limit=limit)
+        except Exception as e:
+            self.logger.error(f"Failed to fetch playlist {playlist_id}: {e}")
+            raise
 
     def get_library_artists(self, limit: int = 10000) -> List[Dict]:
-        """Get artists from the user's library.
+        """Fetch artists from the user's library.
 
         Args:
-            limit: Maximum number of artists to fetch
+            limit: Maximum number of artists to retrieve (default: 10000).
 
         Returns:
-            List of artist dictionaries
+            List of artist dictionaries.
         """
-        return self.ytmusic.get_library_artists(limit=limit)
+        try:
+            return self.ytmusic.get_library_artists(limit=limit)
+        except Exception as e:
+            self.logger.error(f"Failed to fetch library artists: {e}")
+            raise
 
     def get_artist(self, artist_id: str) -> Dict:
-        """Get an artist by ID.
+        """Fetch an artist by their ID.
 
         Args:
-            artist_id: The artist ID
+            artist_id: The artist ID.
 
         Returns:
-            Dictionary containing artist data
+            Dictionary containing artist data.
         """
-        return self.ytmusic.get_artist(artist_id)
+        try:
+            return self.ytmusic.get_artist(artist_id)
+        except Exception as e:
+            self.logger.error(f"Failed to fetch artist {artist_id}: {e}")
+            raise
 
     def get_library_albums(self, limit: int = 10000) -> List[Dict]:
-        """Get albums from the user's library.
+        """Fetch albums from the user's library.
 
         Args:
-            limit: Maximum number of albums to fetch
+            limit: Maximum number of albums to retrieve (default: 10000).
 
         Returns:
-            List of album dictionaries
+            List of album dictionaries.
         """
-        return self.ytmusic.get_library_albums(limit=limit)
+        try:
+            return self.ytmusic.get_library_albums(limit=limit)
+        except Exception as e:
+            self.logger.error(f"Failed to fetch library albums: {e}")
+            raise
 
     def get_album(self, album_id: str) -> Dict:
-        """Get an album by ID.
+        """Fetch an album by its ID.
 
         Args:
-            album_id: The album ID
+            album_id: The album ID.
 
         Returns:
-            Dictionary containing album data
+            Dictionary containing album data.
         """
-        return self.ytmusic.get_album(album_id)
+        try:
+            return self.ytmusic.get_album(album_id)
+        except Exception as e:
+            self.logger.error(f"Failed to fetch album {album_id}: {e}")
+            raise
 
     def search(
         self,
@@ -136,20 +144,17 @@ class YouTubeMusicClient:
         """Search YouTube Music.
 
         Args:
-            query: Search query string (e.g., 'Oasis Wonderwall')
-            filter_type: Filter for item types. Allowed values: 'songs', 'videos', 'albums',
-                        'artists', 'playlists', 'community_playlists', 'featured_playlists', 'uploads'.
-                        Default: None (includes all types)
-            scope: Search scope. Allowed values: 'library', 'uploads'.
-                  Default: None (searches the entire YouTube Music catalog)
-            limit: Maximum number of search results to return
-            ignore_spelling: Whether to ignore YT Music spelling suggestions
+            query: Search query string (e.g., 'Oasis Wonderwall').
+            filter_type: Filter for item types ('songs', 'videos', 'albums', etc.).
+            scope: Search scope ('library', 'uploads', or None for full catalog).
+            limit: Maximum number of results (default: 100).
+            ignore_spelling: Ignore spelling suggestions if True.
 
         Returns:
-            List of search result dictionaries
+            List of search result dictionaries.
         """
         self.logger.debug(
-            f"Searching for '{query}' with filter '{filter_type}' and scope '{scope}'"
+            f"Searching '{query}' with filter '{filter_type}' and scope '{scope}'"
         )
         try:
             results = self.ytmusic.search(
@@ -162,5 +167,5 @@ class YouTubeMusicClient:
             self.logger.debug(f"Search returned {len(results)} results")
             return results
         except Exception as e:
-            self.logger.error(f"Error during search: {e}")
+            self.logger.error(f"Search failed: {e}")
             return []

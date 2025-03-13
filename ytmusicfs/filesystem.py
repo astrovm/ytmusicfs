@@ -9,6 +9,7 @@ from ytmusicfs.content_fetcher import ContentFetcher
 from ytmusicfs.file_handler import FileHandler
 from ytmusicfs.path_router import PathRouter
 from ytmusicfs.processor import TrackProcessor
+from ytmusicfs.oauth_adapter import YTMusicOAuthAdapter
 import errno
 import inspect
 import logging
@@ -36,6 +37,7 @@ class YouTubeMusicFS(Operations):
         preload_cache: bool = True,
         request_cooldown: int = 1000,
         logger: Optional[logging.Logger] = None,
+        credentials_file: Optional[str] = None,
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
@@ -51,16 +53,24 @@ class YouTubeMusicFS(Operations):
             preload_cache: Whether to preload cache data at startup (default: True)
             request_cooldown: Time in milliseconds between allowed repeated requests to the same path (default: 1000)
             logger: Logger instance to use (default: creates a new logger)
+            credentials_file: Path to the client credentials file (default: None)
         """
         # Get or create the logger
         self.logger = logger or logging.getLogger("YTMusicFS")
 
-        # Initialize the client component
-        self.client = YouTubeMusicClient(
+        # Initialize the OAuth adapter first
+        oauth_adapter = YTMusicOAuthAdapter(
             auth_file=auth_file,
             client_id=client_id,
             client_secret=client_secret,
             browser=browser,
+            logger=self.logger,
+            credentials_file=credentials_file,
+        )
+
+        # Initialize the client component with the OAuth adapter
+        self.client = YouTubeMusicClient(
+            oauth_adapter=oauth_adapter,
             logger=self.logger,
         )
 
@@ -1245,6 +1255,7 @@ def mount_ytmusicfs(
             preload_cache=preload_cache,
             request_cooldown=request_cooldown,
             logger=logger,
+            credentials_file=credentials_file,
         ),
         mount_point,
         foreground=foreground,
