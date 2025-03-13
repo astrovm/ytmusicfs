@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-from pathlib import Path
 from ytmusicapi import setup_oauth as ytmusic_setup_oauth
 from ytmusicapi import YTMusic, OAuthCredentials
 from ytmusicfs.config import ConfigManager
