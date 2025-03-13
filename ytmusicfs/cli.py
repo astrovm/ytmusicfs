@@ -27,16 +27,13 @@ def setup_logging(
     log_level = logging.DEBUG if args.debug else logging.INFO
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
-    if args.foreground:
-        logging.basicConfig(level=log_level, format=log_format)
-    else:
+    handlers = [logging.StreamHandler(sys.stdout)]
+    if not args.foreground:
         os.makedirs(log_dir, exist_ok=True)
         log_file = os.path.join(log_dir, "ytmusicfs.log")
-        logging.basicConfig(
-            level=log_level,
-            format=log_format,
-            handlers=[logging.FileHandler(log_file), logging.StreamHandler(sys.stdout)],
-        )
+        handlers.append(logging.FileHandler(log_file))
+
+    logging.basicConfig(level=log_level, format=log_format, handlers=handlers)
 
     return logging.getLogger("YTMusicFS")
 

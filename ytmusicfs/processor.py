@@ -24,18 +24,8 @@ class TrackProcessor:
         Returns:
             A sanitized filename with problematic characters replaced by '-'.
         """
-        replacements = {
-            "/": "-",
-            "\\": "-",
-            ":": "-",
-            "*": "-",
-            "?": "-",
-            '"': "-",
-            "<": "-",
-            ">": "-",
-            "|": "-",
-        }
-        return "".join(replacements.get(c, c) for c in name)
+        invalid_chars = {"/", "\\", ":", "*", "?", '"', "<", ">", "|"}
+        return "".join("-" if c in invalid_chars else c for c in name)
 
     def clean_artists(self, raw_artists: List[Dict]) -> str:
         """Format artist names from a list of artist dictionaries.

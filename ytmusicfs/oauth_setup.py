@@ -78,9 +78,6 @@ def main(args=None):
         auth_file=args.auth_file, credentials_file=args.credentials_file, logger=logger
     )
 
-    # Ensure directories exist
-    config.ensure_directories()
-
     # Get the OAuth token file path
     output_file = config.auth_file
 

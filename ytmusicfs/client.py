@@ -42,9 +42,8 @@ class YouTubeMusicClient:
             )
             self.logger.info(f"Authentication successful with OAuth method!")
         except Exception as e:
-            self.logger.error(f"Error during authentication: {e}")
             self.logger.error(
-                "Try regenerating your authentication file with ytmusicfs oauth"
+                f"Error during authentication: {e}. Try regenerating your authentication file with ytmusicfs oauth"
             )
             raise
 

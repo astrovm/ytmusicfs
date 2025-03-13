@@ -70,8 +70,3 @@ class ConfigManager:
     def get_credentials(self) -> Tuple[Optional[str], Optional[str]]:
         """Return client_id and client_secret."""
         return self.client_id, self.client_secret
-
-    def ensure_directories(self) -> None:
-        """Ensure all configured directories exist."""
-        for dir_path in [self.config_dir, self.cache_dir]:
-            dir_path.mkdir(parents=True, exist_ok=True)
