@@ -11,7 +11,7 @@ class TrackProcessor:
         """Initialize the track processor.
 
         Args:
-            logger: Logger instance to use
+            logger: Optional logger instance. Defaults to a new logger if None.
         """
         self.logger = logger or logging.getLogger("TrackProcessor")
 
@@ -19,19 +19,26 @@ class TrackProcessor:
         """Sanitize a string to be used as a filename.
 
         Args:
-            name: The filename to sanitize
+            name: The filename to sanitize.
 
         Returns:
-            A sanitized filename
+            A sanitized filename with problematic characters replaced by '-'.
         """
-        # Replace problematic characters
-        sanitized = name.replace("/", "-").replace("\\", "-").replace(":", "-")
-        sanitized = sanitized.replace("*", "-").replace("?", "-").replace('"', "-")
-        sanitized = sanitized.replace("<", "-").replace(">", "-").replace("|", "-")
-        return sanitized
+        replacements = {
+            "/": "-",
+            "\\": "-",
+            ":": "-",
+            "*": "-",
+            "?": "-",
+            '"': "-",
+            "<": "-",
+            ">": "-",
+            "|": "-",
+        }
+        return "".join(replacements.get(c, c) for c in name)
 
     def clean_artists(self, raw_artists: List[Dict]) -> str:
-        """Clean and format artist names from a list of artist dictionaries.
+        """Format artist names from a list of artist dictionaries.
 
         Args:
             raw_artists: List of artist dictionaries with 'name' keys.
@@ -39,158 +46,144 @@ class TrackProcessor:
         Returns:
             A comma-separated string of cleaned artist names.
         """
-        clean_artists = []
-        for artist in raw_artists:
-            name = artist.get("name", "Unknown Artist")
-            # Remove "- Topic" suffix from artist names
-            if name.endswith(" - Topic"):
-                name = name[:-8]  # Remove "- Topic" (8 characters)
-            clean_artists.append(name)
-        return ", ".join(clean_artists)
+        artists = [
+            self._clean_artist_name(artist.get("name", "Unknown Artist"))
+            for artist in raw_artists
+        ]
+        return ", ".join(artists)
+
+    def _clean_artist_name(self, name: str) -> str:
+        """Clean a single artist name by removing '- Topic' suffix.
+
+        Args:
+            name: The artist name to clean.
+
+        Returns:
+            The cleaned artist name.
+        """
+        return name[:-8] if name.endswith(" - Topic") else name
 
     def parse_duration(self, track: Dict) -> Tuple[Optional[int], str]:
         """Parse track duration into seconds and formatted string.
 
         Args:
-            track: Track dictionary that may contain duration information
+            track: Track dictionary with duration info.
 
         Returns:
-            Tuple of (duration_seconds, duration_formatted)
+            Tuple of (duration in seconds or None, formatted duration as 'mm:ss').
         """
-        duration_seconds = None
-        duration_formatted = "0:00"
+        duration_seconds = track.get("duration_seconds")
+        duration_str = track.get("duration", "0:00") if not duration_seconds else None
 
-        if "duration" in track:
-            duration_str = track.get("duration", "0:00")
-            try:
-                # Convert MM:SS to seconds
-                parts = duration_str.split(":")
-                if len(parts) == 2:
-                    duration_seconds = int(parts[0]) * 60 + int(parts[1])
-                elif len(parts) == 3:
-                    duration_seconds = (
-                        int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-                    )
-            except (ValueError, IndexError):
-                pass
-        elif "duration_seconds" in track:
-            duration_seconds = track.get("duration_seconds")
+        if duration_str:
+            duration_seconds = self._parse_duration_str(duration_str)
 
-        # Format duration as mm:ss for display
-        if duration_seconds:
-            minutes = duration_seconds // 60
-            seconds = duration_seconds % 60
-            duration_formatted = f"{minutes}:{seconds:02d}"
-
+        duration_formatted = self._format_duration(duration_seconds or 0)
         return duration_seconds, duration_formatted
 
-    def extract_album_info(self, track: Dict) -> Tuple[str, str]:
-        """Extract album name and album artist from track data.
+    def _parse_duration_str(self, duration_str: str) -> Optional[int]:
+        """Parse a duration string (e.g., 'MM:SS' or 'HH:MM:SS') into seconds.
 
         Args:
-            track: Track dictionary that may contain album information
+            duration_str: Duration string to parse.
 
         Returns:
-            Tuple of (album_name, album_artist)
+            Duration in seconds or None if parsing fails.
         """
-        album = "Unknown Album"
-        album_artist = "Unknown Artist"
+        try:
+            parts = [int(p) for p in duration_str.split(":")]
+            if len(parts) == 2:
+                return parts[0] * 60 + parts[1]
+            if len(parts) == 3:
+                return parts[0] * 3600 + parts[1] * 60 + parts[2]
+        except (ValueError, IndexError):
+            return None
+        return None
 
-        # Handle album which could be None, a string, or a dictionary
+    def _format_duration(self, seconds: int) -> str:
+        """Format duration in seconds to 'mm:ss'.
+
+        Args:
+            seconds: Duration in seconds.
+
+        Returns:
+            Formatted string in 'mm:ss' format.
+        """
+        minutes, secs = divmod(seconds, 60)
+        return f"{minutes}:{secs:02d}"
+
+    def extract_album_info(self, track: Dict) -> Tuple[str, str]:
+        """Extract album name and artist from track data.
+
+        Args:
+            track: Track dictionary with potential album info.
+
+        Returns:
+            Tuple of (album name, album artist).
+        """
         album_obj = track.get("album")
-        if album_obj is not None:
-            if isinstance(album_obj, dict):
-                album = album_obj.get("name", "Unknown Album")
-                # Handle album artist - could be direct 'artist' or in 'artists' list
-                album_artist_obj = album_obj.get("artist")
-                if album_artist_obj is not None:
-                    if isinstance(album_artist_obj, list) and album_artist_obj:
-                        album_artist_name = album_artist_obj[0].get(
-                            "name", "Unknown Artist"
-                        )
-                        # Remove "- Topic" from album artist
-                        if album_artist_name.endswith(" - Topic"):
-                            album_artist = album_artist_name[:-8]
-                        else:
-                            album_artist = album_artist_name
-                    elif isinstance(album_artist_obj, str):
-                        # Remove "- Topic" from album artist if it's a string
-                        if album_artist_obj.endswith(" - Topic"):
-                            album_artist = album_artist_obj[:-8]
-                        else:
-                            album_artist = album_artist_obj
-                # Try the 'artists' field if 'artist' wasn't found
-                elif "artists" in album_obj and album_obj["artists"]:
-                    artists_obj = album_obj["artists"]
-                    if artists_obj and isinstance(artists_obj[0], dict):
-                        album_artist_name = artists_obj[0].get("name", "Unknown Artist")
-                        # Remove "- Topic" from album artist
-                        if album_artist_name.endswith(" - Topic"):
-                            album_artist = album_artist_name[:-8]
-                        else:
-                            album_artist = album_artist_name
-            elif isinstance(album_obj, str):
-                album = album_obj
+        if not album_obj:
+            return "Unknown Album", "Unknown Artist"
 
-        return album, album_artist
+        if isinstance(album_obj, str):
+            return album_obj, "Unknown Artist"
+
+        album_name = album_obj.get("name", "Unknown Album")
+        artist = self._extract_album_artist(album_obj)
+        return album_name, artist
+
+    def _extract_album_artist(self, album_obj: Dict) -> str:
+        """Extract album artist from album object.
+
+        Args:
+            album_obj: Album dictionary.
+
+        Returns:
+            Cleaned album artist name.
+        """
+        artist_obj = album_obj.get("artist") or (album_obj.get("artists") or [{}])[0]
+        if isinstance(artist_obj, list) and artist_obj:
+            artist_obj = artist_obj[0]
+        name = (
+            artist_obj.get("name") if isinstance(artist_obj, dict) else artist_obj
+        ) or "Unknown Artist"
+        return self._clean_artist_name(name)
 
     def extract_year(self, track: Dict) -> Optional[int]:
-        """Extract the year from track or album data.
+        """Extract year from track or album data.
 
         Args:
-            track: Track dictionary that may contain year information
+            track: Track dictionary with potential year info.
 
         Returns:
-            Year as int or None if not available
+            Year as integer or None if not found.
         """
-        if "year" in track:
-            return track.get("year")
-        elif (
-            track.get("album")
-            and isinstance(track.get("album"), dict)
-            and "year" in track.get("album")
-        ):
-            return track.get("album").get("year")
-        return None
+        return track.get("year") or (
+            isinstance(track.get("album"), dict) and track["album"].get("year")
+        )
 
     def extract_track_info(self, track: Dict) -> Dict:
         """Extract and format track information.
 
         Args:
-            track: Track dictionary containing raw track data
+            track: Raw track dictionary.
 
         Returns:
-            Dictionary with extracted and formatted track information
+            Dictionary with formatted track metadata.
         """
-        title = track.get("title", "Unknown Title")
-
-        # Process artists
-        raw_artists = track.get("artists", [])
-        artists = self.clean_artists(raw_artists)
-
-        # Get album information
+        duration_seconds, duration_formatted = self.parse_duration(track)
         album, album_artist = self.extract_album_info(track)
 
-        # Extract song duration
-        duration_seconds, duration_formatted = self.parse_duration(track)
-
-        # Extract additional metadata
-        track_number = track.get("trackNumber", track.get("index", 0))
-        year = self.extract_year(track)
-
-        # Extract genre information if available
-        genre = track.get("genre", "Unknown Genre")
-
         return {
-            "title": title,
-            "artist": artists,  # Flattened artist string for metadata
+            "title": track.get("title", "Unknown Title"),
+            "artist": self.clean_artists(track.get("artists", [])),
             "album": album,
             "album_artist": album_artist,
             "duration_seconds": duration_seconds,
             "duration_formatted": duration_formatted,
-            "track_number": track_number,
-            "year": year,
-            "genre": genre,
+            "track_number": track.get("trackNumber", track.get("index", 0)),
+            "year": self.extract_year(track),
+            "genre": track.get("genre", "Unknown Genre"),
         }
 
     def process_tracks(
@@ -199,29 +192,26 @@ class TrackProcessor:
         """Process track data into a consistent format with filenames.
 
         Args:
-            tracks: List of track dictionaries
-            add_filename: Whether to add filename to the tracks
+            tracks: List of raw track dictionaries.
+            add_filename: Whether to include filenames in processed tracks.
 
         Returns:
-            List of processed tracks with filenames and a list of just the filenames
+            Tuple of (processed tracks, list of filenames).
         """
         processed = []
         filenames = []
 
         for track in tracks:
-            # Extract all track information
             track_info = self.extract_track_info(track)
-
-            # Create filename from artist and title
-            filename = f"{track_info['artist']} - {track_info['title']}.m4a"
-            sanitized_filename = self.sanitize_filename(filename)
-            filenames.append(sanitized_filename)
+            filename = self.sanitize_filename(
+                f"{track_info['artist']} - {track_info['title']}.m4a"
+            )
+            filenames.append(filename)
 
             if add_filename:
-                # Create a shallow copy of the track and add track info
                 processed_track = dict(track)
                 processed_track.update(track_info)
-                processed_track["filename"] = sanitized_filename
+                processed_track["filename"] = filename
                 processed.append(processed_track)
 
         return processed, filenames
