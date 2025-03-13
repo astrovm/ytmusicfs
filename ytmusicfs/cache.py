@@ -807,9 +807,7 @@ class CacheManager:
                     if new_items or updated_items:
                         # Process just the new/updated items
                         items_to_process = new_items + updated_items
-                        new_processed_items, _ = processor.process_tracks(
-                            items_to_process
-                        )
+                        new_processed_items = processor.process_tracks(items_to_process)
 
                         if existing_processed_items:
                             # Filter out processed items corresponding to changed items
@@ -890,7 +888,7 @@ class CacheManager:
                 and recent_items
                 and processor is not None
             ):
-                processed_items, _ = processor.process_tracks(recent_items)
+                processed_items = processor.process_tracks(recent_items)
                 self.set(processed_cache_key, processed_items)
                 self.logger.info(
                     f"Created processed cache with {len(processed_items)} items"

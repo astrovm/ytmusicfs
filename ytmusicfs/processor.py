@@ -178,7 +178,7 @@ class TrackProcessor:
 
     def process_tracks(
         self, tracks: List[Dict], add_filename: bool = True
-    ) -> Tuple[List[Dict], List[str]]:
+    ) -> List[Dict]:
         """Process track data into a consistent format with filenames.
 
         Args:
@@ -186,17 +186,15 @@ class TrackProcessor:
             add_filename: Whether to include filenames in processed tracks.
 
         Returns:
-            Tuple of (processed tracks, list of filenames).
+            List of processed track dictionaries with metadata and filenames.
         """
         processed = []
-        filenames = []
 
         for track in tracks:
             track_info = self.extract_track_info(track)
             filename = self.sanitize_filename(
                 f"{track_info['artist']} - {track_info['title']}.m4a"
             )
-            filenames.append(filename)
 
             if add_filename:
                 processed_track = dict(track)
@@ -204,4 +202,4 @@ class TrackProcessor:
                 processed_track["filename"] = filename
                 processed.append(processed_track)
 
-        return processed, filenames
+        return processed
