@@ -115,6 +115,12 @@ class FileHandler:
                     raise Exception(result["error"])
                 stream_url = result["stream_url"]
 
+                # Extract and cache duration if available in the result
+                if "duration" in result and self.cache:
+                    duration = result["duration"]
+                    self.logger.debug(f"Got duration for {video_id}: {duration}s")
+                    self.cache.set_duration(video_id, duration)
+
                 head_response = requests.head(stream_url, timeout=10)
                 if (
                     head_response.status_code == 200
@@ -175,7 +181,22 @@ class FileHandler:
             with YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 stream_url = info["url"]
-                queue.put({"status": "success", "stream_url": stream_url})
+                # Extract and cache duration if available
+                duration = info.get("duration")
+                if duration is not None:
+                    try:
+                        # Add duration to the queue response
+                        queue.put(
+                            {
+                                "status": "success",
+                                "stream_url": stream_url,
+                                "duration": int(duration),
+                            }
+                        )
+                    except (ValueError, TypeError):
+                        queue.put({"status": "success", "stream_url": stream_url})
+                else:
+                    queue.put({"status": "success", "stream_url": stream_url})
         except Exception as e:
             queue.put({"status": "error", "error": str(e)})
 

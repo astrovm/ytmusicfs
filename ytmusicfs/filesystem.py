@@ -82,8 +82,8 @@ class YouTubeMusicFS(Operations):
             logger=self.logger,
         )
 
-        # Initialize the track processor component
-        self.processor = TrackProcessor(logger=self.logger)
+        # Initialize the track processor component with cache access
+        self.processor = TrackProcessor(logger=self.logger, cache_manager=self.cache)
 
         # Initialize the content fetcher component
         self.fetcher = ContentFetcher(
@@ -91,6 +91,7 @@ class YouTubeMusicFS(Operations):
             processor=self.processor,
             cache=self.cache,
             logger=self.logger,
+            browser=browser,
         )
 
         # Set the callback for caching directory listings with attributes

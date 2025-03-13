@@ -1083,6 +1083,40 @@ class CacheManager:
         self.set(f"{path}_search_metadata", metadata)
         self.logger.debug(f"Stored search metadata for {path}: {metadata}")
 
+    def set_duration(self, video_id: str, duration_seconds: int) -> None:
+        """Store duration for a video ID.
+
+        Args:
+            video_id: YouTube video ID
+            duration_seconds: Duration in seconds
+        """
+        self.set(f"duration:{video_id}", duration_seconds)
+        self.logger.debug(f"Cached duration for {video_id}: {duration_seconds}s")
+
+    def get_duration(self, video_id: str) -> Optional[int]:
+        """Retrieve cached duration for a video ID.
+
+        Args:
+            video_id: YouTube video ID
+
+        Returns:
+            Duration in seconds if cached, None otherwise
+        """
+        duration = self.get(f"duration:{video_id}")
+        if duration is not None:
+            self.logger.debug(f"Retrieved cached duration for {video_id}: {duration}s")
+        return duration
+
+    def set_durations_batch(self, durations: Dict[str, int]) -> None:
+        """Store multiple durations in a batch operation.
+
+        Args:
+            durations: Dictionary mapping video IDs to durations in seconds
+        """
+        for video_id, duration in durations.items():
+            self.set_duration(video_id, duration)
+        self.logger.info(f"Cached {len(durations)} durations in batch")
+
     def __del__(self):
         """Clean up resources when the object is deleted."""
         try:

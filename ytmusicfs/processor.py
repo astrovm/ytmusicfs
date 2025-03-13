@@ -7,13 +7,15 @@ import logging
 class TrackProcessor:
     """Processor for handling track metadata."""
 
-    def __init__(self, logger: Optional[logging.Logger] = None):
+    def __init__(self, logger: Optional[logging.Logger] = None, cache_manager=None):
         """Initialize the track processor.
 
         Args:
             logger: Optional logger instance. Defaults to a new logger if None.
+            cache_manager: Optional cache manager for retrieving cached durations
         """
         self.logger = logger or logging.getLogger("TrackProcessor")
+        self.cache_manager = cache_manager
 
     def sanitize_filename(self, name: str) -> str:
         """Sanitize a string to be used as a filename.
@@ -161,7 +163,31 @@ class TrackProcessor:
         Returns:
             Dictionary with formatted track metadata.
         """
-        duration_seconds, duration_formatted = self.parse_duration(track)
+        # Try to get the duration from the cache first
+        video_id = track.get("videoId")
+        duration_seconds = None
+        duration_formatted = "0:00"
+
+        if video_id and self.cache_manager:
+            cached_duration = self.cache_manager.get_duration(video_id)
+            if cached_duration is not None:
+                self.logger.debug(
+                    f"Using cached duration for {video_id}: {cached_duration}s"
+                )
+                duration_seconds = cached_duration
+                duration_formatted = self._format_duration(duration_seconds)
+
+        # If no cached duration, parse from the track data
+        if duration_seconds is None:
+            duration_seconds, duration_formatted = self.parse_duration(track)
+
+            # If we got a duration from parsing and we have a video ID, cache it for future use
+            if duration_seconds is not None and video_id and self.cache_manager:
+                self.logger.debug(
+                    f"Caching parsed duration for {video_id}: {duration_seconds}s"
+                )
+                self.cache_manager.set_duration(video_id, duration_seconds)
+
         album, album_artist = self.extract_album_info(track)
 
         return {
@@ -174,6 +200,7 @@ class TrackProcessor:
             "track_number": track.get("trackNumber", track.get("index", 0)),
             "year": self.extract_year(track),
             "genre": track.get("genre", "Unknown Genre"),
+            "videoId": video_id,  # Include the video ID in the track info for reference
         }
 
     def process_tracks(

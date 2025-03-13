@@ -4,9 +4,11 @@ from typing import List, Callable, Optional, Dict, Any
 from ytmusicfs.client import YouTubeMusicClient
 from ytmusicfs.processor import TrackProcessor
 from ytmusicfs.cache import CacheManager
+from ytmusicfs.duration_fetcher import DurationFetcher
 import logging
 import os
 import time
+import threading
 
 
 class ContentFetcher:
@@ -18,6 +20,7 @@ class ContentFetcher:
         processor: TrackProcessor,
         cache: CacheManager,
         logger: logging.Logger,
+        browser: str = None,
     ):
         """Initialize the ContentFetcher.
 
@@ -26,11 +29,20 @@ class ContentFetcher:
             processor: Track processor for handling track data
             cache: Cache manager for storing fetched data
             logger: Logger instance
+            browser: Browser to use for cookies (optional)
         """
         self.client = client
         self.processor = processor
         self.cache = cache
         self.logger = logger
+        self.browser = browser
+
+        # Initialize the DurationFetcher
+        self.duration_fetcher = DurationFetcher(browser, logger)
+
+        # Used to control background duration fetching
+        self.duration_fetch_lock = threading.Lock()
+        self.duration_fetch_tasks = {}  # Track ongoing fetches by playlist ID
 
     def fetch_and_cache(
         self,
@@ -124,6 +136,10 @@ class ContentFetcher:
             )
             # Cache directory listing with attributes for efficient getattr lookups
             self._cache_directory_listing_with_attrs("/liked_songs", processed_tracks)
+
+            # Start background duration fetching if not already running
+            self._fetch_durations_for_liked_songs()
+
             return [track["filename"] for track in processed_tracks]
 
         # Use the centralized helper to fetch liked songs
@@ -151,7 +167,36 @@ class ContentFetcher:
         # Cache directory listing with attributes for efficient getattr lookups
         self._cache_directory_listing_with_attrs("/liked_songs", processed_tracks)
 
+        # Start background duration fetching
+        self._fetch_durations_for_liked_songs()
+
         return [track["filename"] for track in processed_tracks]
+
+    def _fetch_durations_for_liked_songs(self) -> None:
+        """Start background duration fetching for liked songs if not already running."""
+        with self.duration_fetch_lock:
+            # Check if we're already fetching durations for liked songs
+            if "LM" in self.duration_fetch_tasks:
+                self.logger.debug(
+                    "Duration fetching for liked songs already in progress"
+                )
+                return
+
+            self.logger.info("Starting background duration fetching for liked songs")
+
+            def on_complete(durations):
+                self.logger.info(
+                    f"Completed fetching {len(durations)} durations for liked songs"
+                )
+                with self.duration_fetch_lock:
+                    if "LM" in self.duration_fetch_tasks:
+                        del self.duration_fetch_tasks["LM"]
+
+            # Start the background fetch
+            self.duration_fetcher.fetch_durations_background(
+                "LM", self.cache, on_complete
+            )
+            self.duration_fetch_tasks["LM"] = True
 
     def _cache_directory_listing_with_attrs(
         self, dir_path: str, processed_tracks: List[Dict[str, Any]]
@@ -243,7 +288,42 @@ class ContentFetcher:
         # Cache directory listing with attributes for efficient getattr lookups
         self._cache_directory_listing_with_attrs(path, processed_tracks)
 
+        # Start background duration fetching for this playlist
+        self._fetch_durations_for_playlist(playlist_id)
+
         return [track["filename"] for track in processed_tracks]
+
+    def _fetch_durations_for_playlist(self, playlist_id: str) -> None:
+        """Start background duration fetching for a playlist if not already running.
+
+        Args:
+            playlist_id: The playlist ID to fetch durations for
+        """
+        with self.duration_fetch_lock:
+            # Check if we're already fetching durations for this playlist
+            if playlist_id in self.duration_fetch_tasks:
+                self.logger.debug(
+                    f"Duration fetching for playlist {playlist_id} already in progress"
+                )
+                return
+
+            self.logger.info(
+                f"Starting background duration fetching for playlist {playlist_id}"
+            )
+
+            def on_complete(durations):
+                self.logger.info(
+                    f"Completed fetching {len(durations)} durations for playlist {playlist_id}"
+                )
+                with self.duration_fetch_lock:
+                    if playlist_id in self.duration_fetch_tasks:
+                        del self.duration_fetch_tasks[playlist_id]
+
+            # Start the background fetch
+            self.duration_fetcher.fetch_durations_background(
+                playlist_id, self.cache, on_complete
+            )
+            self.duration_fetch_tasks[playlist_id] = True
 
     def readdir_artists(self) -> List[str]:
         """Handle listing artists.
@@ -1043,6 +1123,9 @@ class ContentFetcher:
             prepend_new_items=True,
         )
 
+        # Refresh durations for liked songs
+        self._refresh_durations_for_liked_songs()
+
         # Refresh playlists
         self.cache.refresh_cache_data(
             cache_key="/playlists",
@@ -1071,3 +1154,11 @@ class ContentFetcher:
         )
 
         self.logger.info("All content caches refreshed successfully")
+
+    def _refresh_durations_for_liked_songs(self) -> None:
+        """Refresh durations for liked songs.
+
+        This triggers a background fetch of durations for all liked songs.
+        """
+        self.logger.info("Refreshing durations for liked songs...")
+        self._fetch_durations_for_liked_songs()
