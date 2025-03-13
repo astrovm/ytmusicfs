@@ -47,18 +47,23 @@ class FileHandler:
         # Initialize Downloader
         self.downloader = Downloader(cache_dir, logger, update_file_size_callback)
 
-    def open(self, path: str, video_id: str, thread_pool) -> int:
+    def open(
+        self, path: str, video_id: str, thread_pool, metadata_only: bool = False
+    ) -> int:
         """Open a file and return a file handle.
 
         Args:
             path: The file path
             video_id: YouTube video ID for the file
             thread_pool: ThreadPoolExecutor for background tasks
+            metadata_only: If True, only prepare metadata (no streaming)
 
         Returns:
             File handle
         """
-        self.logger.debug(f"open: {path} with video_id {video_id}")
+        self.logger.debug(
+            f"open: {path} with video_id {video_id}, metadata_only={metadata_only}"
+        )
         cache_path = self.cache_dir / "audio" / f"{video_id}.m4a"
         cache_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -73,6 +78,7 @@ class FileHandler:
                 "error": None,  # Store any errors that occur
                 "path": path,  # Store path for reference
                 "initialized_event": threading.Event(),  # Event to signal when initialization is complete
+                "metadata_only": metadata_only,  # Store the metadata_only flag
             }
             self.path_to_fh[path] = fh
             self.logger.debug(f"Assigned file handle {fh} to {path}")
@@ -84,22 +90,50 @@ class FileHandler:
                 self.open_files[fh]["initialized_event"].set()
             return fh
 
-        thread_pool.submit(self._prepare_file_in_background, fh, video_id, path)
+        # If only metadata is needed and duration is cached, mark as ready immediately
+        if metadata_only and self.cache.get_duration(video_id) is not None:
+            self.logger.debug(
+                f"Metadata only requested and duration cached for {video_id}"
+            )
+            with self.file_handle_lock:
+                self.open_files[fh]["status"] = "ready"
+                self.open_files[fh]["initialized_event"].set()
+            return fh
+
+        thread_pool.submit(
+            self._prepare_file_in_background, fh, video_id, path, metadata_only
+        )
         return fh
 
-    def _prepare_file_in_background(self, fh: int, video_id: str, path: str) -> None:
+    def _prepare_file_in_background(
+        self, fh: int, video_id: str, path: str, metadata_only: bool = False
+    ) -> None:
         """Prepare a file in the background by fetching its stream URL and starting download.
 
         Args:
             fh: File handle
             video_id: YouTube video ID
             path: File path
+            metadata_only: If True, only fetch metadata if not cached
         """
         try:
             file_info = self.open_files.get(fh)
             if not file_info:
                 self.logger.error(f"File handle {fh} no longer exists")
                 return
+
+            # Check if duration is already cached when metadata_only is True
+            if metadata_only:
+                duration = self.cache.get_duration(video_id)
+                if duration is not None:
+                    self.logger.debug(
+                        f"Using cached duration {duration}s for {video_id}, skipping fetch"
+                    )
+                    with self.file_handle_lock:
+                        if fh in self.open_files:
+                            self.open_files[fh]["status"] = "ready"
+                            self.open_files[fh]["initialized_event"].set()
+                    return
 
             queue = multiprocessing.Queue()
             process = multiprocessing.Process(
@@ -121,16 +155,18 @@ class FileHandler:
                     self.logger.debug(f"Got duration for {video_id}: {duration}s")
                     self.cache.set_duration(video_id, duration)
 
-                head_response = requests.head(stream_url, timeout=10)
-                if (
-                    head_response.status_code == 200
-                    and "content-length" in head_response.headers
-                ):
-                    actual_size = int(head_response.headers["content-length"])
-                    self.logger.debug(
-                        f"Got actual file size for {video_id}: {actual_size} bytes"
-                    )
-                    self.update_file_size_callback(path, actual_size)
+                # Only fetch file size if we need to stream (not metadata-only)
+                if not metadata_only:
+                    head_response = requests.head(stream_url, timeout=10)
+                    if (
+                        head_response.status_code == 200
+                        and "content-length" in head_response.headers
+                    ):
+                        actual_size = int(head_response.headers["content-length"])
+                        self.logger.debug(
+                            f"Got actual file size for {video_id}: {actual_size} bytes"
+                        )
+                        self.update_file_size_callback(path, actual_size)
             except Exception as e:
                 self.logger.error(f"Error getting stream URL for {video_id}: {str(e)}")
                 with self.file_handle_lock:
@@ -146,7 +182,9 @@ class FileHandler:
                     self.open_files[fh]["status"] = "ready"
                     self.open_files[fh]["initialized_event"].set()
 
-            self.downloader.download_file(video_id, stream_url, path)
+            # Only start the download if not metadata-only
+            if not metadata_only:
+                self.downloader.download_file(video_id, stream_url, path)
         except Exception as e:
             self.logger.error(f"Error preparing file {video_id}: {str(e)}")
             with self.file_handle_lock:
@@ -260,6 +298,18 @@ class FileHandler:
             elif file_info["status"] == "initializing":
                 raise OSError(errno.EIO, "Timeout waiting for initialization")
 
+        # Check if file was opened as metadata_only but now needs streaming
+        if file_info.get("metadata_only", False) and not file_info.get("stream_url"):
+            self.logger.debug(f"Converting metadata-only file to streaming for {path}")
+            # Initialize stream URL if needed but was skipped due to metadata_only
+            self._prepare_file_for_streaming(fh, video_id, path)
+            # Wait for initialization to complete
+            file_info["initialized_event"].wait(timeout=10)
+            if file_info["status"] == "error":
+                raise OSError(errno.EIO, file_info.get("error", "Unknown error"))
+            elif file_info["status"] == "initializing":
+                raise OSError(errno.EIO, "Timeout waiting for streaming initialization")
+
         progress = self.downloader.get_progress(video_id)
         if progress and progress["status"] == "complete" and cache_path.exists():
             with cache_path.open("rb") as f:
@@ -279,6 +329,84 @@ class FileHandler:
             raise OSError(errno.EIO, "Stream URL unavailable")
 
         return self._stream_content(stream_url, offset, size)
+
+    def _prepare_file_for_streaming(self, fh: int, video_id: str, path: str) -> None:
+        """Prepare a file for streaming that was previously opened with metadata_only=True.
+
+        Args:
+            fh: File handle
+            video_id: YouTube video ID
+            path: File path
+        """
+        file_info = self.open_files.get(fh)
+        if not file_info:
+            self.logger.error(f"File handle {fh} no longer exists")
+            return
+
+        # Set status to initializing during preparation
+        with self.file_handle_lock:
+            file_info["status"] = "initializing"
+            file_info["initialized_event"].clear()
+
+        try:
+            queue = multiprocessing.Queue()
+            process = multiprocessing.Process(
+                target=self._extract_stream_url, args=(video_id, self.browser, queue)
+            )
+            process.daemon = True
+            process.start()
+
+            try:
+                result = queue.get(timeout=30)
+                if result["status"] == "error":
+                    raise Exception(result["error"])
+                stream_url = result["stream_url"]
+
+                # Get additional metadata if available
+                if "duration" in result and self.cache:
+                    duration = result["duration"]
+                    self.logger.debug(f"Got duration for {video_id}: {duration}s")
+                    self.cache.set_duration(video_id, duration)
+
+                # Get file size
+                head_response = requests.head(stream_url, timeout=10)
+                if (
+                    head_response.status_code == 200
+                    and "content-length" in head_response.headers
+                ):
+                    actual_size = int(head_response.headers["content-length"])
+                    self.logger.debug(
+                        f"Got actual file size for {video_id}: {actual_size} bytes"
+                    )
+                    self.update_file_size_callback(path, actual_size)
+
+                # Update file info
+                with self.file_handle_lock:
+                    if fh in self.open_files:
+                        self.open_files[fh]["stream_url"] = stream_url
+                        self.open_files[fh]["status"] = "ready"
+                        self.open_files[fh]["metadata_only"] = False
+                        self.open_files[fh]["initialized_event"].set()
+
+                # Start background download
+                self.downloader.download_file(video_id, stream_url, path)
+
+            except Exception as e:
+                self.logger.error(f"Error getting stream URL for {video_id}: {str(e)}")
+                with self.file_handle_lock:
+                    if fh in self.open_files:
+                        self.open_files[fh]["status"] = "error"
+                        self.open_files[fh]["error"] = str(e)
+                        self.open_files[fh]["initialized_event"].set()
+        except Exception as e:
+            self.logger.error(
+                f"Error preparing file {video_id} for streaming: {str(e)}"
+            )
+            with self.file_handle_lock:
+                if fh in self.open_files:
+                    self.open_files[fh]["status"] = "error"
+                    self.open_files[fh]["error"] = str(e)
+                    self.open_files[fh]["initialized_event"].set()
 
     def release(self, path: str, fh: int) -> int:
         """Release (close) a file handle and stop any ongoing download.

@@ -155,7 +155,7 @@ class TrackProcessor:
         )
 
     def extract_track_info(self, track: Dict) -> Dict:
-        """Extract and format track information.
+        """Extract and format track information, prioritizing cached durations.
 
         Args:
             track: Raw track dictionary.
@@ -168,6 +168,7 @@ class TrackProcessor:
         duration_seconds = None
         duration_formatted = "0:00"
 
+        # First priority: Check cache for duration
         if video_id and self.cache_manager:
             cached_duration = self.cache_manager.get_duration(video_id)
             if cached_duration is not None:
@@ -177,11 +178,11 @@ class TrackProcessor:
                 duration_seconds = cached_duration
                 duration_formatted = self._format_duration(duration_seconds)
 
-        # If no cached duration, parse from the track data
+        # Second priority: Parse from track data if not in cache
         if duration_seconds is None:
             duration_seconds, duration_formatted = self.parse_duration(track)
 
-            # If we got a duration from parsing and we have a video ID, cache it for future use
+            # If we successfully parsed a duration and have a video ID, cache it for future use
             if duration_seconds is not None and video_id and self.cache_manager:
                 self.logger.debug(
                     f"Caching parsed duration for {video_id}: {duration_seconds}s"
@@ -218,7 +219,10 @@ class TrackProcessor:
         processed = []
 
         for track in tracks:
+            # Extract track info (will prioritize cached durations)
             track_info = self.extract_track_info(track)
+
+            # Generate filename
             filename = self.sanitize_filename(
                 f"{track_info['artist']} - {track_info['title']}.m4a"
             )

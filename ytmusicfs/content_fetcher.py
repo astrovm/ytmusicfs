@@ -123,7 +123,7 @@ class ContentFetcher:
         )
 
     def readdir_liked_songs(self) -> List[str]:
-        """Handle listing liked songs.
+        """Handle listing liked songs with pre-fetched durations.
 
         Returns:
             List of liked song filenames
@@ -136,9 +136,6 @@ class ContentFetcher:
             )
             # Cache directory listing with attributes for efficient getattr lookups
             self._cache_directory_listing_with_attrs("/liked_songs", processed_tracks)
-
-            # Start background duration fetching if not already running
-            self._fetch_durations_for_liked_songs()
 
             return [track["filename"] for track in processed_tracks]
 
@@ -156,10 +153,27 @@ class ContentFetcher:
             return []
 
         tracks = liked_songs.get("tracks", [])
-        self.logger.info(f"Processing {len(tracks)} liked songs")
+        self.logger.info(f"Fetching durations for {len(tracks)} liked songs")
+
+        # Synchronously fetch durations for all liked songs
+        durations = self.duration_fetcher.fetch_durations_for_liked_songs(
+            update_callback=lambda video_id, duration: self.cache.set_duration(
+                video_id, duration
+            )
+        )
+        self.logger.info(f"Fetched {len(durations)} durations for liked songs")
 
         # Process the tracks outside of any locks
         processed_tracks = self.processor.process_tracks(tracks)
+
+        # Apply durations to processed tracks
+        for track in processed_tracks:
+            video_id = track.get("videoId")
+            if video_id and video_id in durations:
+                track["duration_seconds"] = durations[video_id]
+                track["duration_formatted"] = self.processor._format_duration(
+                    durations[video_id]
+                )
 
         # Cache the processed tracks
         self.cache.set("/liked_songs_processed", processed_tracks)
@@ -167,36 +181,7 @@ class ContentFetcher:
         # Cache directory listing with attributes for efficient getattr lookups
         self._cache_directory_listing_with_attrs("/liked_songs", processed_tracks)
 
-        # Start background duration fetching
-        self._fetch_durations_for_liked_songs()
-
         return [track["filename"] for track in processed_tracks]
-
-    def _fetch_durations_for_liked_songs(self) -> None:
-        """Start background duration fetching for liked songs if not already running."""
-        with self.duration_fetch_lock:
-            # Check if we're already fetching durations for liked songs
-            if "LM" in self.duration_fetch_tasks:
-                self.logger.debug(
-                    "Duration fetching for liked songs already in progress"
-                )
-                return
-
-            self.logger.info("Starting background duration fetching for liked songs")
-
-            def on_complete(durations):
-                self.logger.info(
-                    f"Completed fetching {len(durations)} durations for liked songs"
-                )
-                with self.duration_fetch_lock:
-                    if "LM" in self.duration_fetch_tasks:
-                        del self.duration_fetch_tasks["LM"]
-
-            # Start the background fetch
-            self.duration_fetcher.fetch_durations_background(
-                "LM", self.cache, on_complete
-            )
-            self.duration_fetch_tasks["LM"] = True
 
     def _cache_directory_listing_with_attrs(
         self, dir_path: str, processed_tracks: List[Dict[str, Any]]
@@ -1156,9 +1141,39 @@ class ContentFetcher:
         self.logger.info("All content caches refreshed successfully")
 
     def _refresh_durations_for_liked_songs(self) -> None:
-        """Refresh durations for liked songs.
+        """Refresh durations for liked songs synchronously.
 
-        This triggers a background fetch of durations for all liked songs.
+        This fetches durations for all liked songs in the foreground and updates cached tracks.
         """
-        self.logger.info("Refreshing durations for liked songs...")
-        self._fetch_durations_for_liked_songs()
+        self.logger.info("Refreshing durations for liked songs synchronously...")
+
+        # Fetch durations synchronously
+        durations = self.duration_fetcher.fetch_durations_for_liked_songs(
+            update_callback=lambda video_id, duration: self.cache.set_duration(
+                video_id, duration
+            )
+        )
+        self.logger.info(f"Fetched {len(durations)} durations for liked songs")
+
+        # Update any cached processed tracks with the new durations
+        processed_tracks = self.cache.get("/liked_songs_processed")
+        if processed_tracks:
+            updated = False
+            for track in processed_tracks:
+                video_id = track.get("videoId")
+                if video_id and video_id in durations:
+                    duration_seconds = durations[video_id]
+                    if track.get("duration_seconds") != duration_seconds:
+                        track["duration_seconds"] = duration_seconds
+                        track["duration_formatted"] = self.processor._format_duration(
+                            duration_seconds
+                        )
+                        updated = True
+
+            # Only update the cache if tracks were changed
+            if updated:
+                self.logger.info("Updating cached processed tracks with new durations")
+                self.cache.set("/liked_songs_processed", processed_tracks)
+                self._cache_directory_listing_with_attrs(
+                    "/liked_songs", processed_tracks
+                )

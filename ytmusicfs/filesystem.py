@@ -572,6 +572,83 @@ class YouTubeMusicFS(Operations):
                 self.last_access_results[operation_key] = result
             return result
 
+    def _get_video_id(self, path: str) -> str:
+        """Helper to extract videoId from a path.
+
+        Args:
+            path: The file path
+
+        Returns:
+            Video ID for the file
+
+        Raises:
+            OSError: If the video ID could not be found
+        """
+        dir_path = os.path.dirname(path)
+        filename = os.path.basename(path)
+
+        # Determine where to look for the song data
+        songs = None
+        if dir_path == "/liked_songs":
+            songs = self.cache.get("/liked_songs_processed")
+        elif dir_path.startswith("/playlists/"):
+            # Special handling for playlists which need the playlist ID
+            playlist_name = dir_path.split("/")[2]
+            playlists = self.cache.get("/playlists")
+            if playlists:
+                playlist_id = None
+                for playlist in playlists:
+                    if (
+                        self.processor.sanitize_filename(playlist["title"])
+                        == playlist_name
+                    ):
+                        playlist_id = playlist["playlistId"]
+                        break
+
+                if playlist_id:
+                    processed_cache_key = f"/playlist/{playlist_id}_processed"
+                    songs = self.cache.get(processed_cache_key)
+        else:
+            songs = self.cache.get(dir_path)
+
+        # Try to fetch directory contents if not in cache
+        if not songs:
+            self.logger.debug(f"Songs not in cache for {dir_path}, attempting to fetch")
+            self.readdir(dir_path, None)
+
+            # Try again after refetching
+            if dir_path == "/liked_songs":
+                songs = self.cache.get("/liked_songs_processed")
+            elif dir_path.startswith("/playlists/"):
+                playlist_name = dir_path.split("/")[2]
+                playlists = self.cache.get("/playlists")
+                if playlists:
+                    playlist_id = None
+                    for playlist in playlists:
+                        if (
+                            self.processor.sanitize_filename(playlist["title"])
+                            == playlist_name
+                        ):
+                            playlist_id = playlist["playlistId"]
+                            break
+
+                    if playlist_id:
+                        processed_cache_key = f"/playlist/{playlist_id}_processed"
+                        songs = self.cache.get(processed_cache_key)
+            else:
+                songs = self.cache.get(dir_path)
+
+        # Find the video ID in the songs list
+        if songs:
+            for song in songs:
+                if isinstance(song, dict) and song.get("filename") == filename:
+                    video_id = song.get("videoId")
+                    if video_id:
+                        return video_id
+
+        self.logger.error(f"Could not find video ID for {filename} in {dir_path}")
+        raise OSError(errno.ENOENT, "Video ID not found")
+
     def getattr(self, path: str, fh: Optional[int] = None) -> Dict[str, Any]:
         """Get file attributes.
 
@@ -718,32 +795,84 @@ class YouTubeMusicFS(Operations):
                     self.last_access_results[operation_key] = cached_attrs.copy()
                 return cached_attrs
 
-            # If no cached attributes, check for cached file size
-            file_size_cache_key = f"filesize:{path}"
-            cached_size = self.cache.get(file_size_cache_key)
-            if cached_size is not None:
-                attr["st_mode"] = stat.S_IFREG | 0o644
-                attr["st_size"] = cached_size
+            # If no cached attributes, we'll try to get video_id and check for duration
+            try:
+                # Get the video ID
+                video_id = self._get_video_id(path)
 
-                # Update the cached attributes in parent dir for future lookups
-                self.cache.update_file_attrs_in_parent_dir(path, attr)
+                # Check if we already have cached duration
+                duration = self.cache.get_duration(video_id)
 
-                with self.last_access_lock:
-                    self.last_access_results[operation_key] = attr.copy()
-                return attr
+                if duration is not None:
+                    # We have the duration, use it to estimate size
+                    self.logger.debug(f"Using cached duration {duration}s for {path}")
+                    attr["st_mode"] = stat.S_IFREG | 0o644
+                    estimated_size = (
+                        duration * 16 * 1024
+                    )  # Estimate based on 128kbps audio
+                    attr["st_size"] = estimated_size
 
-        # Try to check if path is a directory by listing contents
-        try:
-            dir_path = path[:-1] if path.endswith("/") else path
-            entries = self.readdir(dir_path, None)
-            if entries and len(entries) > 0:
-                attr["st_mode"] = stat.S_IFDIR | 0o755
-                attr["st_size"] = 0
-                with self.last_access_lock:
-                    self.last_access_results[operation_key] = attr.copy()
-                return attr
-        except Exception:
-            pass
+                    # Cache this size and attributes for future reference
+                    file_size_cache_key = f"filesize:{path}"
+                    self.cache.set(file_size_cache_key, estimated_size)
+                    self.cache.update_file_attrs_in_parent_dir(path, attr)
+
+                    with self.last_access_lock:
+                        self.last_access_results[operation_key] = attr.copy()
+                    return attr
+                else:
+                    # No cached duration, need to open the file with metadata_only=True
+                    self.logger.debug(
+                        f"No cached duration, opening {path} for metadata only"
+                    )
+                    fh = self.file_handler.open(
+                        path, video_id, self.thread_pool, metadata_only=True
+                    )
+
+                    # Wait for initialization to complete
+                    try:
+                        file_info = self.file_handler.open_files.get(fh)
+                        if file_info and file_info.get("initialized_event"):
+                            file_info["initialized_event"].wait(timeout=2)
+
+                            # After initialization, check for cached duration again
+                            duration = self.cache.get_duration(video_id)
+                            if duration is not None:
+                                attr["st_mode"] = stat.S_IFREG | 0o644
+                                estimated_size = duration * 16 * 1024
+                                attr["st_size"] = estimated_size
+
+                                # Cache this size and attributes
+                                file_size_cache_key = f"filesize:{path}"
+                                self.cache.set(file_size_cache_key, estimated_size)
+                                self.cache.update_file_attrs_in_parent_dir(path, attr)
+                            else:
+                                # Still no duration, use default size
+                                attr["st_mode"] = stat.S_IFREG | 0o644
+                                attr["st_size"] = 4096  # Default size
+                    finally:
+                        # Always release the file handle
+                        self.file_handler.release(path, fh)
+
+                    with self.last_access_lock:
+                        self.last_access_results[operation_key] = attr.copy()
+                    return attr
+            except Exception as e:
+                self.logger.error(f"Error getting attributes for {path}: {e}")
+                # Continue with default handling below
+
+            # If we couldn't get metadata, try to check if path is a directory by listing contents
+            try:
+                dir_path = path[:-1] if path.endswith("/") else path
+                entries = self.readdir(dir_path, None)
+                if entries and len(entries) > 0:
+                    attr["st_mode"] = stat.S_IFDIR | 0o755
+                    attr["st_size"] = 0
+                    with self.last_access_lock:
+                        self.last_access_results[operation_key] = attr.copy()
+                    return attr
+            except Exception:
+                pass
 
         # Check if path is a valid file by examining parent directory
         parent_dir = os.path.dirname(path)
@@ -778,6 +907,12 @@ class YouTubeMusicFS(Operations):
             File handle
         """
         self.logger.debug(f"open: {path} with flags {flags}")
+
+        # Determine if this is a metadata-only open or for actual playback
+        # If flags is O_RDONLY (0) with no other flags, it's likely for reading
+        # If it has other flags like O_NONBLOCK, it might be just for metadata
+        metadata_only = flags != os.O_RDONLY
+        self.logger.debug(f"Open flags: {flags}, metadata_only: {metadata_only}")
 
         # Cache this as a valid path since it's being opened
         self._cache_valid_path(path)
@@ -903,8 +1038,10 @@ class YouTubeMusicFS(Operations):
 
             raise OSError(errno.ENOENT, "File not found")
 
-        # Delegate to file handler
-        return self.file_handler.open(path, video_id, self.thread_pool)
+        # Delegate to file handler with metadata_only flag
+        return self.file_handler.open(
+            path, video_id, self.thread_pool, metadata_only=metadata_only
+        )
 
     def read(self, path: str, size: int, offset: int, fh: int) -> bytes:
         """Read data from a file.
