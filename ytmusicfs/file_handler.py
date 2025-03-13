@@ -6,9 +6,9 @@ from yt_dlp import YoutubeDL
 import errno
 import logging
 import multiprocessing
-import os
 import requests
 import threading
+import time
 
 
 class DownloadManager:
@@ -379,6 +379,37 @@ class FileHandler:
             if video_id in self.download_queues:
                 del self.download_queues[video_id]
 
+    def _stream_content(
+        self, stream_url: str, offset: int, size: int, retries: int = 3
+    ) -> bytes:
+        """Stream content with buffering and retries."""
+        buffer_size = 16384  # 16KB buffer
+        prefetch_size = buffer_size * 2
+        headers = {"Range": f"bytes={offset}-{offset + size + prefetch_size - 1}"}
+
+        for attempt in range(retries):
+            try:
+                with requests.get(
+                    stream_url, headers=headers, stream=True, timeout=10
+                ) as response:
+                    if response.status_code not in (200, 206):
+                        raise OSError(
+                            errno.EIO, f"Stream failed: {response.status_code}"
+                        )
+                    data = b""
+                    for chunk in response.iter_content(chunk_size=buffer_size):
+                        data += chunk
+                        if len(data) >= size:
+                            break
+                    return data[:size] if len(data) > size else data
+            except Exception as e:
+                self.logger.warning(f"Stream attempt {attempt + 1} failed: {e}")
+                if attempt == retries - 1:
+                    raise OSError(
+                        errno.EIO, f"Failed to stream after {retries} attempts: {e}"
+                    )
+                time.sleep(2**attempt)  # Exponential backoff
+
     def read(self, path: str, size: int, offset: int, fh: int) -> bytes:
         """Read data that might be partially downloaded.
 
@@ -395,82 +426,35 @@ class FileHandler:
             raise OSError(errno.EBADF, "Bad file descriptor")
 
         file_info = self.open_files[fh]
-        cache_path = file_info["cache_path"]
+        cache_path = Path(file_info["cache_path"])
         video_id = file_info["video_id"]
-        status = file_info.get("status")
 
-        # Check for errors first
-        if status == "error":
-            error_msg = file_info.get("error", "Unknown error preparing file")
-            self.logger.error(f"Error reading {path}: {error_msg}")
-            raise OSError(errno.EIO, error_msg)
+        if file_info["status"] == "error":
+            raise OSError(errno.EIO, file_info.get("error", "Unknown error"))
 
-        # If still initializing, wait for initialization to complete with periodic checks
-        if status == "initializing":
-            # Wait up to 5 seconds total, checking every 0.1 seconds
-            max_wait_time = 5.0  # seconds
-            check_interval = 0.1  # seconds
-            wait_iterations = int(max_wait_time / check_interval)
+        if file_info["status"] == "initializing":
+            file_info["initialized_event"].wait(timeout=10)
+            if file_info["status"] == "error":
+                raise OSError(errno.EIO, file_info.get("error", "Unknown error"))
+            elif file_info["status"] == "initializing":
+                raise OSError(errno.EIO, "Timeout waiting for initialization")
 
-            for i in range(wait_iterations):
-                # Check if initialization is complete
-                if file_info["initialized_event"].wait(check_interval):
-                    # Initialization completed
-                    break
-
-                stream_url = file_info.get("stream_url")
-                if stream_url:
-                    # Don't stream if download was interrupted
-                    if self.download_progress.get(video_id) == "interrupted":
-                        self.logger.debug(
-                            f"Download interrupted for {path}, stopping read"
-                        )
-                        raise OSError(errno.EIO, "File access interrupted")
-
-                    self.logger.debug(
-                        f"Streaming directly during initialization: {path}"
-                    )
-                    return self._stream_content(stream_url, offset, size)
-
-            # Check status after waiting
-            if file_info.get("status") == "error":
-                error_msg = file_info.get("error", "Unknown error preparing file")
-                self.logger.error(f"Error after waiting: {error_msg}")
-                raise OSError(errno.EIO, error_msg)
-            elif file_info.get("status") == "initializing":
-                self.logger.error(f"Timeout waiting for file initialization: {path}")
-                raise OSError(errno.EIO, "Timeout waiting for file initialization")
-
-        # Now check download status - use video_id to get download progress
         download_status = self.download_progress.get(video_id)
-
-        # If download was interrupted, stop the read
         if download_status == "interrupted":
-            self.logger.debug(f"Download interrupted for {path}, stopping read")
             raise OSError(errno.EIO, "File access interrupted")
-
-        # If download is complete, read from cache
-        if download_status == "complete":
-            with open(cache_path, "rb") as f:
+        elif download_status == "complete" and cache_path.exists():
+            with cache_path.open("rb") as f:
+                f.seek(offset)
+                return f.read(size)
+        elif isinstance(download_status, int) and download_status >= offset + size:
+            with cache_path.open("rb") as f:
                 f.seek(offset)
                 return f.read(size)
 
-        # If we have enough of the file downloaded, read from cache
-        if isinstance(download_status, int) and download_status > offset + size:
-            with open(cache_path, "rb") as f:
-                f.seek(offset)
-                return f.read(size)
-
-        # Get the stream URL (should be available by now)
         stream_url = file_info["stream_url"]
         if not stream_url:
-            self.logger.error(f"Stream URL not available for {path}")
-            raise OSError(errno.EIO, "Stream URL not available")
+            raise OSError(errno.EIO, "Stream URL unavailable")
 
-        # Otherwise, stream directly - no waiting
-        self.logger.debug(
-            f"Requested range not cached yet, streaming directly: offset={offset}, size={size}"
-        )
         return self._stream_content(stream_url, offset, size)
 
     def release(self, path: str, fh: int) -> int:
@@ -502,26 +486,6 @@ class FileHandler:
                     if video_id in self.download_threads:
                         del self.download_threads[video_id]
         return 0
-
-    def _stream_content(self, stream_url, offset, size):
-        """Stream content directly from URL (fallback if download is too slow).
-
-        Args:
-            stream_url: URL to stream from
-            offset: Byte offset to start from
-            size: Number of bytes to read
-
-        Returns:
-            The requested bytes
-        """
-        headers = {"Range": f"bytes={offset}-{offset + size - 1}"}
-        response = requests.get(stream_url, headers=headers, stream=False)
-
-        if response.status_code in (200, 206):
-            return response.content
-        else:
-            self.logger.error(f"Failed to stream: {response.status_code}")
-            raise OSError(errno.EIO, "Failed to read stream")
 
     def _check_cached_audio(self, video_id):
         """Check if an audio file is already cached completely.
