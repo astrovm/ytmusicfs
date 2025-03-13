@@ -939,3 +939,54 @@ class ContentFetcher:
                 return [track["filename"] for track in processed_tracks]
 
         return []
+
+    def refresh_all_caches(self) -> None:
+        """Refresh all caches in a consistent manner.
+
+        This method updates all caches (liked songs, playlists, artists, albums)
+        with any changes in the user's library, preserving existing cached data
+        and only updating what's changed.
+        """
+        self.logger.info("Refreshing all content caches...")
+
+        # Refresh liked songs
+        self.cache.refresh_cache_data(
+            cache_key="/liked_songs",
+            fetch_func=self.client.get_liked_songs,
+            processor=self.processor,
+            id_fields=["videoId"],
+            fetch_args={"limit": 100},
+            process_items=True,
+            processed_cache_key="/liked_songs_processed",
+            extract_nested_items="tracks",
+            prepend_new_items=True,
+        )
+
+        # Refresh playlists
+        self.cache.refresh_cache_data(
+            cache_key="/playlists",
+            fetch_func=self.client.get_library_playlists,
+            id_fields=["playlistId"],
+            check_updates=True,
+            update_field="title",
+            clear_related_cache=True,
+            related_cache_prefix="/playlist/",
+            related_cache_suffix="_processed",
+            fetch_args={"limit": 100},
+        )
+
+        # Refresh artists
+        self.cache.refresh_cache_data(
+            cache_key="/artists",
+            fetch_func=self.client.get_library_artists,
+            id_fields=["artistId", "browseId", "id"],
+        )
+
+        # Refresh albums
+        self.cache.refresh_cache_data(
+            cache_key="/albums",
+            fetch_func=self.client.get_library_albums,
+            id_fields=["albumId", "browseId", "id"],
+        )
+
+        self.logger.info("All content caches refreshed successfully")

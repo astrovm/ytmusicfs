@@ -503,14 +503,6 @@ class YouTubeMusicFS(Operations):
             # Update the last access time for this operation
             self.last_access_time[operation_key] = current_time
 
-        # Check if we need to handle path validation
-        if not self._is_valid_path(path):
-            self.logger.debug(f"Rejecting invalid path in readdir: {path}")
-            result = [".", ".."]
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = result
-            return result
-
         # Ignore hidden paths
         if any(part.startswith(".") for part in path.split("/") if part):
             self.logger.debug(f"Ignoring hidden path: {path}")
@@ -521,6 +513,15 @@ class YouTubeMusicFS(Operations):
 
         # Use the router to handle the path
         try:
+            # Check if path is valid (simplified validation)
+            if not self._is_valid_path(path):
+                self.logger.debug(f"Rejecting invalid path in readdir: {path}")
+                result = [".", ".."]
+                with self.last_access_lock:
+                    self.last_access_results[operation_key] = result
+                return result
+
+            # Delegate directory listing to the router
             result = self.router.route(path)
 
             # Mark this as a valid directory and cache all valid filenames for future validation
@@ -529,12 +530,6 @@ class YouTubeMusicFS(Operations):
                     path, [entry for entry in result if entry not in [".", ".."]]
                 )
                 self._cache_valid_dir(path)
-
-                # Special handling for search scope directories to cache category directories
-                if path in ["/search/library", "/search/catalog"]:
-                    categories = [entry for entry in result if entry not in [".", ".."]]
-                    for category in categories:
-                        self._cache_valid_dir(f"{path}/{category}")
 
             # Cache this result for the cooldown period
             with self.last_access_lock:
@@ -566,12 +561,6 @@ class YouTubeMusicFS(Operations):
             self.logger.debug(f"Rejecting non-m4a file extension in getattr: {path}")
             raise OSError(errno.ENOENT, "No such file or directory")
 
-        # For debugging, check if we have a stack trace involved in a mkdir operation
-        stack = traceback.format_stack()
-        is_mkdir_in_stack = any("mkdir" in frame for frame in stack)
-        if is_mkdir_in_stack:
-            self.logger.debug(f"mkdir detected in call stack for getattr {path}")
-
         # Check if this request is too soon after the last one
         operation_key = f"getattr:{path}"
         current_time = time.time()
@@ -589,28 +578,20 @@ class YouTubeMusicFS(Operations):
             # Update the last access time for this operation
             self.last_access_time[operation_key] = current_time
 
-        # Check if this is coming from mkdir or another operation
-        # that requires existence checking rather than creating
-        # This is essential to avoid blocking directory creation
+        # Check context for operations like mkdir that need to check existence
         context = (
             inspect.currentframe().f_back.f_code.co_name
             if inspect.currentframe().f_back
             else "unknown"
         )
-        self.logger.debug(f"getattr called from context: {context}")
+        is_mkdir_context = context == "mkdir" or "mkdir" in context
 
-        # More aggressive detection for mkdir operations
-        is_mkdir_context = context == "mkdir" or "mkdir" in context or is_mkdir_in_stack
-
-        # Special handling for search paths during mkdir operations
+        # For mkdir operations on search paths, report path doesn't exist to allow creation
         if is_mkdir_context and path.startswith("/search/"):
             parts = path.split("/")
-            # Check if this is a search query path (like /search/catalog/songs/query)
             if len(parts) == 5 and parts[2] in ["library", "catalog"]:
                 valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
                 if parts[3] in valid_categories:
-                    # During mkdir, ALWAYS report the path doesn't exist
-                    # This is critical to ensure mkdir operations can proceed
                     self.logger.debug(
                         f"mkdir context detected, forcing non-existence for {path}"
                     )
@@ -629,31 +610,29 @@ class YouTubeMusicFS(Operations):
             "st_nlink": 2,
         }
 
-        # Root directory
-        if path == "/":
+        # Handle root and standard top-level directories
+        if path == "/" or path in [
+            "/playlists",
+            "/liked_songs",
+            "/artists",
+            "/albums",
+            "/search",
+        ]:
             attr["st_mode"] = stat.S_IFDIR | 0o755
             attr["st_size"] = 0
             with self.last_access_lock:
                 self.last_access_results[operation_key] = attr.copy()
             return attr
 
-        # Main categories
-        if path in ["/playlists", "/liked_songs", "/artists", "/albums"]:
+        # Handle search path directories
+        if path in ["/search/library", "/search/catalog"]:
             attr["st_mode"] = stat.S_IFDIR | 0o755
             attr["st_size"] = 0
             with self.last_access_lock:
                 self.last_access_results[operation_key] = attr.copy()
             return attr
 
-        # Search paths - special handling for search functionality
-        if path == "/search" or path == "/search/library" or path == "/search/catalog":
-            attr["st_mode"] = stat.S_IFDIR | 0o755
-            attr["st_size"] = 0
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = attr.copy()
-            return attr
-
-        # Special handling for search category and search query paths
+        # Handle search category paths
         if path.startswith("/search/library/") or path.startswith("/search/catalog/"):
             parts = path.split("/")
             # Category directories (like /search/catalog/songs)
@@ -666,36 +645,23 @@ class YouTubeMusicFS(Operations):
                         self.last_access_results[operation_key] = attr.copy()
                     return attr
 
-            # Search query directories (like /search/catalog/songs/queen)
-            if len(parts) == 5:
-                # When checking if a directory exists, we need to be careful about mkdir operations
-                if is_mkdir_context:
-                    # During mkdir, we need to report that the directory doesn't exist
-                    # so mkdir can create it
-                    self.logger.debug(
-                        f"mkdir context detected for {path}, reporting non-existence"
-                    )
-                    raise OSError(errno.ENOENT, "No such file or directory")
-
-                # Check if this is a valid/existing search directory
-                valid_dir_cached = self.cache.get(f"valid_dir:{path}")
-                if valid_dir_cached:
-                    attr["st_mode"] = stat.S_IFDIR | 0o755
-                    attr["st_size"] = 0
-                    with self.last_access_lock:
-                        self.last_access_results[operation_key] = attr.copy()
-                    return attr
-
-                # If it's not in cache as a valid directory, it doesn't exist yet
-                # This ensures mkdir can create new search directories without conflict
+            # Search query directories during mkdir operations
+            if len(parts) == 5 and is_mkdir_context:
+                self.logger.debug(
+                    f"mkdir context detected for {path}, reporting non-existence"
+                )
                 raise OSError(errno.ENOENT, "No such file or directory")
 
-        # First, check if we can get the file attributes from the parent directory's cached listing
-        # This is the key optimization we're adding in this step
-        if path.lower().endswith(".m4a"):
-            parent_dir = os.path.dirname(path)
-            filename = os.path.basename(path)
+            # Check if this is a valid/existing search directory
+            if len(parts) == 5 and self.cache.get(f"valid_dir:{path}"):
+                attr["st_mode"] = stat.S_IFDIR | 0o755
+                attr["st_size"] = 0
+                with self.last_access_lock:
+                    self.last_access_results[operation_key] = attr.copy()
+                return attr
 
+        # Check cached attributes for files
+        if path.lower().endswith(".m4a"):
             # Try to get attributes from parent dir's cached listing
             cached_attrs = self.cache.get_file_attrs_from_parent_dir(path)
             if cached_attrs:
@@ -718,101 +684,25 @@ class YouTubeMusicFS(Operations):
                     self.last_access_results[operation_key] = cached_attrs.copy()
                 return cached_attrs
 
-        # If we didn't find cached attributes, continue with the original logic
-        # Check if this is a song file (ends with .m4a)
-        if path.lower().endswith(".m4a"):
-            # Check if it's a valid song file by examining its parent directory
-            parent_dir = os.path.dirname(path)
-            filename = os.path.basename(path)
-
-            # Check if we have a cached file size for this path
+            # If no cached attributes, check for cached file size
             file_size_cache_key = f"filesize:{path}"
             cached_size = self.cache.get(file_size_cache_key)
-
             if cached_size is not None:
-                self.logger.debug(f"Using cached file size for {path}: {cached_size}")
                 attr["st_mode"] = stat.S_IFREG | 0o644
                 attr["st_size"] = cached_size
 
-                # Also update the cached attributes in parent dir for future lookups
+                # Update the cached attributes in parent dir for future lookups
                 self.cache.update_file_attrs_in_parent_dir(path, attr)
 
                 with self.last_access_lock:
                     self.last_access_results[operation_key] = attr.copy()
                 return attr
 
-            try:
-                # Get directory listing of parent
-                dirlist = self.readdir(parent_dir, None)
-                if filename in dirlist:
-                    # It's a valid song file
-                    attr["st_mode"] = stat.S_IFREG | 0o644
-
-                    # Get a more accurate file size estimate based on song duration if available
-                    songs = self.cache.get(parent_dir)
-                    if (
-                        songs
-                        and isinstance(songs, list)
-                        and songs
-                        and isinstance(songs[0], dict)
-                    ):
-                        for song in songs:
-                            if song.get("filename") == filename:
-                                # Check if we have an actual file size in cache
-                                file_size_cache_key = f"filesize:{path}"
-                                cached_size = self.cache.get(file_size_cache_key)
-
-                                if cached_size is not None:
-                                    self.logger.debug(
-                                        f"Using cached actual file size for {path}: {cached_size}"
-                                    )
-                                    attr["st_size"] = cached_size
-
-                                    # Update the parent dir cache with these attributes
-                                    self.cache.update_file_attrs_in_parent_dir(
-                                        path, attr
-                                    )
-
-                                    with self.last_access_lock:
-                                        self.last_access_results[operation_key] = (
-                                            attr.copy()
-                                        )
-                                    return attr
-
-                                # No duration-based estimation - use minimal size
-                                # This will be updated with actual size when file is opened
-                                attr["st_size"] = 4096
-
-                                # Update the parent dir cache with these attributes
-                                self.cache.update_file_attrs_in_parent_dir(path, attr)
-
-                                with self.last_access_lock:
-                                    self.last_access_results[operation_key] = (
-                                        attr.copy()
-                                    )
-                                return attr
-
-                    # No duration-based fallback anymore - just use minimal size
-                    attr["st_size"] = 4096  # Minimal placeholder size
-
-                    # Update the parent dir cache with these attributes
-                    self.cache.update_file_attrs_in_parent_dir(path, attr)
-
-                    with self.last_access_lock:
-                        self.last_access_results[operation_key] = attr.copy()
-                    return attr
-            except Exception as e:
-                self.logger.debug(f"Error checking file existence: {e}")
-                # Continue to other checks
-                pass
-
-        # Check if path is a directory by trying to list it
+        # Try to check if path is a directory by listing contents
         try:
-            if path.endswith("/"):
-                path = path[:-1]
-
-            entries = self.readdir(path, None)
-            if entries:
+            dir_path = path[:-1] if path.endswith("/") else path
+            entries = self.readdir(dir_path, None)
+            if entries and len(entries) > 0:
                 attr["st_mode"] = stat.S_IFDIR | 0o755
                 attr["st_size"] = 0
                 with self.last_access_lock:
@@ -821,33 +711,17 @@ class YouTubeMusicFS(Operations):
         except Exception:
             pass
 
-        # Check if path is a file
+        # Check if path is a valid file by examining parent directory
         parent_dir = os.path.dirname(path)
         filename = os.path.basename(path)
 
-        if not filename:
-            raise OSError(errno.ENOENT, "No such file or directory")
-
-        # Check if file exists in parent directory
         try:
             dirlist = self.readdir(parent_dir, None)
             if filename in dirlist:
-                # It's a file
                 attr["st_mode"] = stat.S_IFREG | 0o644
+                attr["st_size"] = 4096  # Default size
 
-                # Same but for other file paths - no estimation
-                file_size_cache_key = f"filesize:{path}"
-                cached_size = self.cache.get(file_size_cache_key)
-
-                if cached_size is not None:
-                    attr["st_size"] = cached_size
-                else:
-                    attr["st_size"] = (
-                        4096  # Minimal placeholder size instead of default estimate
-                    )
-
-                # If we successfully determined attributes for a file path with a number pattern,
-                # cache it as a valid path to help with future validation
+                # Cache the path for future validation
                 self._cache_valid_path(path)
 
                 with self.last_access_lock:
@@ -1047,118 +921,26 @@ class YouTubeMusicFS(Operations):
         }
         self.cache.update_file_attrs_in_parent_dir(path, attr)
 
-    def _auto_refresh_cache(self, cache_key: str, refresh_interval: int = 600) -> None:
-        """Automatically refresh the cache if the last refresh time exceeds the interval.
-
-        Args:
-            cache_key: The cache key to check (e.g., '/playlists').
-            refresh_interval: Time in seconds before triggering a refresh (default: 600).
-        """
-        # Use the CacheManager's auto_refresh_cache method instead
-        self.cache.auto_refresh_cache(
-            cache_key=cache_key,
-            refresh_method=self.refresh_cache,
-            refresh_interval=refresh_interval,
-        )
-
-    def refresh_liked_songs_cache(self) -> None:
-        """Refresh the cache for liked songs.
-
-        This method updates the liked songs cache with any newly liked songs,
-        without deleting the entire cache.
-        """
-        self.cache.refresh_cache_data(
-            cache_key="/liked_songs",
-            fetch_func=self.client.get_liked_songs,
-            processor=self.processor,
-            id_fields=["videoId"],
-            fetch_args={"limit": 100},
-            process_items=True,
-            processed_cache_key="/liked_songs_processed",
-            extract_nested_items="tracks",
-            prepend_new_items=True,
-        )
-
-    def refresh_playlists_cache(self) -> None:
-        """Refresh the cache for playlists.
-
-        This method updates the playlists cache with any changes in playlists,
-        without deleting the entire cache.
-        """
-        self.cache.refresh_cache_data(
-            cache_key="/playlists",
-            fetch_func=self.client.get_library_playlists,
-            id_fields=["playlistId"],
-            check_updates=True,
-            update_field="title",
-            clear_related_cache=True,
-            related_cache_prefix="/playlist/",
-            related_cache_suffix="_processed",
-            fetch_args={"limit": 100},
-        )
-
-    def refresh_artists_cache(self) -> None:
-        """Refresh the cache for artists.
-
-        This method updates the artists cache with any changes in the user's library,
-        without deleting the entire cache.
-        """
-        self.cache.refresh_cache_data(
-            cache_key="/artists",
-            fetch_func=self.client.get_library_artists,
-            id_fields=["artistId", "browseId", "id"],
-        )
-
-    def refresh_albums_cache(self) -> None:
-        """Refresh the cache for albums.
-
-        This method updates the albums cache with any changes in the user's library,
-        without deleting the entire cache.
-        """
-        self.cache.refresh_cache_data(
-            cache_key="/albums",
-            fetch_func=self.client.get_library_albums,
-            id_fields=["albumId", "browseId", "id"],
-        )
-
     def refresh_cache(self) -> None:
         """Refresh all caches.
 
         This method updates all caches with any changes in the user's library.
-        It uses a unified approach to refresh all content types consistently,
-        preserving existing cached data and only updating what's changed,
-        making it efficient for large libraries.
         """
         self.logger.info("Refreshing all caches...")
 
-        # Refresh individual caches using a consistent approach
-        self.refresh_liked_songs_cache()
-        self.refresh_playlists_cache()
-        self.refresh_artists_cache()
-        self.refresh_albums_cache()
+        # Use the fetcher to refresh the caches
+        self.fetcher.refresh_all_caches()
 
-        # Delete all keys that start with "/search/"
+        # Delete all search-related cache entries
         self.cache.delete_pattern("/search/*")
-        # Also clear processed search results
         self.cache.delete_pattern("/search/*/*_processed")
 
-        current_time = time.time()
-
         # Mark all caches as freshly refreshed
-        self.cache.set_metadata("/liked_songs", "last_refresh_time", current_time)
-        self.cache.set_metadata("/playlists", "last_refresh_time", current_time)
-        self.cache.set_metadata("/artists", "last_refresh_time", current_time)
-        self.cache.set_metadata("/albums", "last_refresh_time", current_time)
+        current_time = time.time()
+        for cache_key in ["/liked_songs", "/playlists", "/artists", "/albums"]:
+            self.cache.set_metadata(cache_key, "last_refresh_time", current_time)
 
         self.logger.info("All caches refreshed successfully")
-
-    def _delete_from_cache(self, path: str) -> None:
-        """Delete data from cache.
-
-        Args:
-            path: The path to delete from cache
-        """
-        self.cache.delete(path)
 
     def _perform_search(self, search_query, scope, filter_type):
         """Perform a search operation.
@@ -1171,19 +953,8 @@ class YouTubeMusicFS(Operations):
         Returns:
             Search results
         """
-        try:
-            # Use the content fetcher to perform the search
-            if scope == "library":
-                results = self.client.search(
-                    search_query, filter=filter_type, scope="library"
-                )
-            else:
-                results = self.client.search(search_query, filter=filter_type)
-
-            return results
-        except Exception as e:
-            self.logger.error(f"Error performing search: {e}")
-            return []
+        # Delegate to ContentFetcher for search operations
+        return self.fetcher._perform_search(search_query, scope, filter_type)
 
     def mkdir(self, path, mode):
         """Create a directory in the FUSE filesystem.
