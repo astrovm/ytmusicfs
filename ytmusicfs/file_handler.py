@@ -48,7 +48,7 @@ class FileHandler:
         self.downloader = Downloader(cache_dir, logger, update_file_size_callback)
 
     def open(
-        self, path: str, video_id: str, thread_pool, metadata_only: bool = False
+        self, path: str, video_id: str, thread_pool
     ) -> int:
         """Open a file and return a file handle.
 
@@ -56,13 +56,12 @@ class FileHandler:
             path: The file path
             video_id: YouTube video ID for the file
             thread_pool: ThreadPoolExecutor for background tasks
-            metadata_only: If True, only prepare metadata (no streaming)
 
         Returns:
             File handle
         """
         self.logger.debug(
-            f"open: {path} with video_id {video_id}, metadata_only={metadata_only}"
+            f"open: {path} with video_id {video_id}"
         )
         cache_path = self.cache_dir / "audio" / f"{video_id}.m4a"
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,7 +77,6 @@ class FileHandler:
                 "error": None,
                 "path": path,
                 "initialized_event": threading.Event(),
-                "metadata_only": metadata_only,
             }
             # Signal that the file handle is ready immediately
             self.open_files[fh]["initialized_event"].set()
@@ -88,13 +86,6 @@ class FileHandler:
         # If cached audio exists, it's immediately usable
         if self._check_cached_audio(video_id):
             self.logger.debug(f"Found complete cached audio for {video_id}")
-            return fh
-
-        # If metadata only and duration is cached, we're ready
-        if metadata_only and self.cache.get_duration(video_id) is not None:
-            self.logger.debug(
-                f"Metadata only requested and duration cached for {video_id}"
-            )
             return fh
 
         # No background fetch - stream URL will be fetched on-demand in read()
@@ -273,8 +264,7 @@ class FileHandler:
                     self.logger.debug(f"Got duration for {video_id}: {duration}s")
                     self.cache.set_duration(video_id, duration)
                 
-                # Start download in background (always, regardless of metadata_only)
-                # This ensures we get a complete file for streaming
+                # Always start download in background
                 self.downloader.download_file(video_id, stream_url, path)
             except Exception as e:
                 error_msg = str(e)

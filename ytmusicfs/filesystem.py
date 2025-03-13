@@ -821,12 +821,12 @@ class YouTubeMusicFS(Operations):
                         self.last_access_results[operation_key] = attr.copy()
                     return attr
                 else:
-                    # No cached duration, need to open the file with metadata_only=True
+                    # No cached duration, need to open the file
                     self.logger.debug(
-                        f"No cached duration, opening {path} for metadata only"
+                        f"No cached duration, opening {path} for metadata"
                     )
                     fh = self.file_handler.open(
-                        path, video_id, self.thread_pool, metadata_only=True
+                        path, video_id, self.thread_pool
                     )
 
                     # Wait for initialization to complete
@@ -907,12 +907,6 @@ class YouTubeMusicFS(Operations):
             File handle
         """
         self.logger.debug(f"open: {path} with flags {flags}")
-
-        # Determine if this is a metadata-only open or for actual playback
-        # If flags is O_RDONLY (0) with no other flags, it's likely for reading
-        # If it has other flags like O_NONBLOCK, it might be just for metadata
-        metadata_only = flags != os.O_RDONLY
-        self.logger.debug(f"Open flags: {flags}, metadata_only: {metadata_only}")
 
         # Cache this as a valid path since it's being opened
         self._cache_valid_path(path)
@@ -1038,10 +1032,8 @@ class YouTubeMusicFS(Operations):
 
             raise OSError(errno.ENOENT, "File not found")
 
-        # Delegate to file handler with metadata_only flag
-        return self.file_handler.open(
-            path, video_id, self.thread_pool, metadata_only=metadata_only
-        )
+        # Delegate to file handler
+        return self.file_handler.open(path, video_id, self.thread_pool)
 
     def read(self, path: str, size: int, offset: int, fh: int) -> bytes:
         """Read data from a file.
