@@ -615,14 +615,22 @@ class YouTubeMusicFS(Operations):
         """
         self.logger.debug(f"readdir: {path}")
 
+        # For debugging, log the entry type from cache
+        entry_type = self.cache.get_entry_type(path)
+        self.logger.debug(f"Entry type for {path}: {entry_type}")
+
         # Clear thread-local cache at the beginning of a new directory operation
         self._clear_thread_local_cache()
 
-        # Check if this is a file (contains a period) and not an m4a file
-        if "." in os.path.basename(path) and not path.lower().endswith(".m4a"):
-            self.logger.debug(f"Rejecting non-m4a file extension in readdir: {path}")
-            # Just return empty directory for these special files
-            return [".", ".."]
+        # First check if this path is already known as a directory
+        if not (entry_type == "directory" or path.startswith("/artists/")):
+            # Only check for non-m4a files if it's not a known directory or an artist path
+            if "." in os.path.basename(path) and not path.lower().endswith(".m4a"):
+                self.logger.debug(
+                    f"Rejecting non-m4a file extension in readdir: {path}"
+                )
+                # Just return empty directory for these special files
+                return [".", ".."]
 
         # Check if this request is too soon after the last one
         operation_key = f"readdir:{path}"
@@ -867,10 +875,9 @@ class YouTubeMusicFS(Operations):
         """
         self.logger.debug(f"getattr: {path}")
 
-        # Check allowed file extensions - we only support m4a files
-        if "." in os.path.basename(path) and not path.lower().endswith(".m4a"):
-            self.logger.debug(f"Rejecting non-m4a file extension in getattr: {path}")
-            raise OSError(errno.ENOENT, "No such file or directory")
+        # For debugging, log the entry type from cache
+        entry_type = self.cache.get_entry_type(path)
+        self.logger.debug(f"Entry type for {path}: {entry_type}")
 
         # Check if this request is too soon after the last one
         operation_key = f"getattr:{path}"
@@ -936,23 +943,55 @@ class YouTubeMusicFS(Operations):
                 self.last_access_results[operation_key] = attr.copy()
             return attr
 
+        # ----------------------------------------------------------------------
+        # First check if the path is a directory before rejecting based on extension
+        # ----------------------------------------------------------------------
+
         # Check cache for entry type - this is the most reliable way to determine
         # if a path is a file or directory
-        entry_type = (
-            self.cache.get_entry_type(path)
-            or self.cache.get_entry_type(f"valid_dir:{path}")
-            or self.cache.get_entry_type(f"exact_path:{path}")
-        )
+        if entry_type == "directory":
+            attr["st_mode"] = stat.S_IFDIR | 0o755
+            attr["st_size"] = 0
+            with self.last_access_lock:
+                self.last_access_results[operation_key] = attr.copy()
+            return attr
 
-        if entry_type:
-            self.logger.debug(f"Found entry_type '{entry_type}' for {path}")
-            if entry_type == "directory":
+        # Critical section: Handle paths under /artists/ with special attention
+        if path.startswith("/artists/"):
+            # If entry type not found, use smarter inference
+            parts = path.split("/")
+            if len(parts) == 3:  # Artist top-level directory
+                # Force top-level artist directories to be treated as directories
+                # regardless of dots in the name
+                self.logger.debug(f"Artist directory inferred for {path}")
+
+                # Ensure this path is recorded as a directory for future lookups
+                self.cache.add_valid_dir(path)
+
                 attr["st_mode"] = stat.S_IFDIR | 0o755
                 attr["st_size"] = 0
                 with self.last_access_lock:
                     self.last_access_results[operation_key] = attr.copy()
                 return attr
-            # For files, continue to get more specific attributes
+            elif len(parts) > 3 and not path.lower().endswith(".m4a"):
+                # For subdirectories under artists, also force directory attributes
+                # unless it explicitly ends with .m4a
+                self.logger.debug(f"Artist subdirectory inferred for {path}")
+
+                # Ensure this path is recorded as a directory for future lookups
+                self.cache.add_valid_dir(path)
+
+                attr["st_mode"] = stat.S_IFDIR | 0o755
+                attr["st_size"] = 0
+                with self.last_access_lock:
+                    self.last_access_results[operation_key] = attr.copy()
+                return attr
+
+        # Now check if this is a potentially valid file or an invalid extension
+        # Only apply the extension check after we've confirmed it's not a directory
+        if "." in os.path.basename(path) and not path.lower().endswith(".m4a"):
+            self.logger.debug(f"Rejecting non-m4a file extension in getattr: {path}")
+            raise OSError(errno.ENOENT, "No such file or directory")
 
         # Handle search path directories
         if path.startswith("/search/"):
@@ -995,17 +1034,6 @@ class YouTubeMusicFS(Operations):
                         with self.last_access_lock:
                             self.last_access_results[operation_key] = attr.copy()
                         return attr
-
-        # Special case for artist directories which may have dots
-        if path.startswith("/artists/"):
-            # Check if the path might be a directory based on our cache or inference
-            is_dir = self.cache.is_directory(path)
-            if is_dir is True or (is_dir is None and not path.lower().endswith(".m4a")):
-                attr["st_mode"] = stat.S_IFDIR | 0o755
-                attr["st_size"] = 0
-                with self.last_access_lock:
-                    self.last_access_results[operation_key] = attr.copy()
-                return attr
 
         # Initialize thread-local path validation cache if needed
         if not hasattr(self._thread_local, "validated_paths"):
@@ -1122,14 +1150,6 @@ class YouTubeMusicFS(Operations):
             with self.last_access_lock:
                 self.last_access_results[operation_key] = cached_attrs.copy()
             return cached_attrs
-
-        # If it's a path under /artists/ and doesn't end with .m4a, it's likely a directory
-        if path.startswith("/artists/") and not path.lower().endswith(".m4a"):
-            attr["st_mode"] = stat.S_IFDIR | 0o755
-            attr["st_size"] = 0
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = attr.copy()
-            return attr
 
         # If no cached attributes, we'll try to get video_id and check for duration
         try:
