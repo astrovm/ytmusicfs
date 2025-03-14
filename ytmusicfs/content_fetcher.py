@@ -393,6 +393,21 @@ class ContentFetcher:
             sanitized_names = []
             processed_artists = []
 
+            # Log full structure of first few artists for debugging
+            if artists and len(artists) > 0:
+                self.logger.info(f"Total artists found: {len(artists)}")
+                self.logger.info("Examining artist data structure...")
+
+                # Print detailed structure of up to 3 artists
+                for i, artist in enumerate(artists[:3]):
+                    if isinstance(artist, dict):
+                        self.logger.info(f"Artist {i+1} structure:")
+                        self._log_object_structure(artist)
+                    else:
+                        self.logger.warning(
+                            f"Artist {i+1} is not a dictionary: {type(artist)}"
+                        )
+
             # More robust handling with error checking
             for artist in artists:
                 # Skip invalid entries
@@ -402,23 +417,51 @@ class ContentFetcher:
 
                 # Use .get() with default value to safely handle missing 'artist' keys
                 name = artist.get("artist", "Unknown Artist")
+
+                # Try to find an ID from multiple possible fields
                 artist_id = artist.get("artistId")
+                if not artist_id:
+                    # Try alternative fields that might contain the ID
+                    for id_field in [
+                        "id",
+                        "browseId",
+                        "channelId",
+                        "userId",
+                        "browseEndpoint.browseId",
+                    ]:
+                        # Handle nested fields with dots
+                        if "." in id_field:
+                            parts = id_field.split(".")
+                            value = artist
+                            for part in parts:
+                                if isinstance(value, dict) and part in value:
+                                    value = value[part]
+                                else:
+                                    value = None
+                                    break
+                            if value:
+                                artist_id = value
+                                self.logger.debug(
+                                    f"Found artist ID in nested field '{id_field}': {artist_id}"
+                                )
+                                break
+                        elif id_field in artist:
+                            artist_id = artist[id_field]
+                            self.logger.debug(
+                                f"Found artist ID in field '{id_field}': {artist_id}"
+                            )
+                            break
 
                 # Skip artists without IDs
                 if not artist_id:
-                    self.logger.warning(f"Artist {name} has no artistId, skipping")
-                    # Log all artist names and IDs for debugging
-                    self.logger.debug("Available artists in cache:")
-                    for artist in artists:
-                        name = artist.get(
-                            "name", artist.get("artist", "Unknown Artist")
-                        )
-                        artist_id = artist.get("artistId")
-                        sanitized_name = self.processor.sanitize_filename(name)
-                        self.logger.debug(f"  - '{sanitized_name}' (ID: {artist_id})")
+                    self.logger.warning(
+                        f"Artist {name} has no ID field found, skipping"
+                    )
                     continue
 
-                self.logger.debug(f"Processing artist - Name: {name}, ID: {artist_id}")
+                self.logger.debug(
+                    f"Processing artist - Name: {name}, ID: {artist_id} (Field: {id_field if not artist.get('artistId') else 'artistId'})"
+                )
                 sanitized_name = self.processor.sanitize_filename(name)
 
                 sanitized_names.append(sanitized_name)
@@ -427,7 +470,7 @@ class ContentFetcher:
                 processed_artists.append(
                     {
                         "filename": sanitized_name,
-                        "artistId": artist_id,
+                        "artistId": artist_id,  # Store whatever ID we found
                         "is_directory": True,  # Add flag for clarity
                     }
                 )
@@ -450,6 +493,58 @@ class ContentFetcher:
             limit=1000,
             process_func=process_artists,
         )
+
+    def _log_object_structure(self, obj, indent=0, max_depth=3, current_depth=0):
+        """Helper method to log the structure of an object with indentation.
+
+        Args:
+            obj: The object to log
+            indent: Current indentation level
+            max_depth: Maximum depth to traverse
+            current_depth: Current depth in the traversal
+        """
+        if current_depth > max_depth:
+            self.logger.info("  " * indent + "... (max depth reached)")
+            return
+
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if isinstance(value, (dict, list)) and value:
+                    self.logger.info("  " * indent + f"{key}: {type(value).__name__}")
+                    self._log_object_structure(
+                        value, indent + 1, max_depth, current_depth + 1
+                    )
+                else:
+                    # For simple values, log the actual value
+                    value_str = str(value)
+                    # Truncate long values
+                    if len(value_str) > 100:
+                        value_str = value_str[:97] + "..."
+                    self.logger.info(
+                        "  " * indent + f"{key}: {value_str} ({type(value).__name__})"
+                    )
+        elif isinstance(obj, list):
+            if obj:
+                # For lists, log the first few items
+                for i, item in enumerate(obj[:3]):
+                    if i == 0:
+                        self.logger.info(
+                            "  " * indent + f"[{i}]: {type(item).__name__}"
+                        )
+                    else:
+                        self.logger.info(
+                            "  " * indent + f"[{i}]: {type(item).__name__}"
+                        )
+                    if isinstance(item, (dict, list)):
+                        self._log_object_structure(
+                            item, indent + 1, max_depth, current_depth + 1
+                        )
+                if len(obj) > 3:
+                    self.logger.info("  " * indent + f"... ({len(obj) - 3} more items)")
+            else:
+                self.logger.info("  " * indent + "[] (empty list)")
+        else:
+            self.logger.info("  " * indent + str(obj))
 
     def readdir_albums(self) -> List[str]:
         """Handle listing albums.
