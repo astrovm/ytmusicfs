@@ -397,11 +397,13 @@ class ContentFetcher:
             for artist in artists:
                 # Skip invalid entries
                 if not isinstance(artist, dict):
+                    self.logger.warning(f"Skipping invalid artist entry: {artist}")
                     continue
 
                 # Use .get() with default value to safely handle missing 'artist' keys
                 name = artist.get("artist", "Unknown Artist")
-                self.logger.debug(f"Processing artist: {name}")
+                artist_id = artist.get("artistId")
+                self.logger.debug(f"Processing artist - Name: {name}, ID: {artist_id}")
                 sanitized_name = self.processor.sanitize_filename(name)
 
                 sanitized_names.append(sanitized_name)
@@ -410,7 +412,7 @@ class ContentFetcher:
                 processed_artists.append(
                     {
                         "filename": sanitized_name,
-                        "artistId": artist.get("artistId"),
+                        "artistId": artist_id,
                         "is_directory": True,  # Add flag for clarity
                     }
                 )
@@ -513,12 +515,25 @@ class ContentFetcher:
                 # Use .get() with default to avoid KeyError
                 name = artist.get("name", artist.get("artist", "Unknown Artist"))
                 sanitized_name = self.processor.sanitize_filename(name)
+                self.logger.debug(
+                    f"Comparing artist names: '{sanitized_name}' vs '{artist_name}'"
+                )
                 if sanitized_name == artist_name:
                     artist_id = artist.get("artistId")
+                    self.logger.debug(
+                        f"Found matching artist - Name: {name}, ID: {artist_id}"
+                    )
                     break
 
             if not artist_id:
                 self.logger.warning(f"Artist not found: {artist_name}")
+                # Log all artist names and IDs for debugging
+                self.logger.debug("Available artists in cache:")
+                for artist in artists:
+                    name = artist.get("name", artist.get("artist", "Unknown Artist"))
+                    artist_id = artist.get("artistId")
+                    sanitized_name = self.processor.sanitize_filename(name)
+                    self.logger.debug(f"  - '{sanitized_name}' (ID: {artist_id})")
                 return []
 
             # Fetch the artist content
@@ -527,6 +542,9 @@ class ContentFetcher:
 
             if artist_data:
                 self.cache.set(cache_key, artist_data)
+            else:
+                self.logger.warning(f"No data fetched for artist ID: {artist_id}")
+                return []
 
         if not artist_data:
             self.logger.warning(f"No data found for artist: {artist_name}")
