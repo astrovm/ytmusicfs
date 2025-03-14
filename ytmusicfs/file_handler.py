@@ -47,9 +47,7 @@ class FileHandler:
         # Initialize Downloader
         self.downloader = Downloader(cache_dir, logger, update_file_size_callback)
 
-    def open(
-        self, path: str, video_id: str, thread_pool
-    ) -> int:
+    def open(self, path: str, video_id: str, thread_pool) -> int:
         """Open a file and return a file handle.
 
         Args:
@@ -60,9 +58,11 @@ class FileHandler:
         Returns:
             File handle
         """
-        self.logger.debug(
-            f"open: {path} with video_id {video_id}"
-        )
+        self.logger.debug(f"Opening {path} with video_id {video_id}")
+        if not video_id:
+            self.logger.error(f"No videoId provided for {path}")
+            raise OSError(errno.EINVAL, "Invalid video ID")
+
         cache_path = self.cache_dir / "audio" / f"{video_id}.m4a"
         cache_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -72,23 +72,20 @@ class FileHandler:
             self.open_files[fh] = {
                 "cache_path": str(cache_path),
                 "video_id": video_id,
-                "stream_url": None,  # Will be fetched on-demand when needed
-                "status": "ready",  # Mark as ready immediately
+                "stream_url": None,
+                "status": "ready",
                 "error": None,
                 "path": path,
                 "initialized_event": threading.Event(),
             }
-            # Signal that the file handle is ready immediately
             self.open_files[fh]["initialized_event"].set()
             self.path_to_fh[path] = fh
-            self.logger.debug(f"Assigned file handle {fh} to {path}")
 
-        # If cached audio exists, it's immediately usable
         if self._check_cached_audio(video_id):
-            self.logger.debug(f"Found complete cached audio for {video_id}")
+            self.logger.debug(f"Using cached audio for {video_id}")
             return fh
 
-        # No background fetch - stream URL will be fetched on-demand in read()
+        self.logger.debug(f"Stream URL will be fetched on-demand for {video_id}")
         return fh
 
     def _extract_stream_url(self, video_id: str, browser: str, queue):
@@ -140,24 +137,24 @@ class FileHandler:
         self, stream_url: str, offset: int, size: int, retries: int = 3
     ) -> bytes:
         """Stream content directly from URL when file is not yet cached.
-        
+
         Args:
             stream_url: URL to stream from
             offset: Byte offset to start from
             size: Number of bytes to read
             retries: Number of retry attempts
-            
+
         Returns:
             Requested bytes
         """
         buffer_size = 32768  # 32KB buffer (increased from 16KB)
         # Request more than needed to ensure smooth playback
         prefetch_size = buffer_size * 4
-        
+
         # Calculate end byte (inclusive) according to HTTP range spec
         end_byte = offset + size + prefetch_size - 1
         headers = {"Range": f"bytes={offset}-{end_byte}"}
-        
+
         for attempt in range(retries):
             try:
                 self.logger.debug(f"Streaming with range: {offset}-{end_byte}")
@@ -168,7 +165,7 @@ class FileHandler:
                         raise OSError(
                             errno.EIO, f"Stream failed: HTTP {response.status_code}"
                         )
-                    
+
                     # Collect all data chunks
                     data = b""
                     for chunk in response.iter_content(chunk_size=buffer_size):
@@ -176,10 +173,10 @@ class FileHandler:
                         # Once we have enough data, we can return
                         if len(data) >= size:
                             break
-                    
+
                     # Return exactly what was requested
                     return data[:size]
-                    
+
             except requests.exceptions.RequestException as e:
                 self.logger.warning(f"Stream attempt {attempt + 1} failed: {e}")
                 if attempt == retries - 1:
@@ -192,7 +189,7 @@ class FileHandler:
                 # Non-request related exceptions
                 self.logger.error(f"Unexpected streaming error: {e}")
                 raise OSError(errno.EIO, f"Streaming error: {str(e)}")
-                
+
         # Should not reach here but just in case
         raise OSError(errno.EIO, "Failed to stream content after all retries")
 
@@ -227,7 +224,11 @@ class FileHandler:
                 with cache_path.open("rb") as f:
                     f.seek(offset)
                     return f.read(size)
-            elif progress and progress["status"] == "downloading" and progress["progress"] >= offset + size:
+            elif (
+                progress
+                and progress["status"] == "downloading"
+                and progress["progress"] >= offset + size
+            ):
                 # Partially downloaded file with enough data
                 with cache_path.open("rb") as f:
                     f.seek(offset)
@@ -236,39 +237,43 @@ class FileHandler:
         # If we don't have the stream URL yet, fetch it on-demand
         if not file_info["stream_url"]:
             self.logger.debug(f"Fetching stream URL on-demand for {video_id}")
-            
+
             queue = multiprocessing.Queue()
             process = multiprocessing.Process(
                 target=self._extract_stream_url, args=(video_id, self.browser, queue)
             )
             process.daemon = True
             process.start()
-            
+
             try:
                 result = queue.get(timeout=30)
                 if result["status"] == "error":
                     error_msg = result["error"]
-                    self.logger.error(f"Error fetching stream URL for {video_id}: {error_msg}")
+                    self.logger.error(
+                        f"Error fetching stream URL for {video_id}: {error_msg}"
+                    )
                     with self.file_handle_lock:
                         file_info["status"] = "error"
                         file_info["error"] = error_msg
                     raise OSError(errno.EIO, error_msg)
-                
+
                 stream_url = result["stream_url"]
                 with self.file_handle_lock:
                     file_info["stream_url"] = stream_url
-                
+
                 # Extract and cache duration if available in the result
                 if "duration" in result and self.cache:
                     duration = result["duration"]
                     self.logger.debug(f"Got duration for {video_id}: {duration}s")
                     self.cache.set_duration(video_id, duration)
-                
+
                 # Always start download in background
                 self.downloader.download_file(video_id, stream_url, path)
             except Exception as e:
                 error_msg = str(e)
-                self.logger.error(f"Error getting stream URL for {video_id}: {error_msg}")
+                self.logger.error(
+                    f"Error getting stream URL for {video_id}: {error_msg}"
+                )
                 with self.file_handle_lock:
                     file_info["status"] = "error"
                     file_info["error"] = error_msg
@@ -294,19 +299,19 @@ class FileHandler:
         with self.file_handle_lock:
             if fh not in self.open_files:
                 return 0
-            
+
             video_id = self.open_files[fh].get("video_id")
-            
+
             # Don't stop the download - let it continue in the background
             # This ensures files are fully downloaded even after the handle is closed
-            
+
             # Just remove the file handle from our tracking
             del self.open_files[fh]
-            
+
             # Remove path_to_fh entry for this path
             if path in self.path_to_fh and self.path_to_fh[path] == fh:
                 del self.path_to_fh[path]
-                
+
         return 0
 
     def _check_cached_audio(self, video_id):
