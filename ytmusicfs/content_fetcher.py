@@ -500,12 +500,14 @@ class ContentFetcher:
                 self.logger.warning("No cached artists found")
                 return []
 
-            # Find the artist by name
+            # Find the artist by name with fallback for missing 'name'
             artist_id = None
             for artist in artists:
-                sanitized_name = self.processor.sanitize_filename(artist["name"])
+                # Use .get() with default to avoid KeyError
+                name = artist.get("name", artist.get("artist", "Unknown Artist"))
+                sanitized_name = self.processor.sanitize_filename(name)
                 if sanitized_name == artist_name:
-                    artist_id = artist["artistId"]
+                    artist_id = artist.get("artistId")
                     break
 
             if not artist_id:

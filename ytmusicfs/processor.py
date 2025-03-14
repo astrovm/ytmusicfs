@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import re
 from typing import Dict, Optional, List, Tuple
 import logging
 
@@ -24,10 +25,16 @@ class TrackProcessor:
             name: The filename to sanitize.
 
         Returns:
-            A sanitized filename with problematic characters replaced by '-'.
+            A sanitized filename with problematic characters replaced or preserved safely.
         """
-        invalid_chars = {"/", "\\", ":", "*", "?", '"', "<", ">", "|"}
-        return "".join("-" if c in invalid_chars else c for c in name)
+        # Preserve dots and some special characters, replace only truly invalid ones
+        invalid_chars = ["/", "\\", ":", "*", "?", "<", ">", "|"]
+        # Replace invalid chars with hyphen, trim leading/trailing spaces and dots
+        sanitized = "".join("-" if c in invalid_chars else c for c in name.strip())
+        # Remove leading/trailing dots or multiple consecutive hyphens
+        sanitized = re.sub(r"^\.+|\.+$", "", sanitized)
+        sanitized = re.sub(r"-+", "-", sanitized)
+        return sanitized
 
     def clean_artists(self, raw_artists: List[Dict]) -> str:
         """Format artist names from a list of artist dictionaries.
@@ -165,7 +172,7 @@ class TrackProcessor:
         """
         # Try to get the video ID from the track
         video_id = track.get("videoId")
-        
+
         # Handle duration
         duration_seconds = None
         duration_formatted = "0:00"
@@ -174,7 +181,7 @@ class TrackProcessor:
         if "duration_seconds" in track and track["duration_seconds"] is not None:
             duration_seconds = track["duration_seconds"]
             duration_formatted = self._format_duration(duration_seconds)
-            
+
             # Cache the duration if we have a video ID and cache manager
             if video_id and self.cache_manager:
                 self.cache_manager.set_duration(video_id, duration_seconds)
@@ -197,7 +204,7 @@ class TrackProcessor:
                     f"Caching parsed duration for {video_id}: {duration_seconds}s"
                 )
                 self.cache_manager.set_duration(video_id, duration_seconds)
-        
+
         # Handle artist information
         # yt-dlp flat extraction provides only uploader, not detailed artist info
         if "artist" in track and isinstance(track["artist"], str):
@@ -209,7 +216,7 @@ class TrackProcessor:
         else:
             # Fallback
             artist = track.get("uploader", "Unknown Artist")
-            
+
         # Get album info - try for existing data or use defaults
         if "album" in track and isinstance(track["album"], str):
             album = track["album"]
@@ -217,7 +224,7 @@ class TrackProcessor:
         else:
             # Try to extract from track data or use default
             album, album_artist = self.extract_album_info(track)
-            
+
         # Handle year - might not be available in yt-dlp flat extraction
         if "year" in track and track["year"] is not None:
             year = track["year"]
