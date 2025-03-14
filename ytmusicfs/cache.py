@@ -53,14 +53,32 @@ class CacheManager:
         # Create a single cursor for all operations
         with self.lock:
             self.cursor = self.conn.cursor()
-            self.cursor.execute(
+
+            # Check if we need to migrate the schema
+            self.cursor.execute("PRAGMA table_info(cache_entries)")
+            columns = [column[1] for column in self.cursor.fetchall()]
+
+            if "cache_entries" not in columns:
+                # Create the table if it doesn't exist
+                self.cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS cache_entries (
+                        key TEXT PRIMARY KEY,
+                        entry TEXT,
+                        entry_type TEXT CHECK(entry_type IN ('file', 'directory')) DEFAULT 'directory'
+                    )
                 """
-                CREATE TABLE IF NOT EXISTS cache_entries (
-                    key TEXT PRIMARY KEY,
-                    entry TEXT
                 )
-            """
-            )
+            elif "entry_type" not in columns:
+                # Alter the table to add the entry_type column if needed
+                self.logger.info("Migrating database schema to add entry_type column")
+                self.cursor.execute(
+                    """
+                    ALTER TABLE cache_entries
+                    ADD COLUMN entry_type TEXT CHECK(entry_type IN ('file', 'directory')) DEFAULT 'directory'
+                    """
+                )
+
             self.cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS hash_mappings (
@@ -85,24 +103,32 @@ class CacheManager:
         self.logger.debug("Loading valid paths from SQLite into memory...")
         valid_paths_count = 0
 
+        # Initialize a dictionary to store path types
+        if not hasattr(self, "path_types"):
+            self.path_types = {}
+
         with self.lock:
             try:
                 # Load paths from valid_dir: entries
                 self.cursor.execute(
-                    "SELECT key FROM cache_entries WHERE key LIKE 'valid_dir:%'"
+                    "SELECT key, entry_type FROM cache_entries WHERE key LIKE 'valid_dir:%'"
                 )
                 for row in self.cursor.fetchall():
                     path = self.key_to_path(row[0].replace("valid_dir:", ""))
                     self.valid_paths.add(path)
+                    if row[1]:  # If entry_type exists
+                        self.path_types[path] = row[1]
                     valid_paths_count += 1
 
                 # Also load paths from exact_path: entries
                 self.cursor.execute(
-                    "SELECT key FROM cache_entries WHERE key LIKE 'exact_path:%'"
+                    "SELECT key, entry_type FROM cache_entries WHERE key LIKE 'exact_path:%'"
                 )
                 for row in self.cursor.fetchall():
                     path = self.key_to_path(row[0].replace("exact_path:", ""))
                     self.valid_paths.add(path)
+                    if row[1]:  # If entry_type exists
+                        self.path_types[path] = row[1]
                     valid_paths_count += 1
 
                 self.logger.info(f"Loaded {valid_paths_count} valid paths into memory")
@@ -111,11 +137,12 @@ class CacheManager:
                     f"Failed to load valid paths: {e.__class__.__name__}: {e}"
                 )
 
-    def add_valid_path(self, path: str) -> None:
+    def add_valid_path(self, path: str, is_directory: bool = None) -> None:
         """Add a path to the valid paths set and persist it.
 
         Args:
             path: The path to mark as valid
+            is_directory: If specified, whether this path represents a directory
         """
         # Add to in-memory set with minimal locking
         add_to_cache = False
@@ -126,7 +153,9 @@ class CacheManager:
 
         # Only persist to database if needed
         if add_to_cache:
-            self.set(f"valid_dir:{path}", True)
+            # Use appropriate key prefix based on directory type
+            key_prefix = "valid_dir:" if is_directory else "exact_path:"
+            self.set(f"{key_prefix}{path}", True, is_directory=is_directory)
 
     def remove_valid_path(self, path: str) -> None:
         """Remove a path from the valid paths set.
@@ -185,7 +214,7 @@ class CacheManager:
         Args:
             dir_path: The directory path to mark as valid
         """
-        self.add_valid_path(dir_path)
+        self.add_valid_path(dir_path, is_directory=True)
 
     def add_valid_file(self, file_path: str) -> None:
         """Add a file to valid paths and mark it in the cache.
@@ -196,8 +225,8 @@ class CacheManager:
         Args:
             file_path: The file path to mark as valid
         """
-        self.add_valid_path(file_path)
-        self.set(f"exact_path:{file_path}", True)
+        self.add_valid_path(file_path, is_directory=False)
+        self.set(f"exact_path:{file_path}", True, is_directory=False)
 
     def path_to_key(self, path: str) -> str:
         """Convert a filesystem path to a cache key.
@@ -305,12 +334,13 @@ class CacheManager:
 
         return None
 
-    def set(self, path: str, data: Any) -> None:
+    def set(self, path: str, data: Any, is_directory: bool = None) -> None:
         """Set data in both memory and SQLite cache.
 
         Args:
             path: The path to cache
             data: The data to cache
+            is_directory: If specified, whether this path represents a directory
         """
         # Prepare cache entry outside of lock
         cache_entry = {"data": data, "time": time.time()}
@@ -323,16 +353,30 @@ class CacheManager:
         key = self.path_to_key(path)
         entry_str = json.dumps(cache_entry)
 
+        # Determine entry_type if provided
+        entry_type = None
+        if is_directory is not None:
+            entry_type = "directory" if is_directory else "file"
+
         # Update SQLite cache with a dedicated lock
         with self.lock:
             try:
-                self.cursor.execute(
-                    """
-                    INSERT OR REPLACE INTO cache_entries (key, entry)
-                    VALUES (?, ?)
-                    """,
-                    (key, entry_str),
-                )
+                if entry_type is not None:
+                    self.cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO cache_entries (key, entry, entry_type)
+                        VALUES (?, ?, ?)
+                        """,
+                        (key, entry_str, entry_type),
+                    )
+                else:
+                    self.cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO cache_entries (key, entry)
+                        VALUES (?, ?)
+                        """,
+                        (key, entry_str),
+                    )
                 self.conn.commit()
             except sqlite3.Error as e:
                 self.logger.warning(
@@ -1116,6 +1160,68 @@ class CacheManager:
         for video_id, duration in durations.items():
             self.set_duration(video_id, duration)
         self.logger.info(f"Cached {len(durations)} durations in batch")
+
+    def get_entry_type(self, path: str) -> Optional[str]:
+        """Retrieve the entry type (file or directory) for a path.
+
+        Args:
+            path: The path to check
+
+        Returns:
+            'file', 'directory', or None if the path is not in the cache
+        """
+        key = self.path_to_key(path)
+        with self.lock:
+            try:
+                self.cursor.execute(
+                    "SELECT entry_type FROM cache_entries WHERE key = ?", (key,)
+                )
+                row = self.cursor.fetchone()
+
+                if row and row[0]:
+                    return row[0]
+
+                # Also check with different prefixes if not found directly
+                for prefix in ["valid_dir:", "exact_path:"]:
+                    prefixed_key = self.path_to_key(f"{prefix}{path}")
+                    self.cursor.execute(
+                        "SELECT entry_type FROM cache_entries WHERE key = ?",
+                        (prefixed_key,),
+                    )
+                    row = self.cursor.fetchone()
+                    if row and row[0]:
+                        return row[0]
+
+                return None
+            except sqlite3.Error as e:
+                self.logger.warning(
+                    f"Failed to get entry type for {path}: {e.__class__.__name__}: {e}"
+                )
+                return None
+
+    def is_directory(self, path: str) -> Optional[bool]:
+        """Check if a path is a directory (faster in-memory check).
+
+        Args:
+            path: The path to check
+
+        Returns:
+            True if directory, False if file, None if unknown
+        """
+        # Check in-memory cache first for speed
+        if hasattr(self, "path_types") and path in self.path_types:
+            return self.path_types[path] == "directory"
+
+        # Fallback to database lookup
+        entry_type = self.get_entry_type(path)
+        if entry_type:
+            # Cache the result for future lookups
+            if not hasattr(self, "path_types"):
+                self.path_types = {}
+            self.path_types[path] = entry_type
+            return entry_type == "directory"
+
+        return None  # Unknown path type
 
     def __del__(self):
         """Clean up resources when the object is deleted."""

@@ -129,6 +129,7 @@ class ContentFetcher:
                     {
                         "filename": sanitized_name,
                         "playlistId": playlist.get("playlistId"),
+                        "is_directory": True,  # Playlists are directories
                     }
                 )
 
@@ -160,6 +161,10 @@ class ContentFetcher:
             self.logger.debug(
                 f"Using {len(processed_tracks)} cached processed tracks for /liked_songs"
             )
+            # Ensure all tracks have is_directory flag
+            for track in processed_tracks:
+                track["is_directory"] = False  # Songs are files
+
             # Cache directory listing with attributes for efficient getattr lookups
             self._cache_directory_listing_with_attrs("/liked_songs", processed_tracks)
 
@@ -192,8 +197,11 @@ class ContentFetcher:
         # Process the tracks outside of any locks
         processed_tracks = self.processor.process_tracks(tracks)
 
-        # Apply durations to processed tracks
+        # Apply durations to processed tracks and set is_directory flag
         for track in processed_tracks:
+            # Set is_directory flag for each track
+            track["is_directory"] = False  # Songs are files
+
             video_id = track.get("videoId")
             if video_id and video_id in durations:
                 track["duration_seconds"] = durations[video_id]
@@ -224,6 +232,7 @@ class ContentFetcher:
         if hasattr(self, "cache_directory_callback") and callable(
             self.cache_directory_callback
         ):
+            # Pass processed_tracks with explicit is_directory flag unchanged
             self.cache_directory_callback(dir_path, processed_tracks)
         else:
             self.logger.warning(
@@ -254,6 +263,10 @@ class ContentFetcher:
             self.logger.debug(
                 f"Using {len(processed_tracks)} cached processed tracks for {path}"
             )
+            # Ensure all tracks have is_directory flag
+            for track in processed_tracks:
+                track["is_directory"] = False  # Songs are files
+
             # Cache directory listing with attributes for efficient getattr lookups
             self._cache_directory_listing_with_attrs(path, processed_tracks)
             return [track["filename"] for track in processed_tracks]
@@ -322,6 +335,7 @@ class ContentFetcher:
                             if entry.get("duration")
                             else None
                         ),
+                        "is_directory": False,  # Songs are files
                     }
 
                     # Format the filename
@@ -333,6 +347,9 @@ class ContentFetcher:
                     # Process through the track processor to ensure consistent format
                     processed_track = self.processor.extract_track_info(track_info)
                     processed_track["filename"] = filename
+                    processed_track["is_directory"] = (
+                        False  # Make sure it's set after processing
+                    )
                     processed_tracks.append(processed_track)
         except Exception as e:
             self.logger.error(f"Error fetching playlist content with yt-dlp: {str(e)}")
@@ -421,7 +438,7 @@ class ContentFetcher:
                     {
                         "filename": sanitized_name,
                         "browseId": browse_id,  # Store browseId instead of artistId
-                        "is_directory": True,  # Add flag for clarity
+                        "is_directory": True,  # Artists are always directories
                     }
                 )
 
@@ -522,7 +539,11 @@ class ContentFetcher:
 
                 # Add to processed albums list for directory caching
                 processed_albums.append(
-                    {"filename": sanitized_name, "browseId": album.get("browseId")}
+                    {
+                        "filename": sanitized_name,
+                        "browseId": album.get("browseId"),
+                        "is_directory": True,  # Albums are directories
+                    }
                 )
 
             # Cache directory listing with attributes
@@ -619,12 +640,21 @@ class ContentFetcher:
         # Extract content categories
         categories = ["Albums", "Singles", "Songs"]
         content_items = []
+        processed_content = []
 
         # Add albums
         if "albums" in artist_data and artist_data["albums"].get("results"):
             albums = artist_data["albums"]["results"]
             if albums:
                 content_items.append("Albums")
+                # Add Albums to processed content
+                processed_content.append(
+                    {
+                        "filename": "Albums",
+                        "is_directory": True,  # Albums is a directory
+                    }
+                )
+
                 # Add individual albums for direct access
                 for album in albums:
                     album_name = self.processor.sanitize_filename(album["title"])
@@ -637,6 +667,14 @@ class ContentFetcher:
             singles = artist_data["singles"]["results"]
             if singles:
                 content_items.append("Singles")
+                # Add Singles to processed content
+                processed_content.append(
+                    {
+                        "filename": "Singles",
+                        "is_directory": True,  # Singles is a directory
+                    }
+                )
+
                 # Cache singles data for later use
                 singles_cache_key = f"{path}/Singles_data"
                 self.cache.set(singles_cache_key, singles)
@@ -646,8 +684,17 @@ class ContentFetcher:
             songs = artist_data["songs"]["results"]
             if songs:
                 content_items.append("Songs")
+                # Add Songs to processed content
+                processed_content.append(
+                    {"filename": "Songs", "is_directory": True}  # Songs is a directory
+                )
+
                 # Process and cache the songs
                 processed_songs = self.processor.process_tracks(songs)
+                # Set is_directory flag for each song
+                for song in processed_songs:
+                    song["is_directory"] = False  # Individual songs are files
+
                 songs_cache_key = f"{path}/Songs_processed"
                 self.cache.set(songs_cache_key, processed_songs)
 
@@ -656,6 +703,10 @@ class ContentFetcher:
                 self._cache_directory_listing_with_attrs(
                     songs_dir_path, processed_songs
                 )
+
+        # Cache the directory listing for the artist path
+        if processed_content:
+            self._cache_directory_listing_with_attrs(path, processed_content)
 
         return content_items
 
@@ -723,6 +774,10 @@ class ContentFetcher:
             self.logger.debug(
                 f"Using {len(processed_tracks)} cached processed tracks for {path}"
             )
+            # Ensure all tracks have is_directory flag
+            for track in processed_tracks:
+                track["is_directory"] = False  # Songs are files
+
             # Cache directory listing with attributes for efficient getattr lookups
             self._cache_directory_listing_with_attrs(path, processed_tracks)
             return [track["filename"] for track in processed_tracks]
@@ -742,6 +797,10 @@ class ContentFetcher:
         self.logger.info(f"Processing {len(tracks)} tracks from album: {album_name}")
         processed_tracks = self.processor.process_tracks(tracks)
 
+        # Set is_directory flag for each track
+        for track in processed_tracks:
+            track["is_directory"] = False  # Songs are files
+
         # Cache the processed tracks
         self.cache.set(cache_key, processed_tracks)
 
@@ -757,7 +816,23 @@ class ContentFetcher:
             List of search categories
         """
         # Return hardcoded list of search categories
-        return ["library", "catalog"]
+        categories = ["library", "catalog"]
+
+        # Create processed entries with is_directory flags
+        processed_categories = []
+        for category in categories:
+            processed_categories.append(
+                {
+                    "filename": category,
+                    "is_directory": True,  # Categories are directories
+                }
+            )
+
+        # Cache directory listing
+        if processed_categories:
+            self._cache_directory_listing_with_attrs("/search", processed_categories)
+
+        return categories
 
     def readdir_search_category_options(self) -> List[str]:
         """Handle listing search category options.
@@ -766,7 +841,7 @@ class ContentFetcher:
             List of search category options
         """
         # Return hardcoded list of search category options
-        return [
+        options = [
             "songs",
             "albums",
             "artists",
@@ -774,6 +849,8 @@ class ContentFetcher:
             "videos",
             "podcasts",
         ]
+
+        return options
 
     def _cache_search_results(
         self,
@@ -816,7 +893,22 @@ class ContentFetcher:
 
         # Handle direct scope path like /search/library or /search/catalog
         if len(parts) == 3 and parts[2] in ["library", "catalog"]:
-            return self.readdir_search_category_options()
+            # Create directory entries for category options
+            categories = self.readdir_search_category_options()
+            processed_categories = []
+            for category in categories:
+                processed_categories.append(
+                    {
+                        "filename": category,
+                        "is_directory": True,  # All search categories are directories
+                    }
+                )
+
+            # Cache directory listing
+            if processed_categories:
+                self._cache_directory_listing_with_attrs(path, processed_categories)
+
+            return categories
 
         # Handle scope and filter type like /search/library/songs
         if len(parts) >= 4:
@@ -825,6 +917,7 @@ class ContentFetcher:
 
             # If there's no search query provided
             if len(parts) == 4:
+                # We could cache this as a directory, but it's just a placeholder
                 return ["search_query_placeholder"]
 
             # Extract search query from path
@@ -872,6 +965,7 @@ class ContentFetcher:
                 if search_results:
                     # Categorize results
                     dirs = []
+                    processed_dirs = []
                     for category, items in search_results.items():
                         if items:
                             if category == "top_result" and items:
@@ -881,7 +975,14 @@ class ContentFetcher:
                                     .lower()
                                     .replace(" ", "_")
                                 )
-                                dirs.append(f"top_{category_name}")
+                                dir_name = f"top_{category_name}"
+                                dirs.append(dir_name)
+                                processed_dirs.append(
+                                    {
+                                        "filename": dir_name,
+                                        "is_directory": True,  # Always a directory
+                                    }
+                                )
                             elif items:
                                 # Normalize the category name
                                 category_name = (
@@ -889,6 +990,18 @@ class ContentFetcher:
                                 )
                                 if category_name not in dirs:  # Avoid duplicates
                                     dirs.append(category_name)
+                                    processed_dirs.append(
+                                        {
+                                            "filename": category_name,
+                                            "is_directory": True,  # Always a directory
+                                        }
+                                    )
+
+                    # Cache the directory listing
+                    if processed_dirs:
+                        self._cache_directory_listing_with_attrs(
+                            full_path, processed_dirs
+                        )
 
                     return [".", ".."] + dirs
 
@@ -1090,6 +1203,11 @@ class ContentFetcher:
                                 # Process the track
                                 processed_track = self.processor.process_track(song)
                                 if processed_track:
+                                    # Set is_directory flag
+                                    processed_track["is_directory"] = (
+                                        False  # Songs are files
+                                    )
+
                                     # Cache processed track for later lookups
                                     cache_key = f"{path}_processed"
                                     self.cache.set(cache_key, [processed_track])
@@ -1131,6 +1249,10 @@ class ContentFetcher:
                 self.logger.debug(
                     f"Using cached processed tracks for album: {item_name}"
                 )
+                # Ensure all tracks have is_directory flag
+                for track in processed_tracks:
+                    track["is_directory"] = False  # Songs are files
+
                 # Cache directory listing with attributes
                 self._cache_directory_listing_with_attrs(path, processed_tracks)
                 return [track["filename"] for track in processed_tracks]
@@ -1146,6 +1268,10 @@ class ContentFetcher:
             tracks = album_data.get("tracks", [])
             self.logger.info(f"Processing {len(tracks)} tracks from album: {item_name}")
             processed_tracks = self.processor.process_tracks(tracks)
+
+            # Set is_directory flag for each track
+            for track in processed_tracks:
+                track["is_directory"] = False  # Songs are files
 
             # Cache processed tracks
             self.cache.set(cache_key, processed_tracks)
@@ -1194,18 +1320,41 @@ class ContentFetcher:
 
             # Extract content categories
             categories = []
+            processed_categories = []
 
             # Add albums if available
             if "albums" in artist_data and artist_data["albums"].get("results"):
                 categories.append("Albums")
+                processed_categories.append(
+                    {
+                        "filename": "Albums",
+                        "is_directory": True,  # Albums category is a directory
+                    }
+                )
 
             # Add singles if available
             if "singles" in artist_data and artist_data["singles"].get("results"):
                 categories.append("Singles")
+                processed_categories.append(
+                    {
+                        "filename": "Singles",
+                        "is_directory": True,  # Singles category is a directory
+                    }
+                )
 
             # Add songs if available
             if "songs" in artist_data and artist_data["songs"].get("results"):
                 categories.append("Songs")
+                processed_categories.append(
+                    {
+                        "filename": "Songs",
+                        "is_directory": True,  # Songs category is a directory
+                    }
+                )
+
+            # Cache the categories listing
+            if processed_categories:
+                self._cache_directory_listing_with_attrs(path, processed_categories)
 
             return categories
 
@@ -1227,6 +1376,10 @@ class ContentFetcher:
 
                 # Process and cache the songs
                 processed_songs = self.processor.process_tracks(songs)
+                # Set is_directory flag for each song
+                for song in processed_songs:
+                    song["is_directory"] = False  # Songs are files
+
                 songs_cache_key = f"{path}_processed"
                 self.cache.set(songs_cache_key, processed_songs)
 
@@ -1239,6 +1392,22 @@ class ContentFetcher:
                 # For albums or singles category, return list of album names
                 category_key = category.lower()
                 items = artist_data.get(category_key, {}).get("results", [])
+
+                # Create processed items with is_directory flags
+                processed_items = []
+                for item in items:
+                    sanitized_title = self.processor.sanitize_filename(item["title"])
+                    processed_items.append(
+                        {
+                            "filename": sanitized_title,
+                            "browseId": item.get("browseId"),
+                            "is_directory": True,  # Albums/singles are directories
+                        }
+                    )
+
+                # Cache the directory listing
+                if processed_items:
+                    self._cache_directory_listing_with_attrs(path, processed_items)
 
                 return [
                     self.processor.sanitize_filename(item["title"]) for item in items
@@ -1270,11 +1439,41 @@ class ContentFetcher:
                 processed_tracks = self.cache.get(cache_key)
 
                 if processed_tracks:
+                    # Ensure all tracks have is_directory flag
+                    for track in processed_tracks:
+                        track["is_directory"] = False  # Songs are files
+
                     # Cache directory listing with attributes
                     self._cache_directory_listing_with_attrs(
                         album_path, processed_tracks
                     )
                     return [track["filename"] for track in processed_tracks]
+
+                # If tracks aren't cached, we need to fetch the album data
+                album_data = self.client.get_album(album_browse_id)
+
+                if not album_data or "tracks" not in album_data:
+                    self.logger.warning(f"No tracks found for album: {album_name}")
+                    return []
+
+                # Process tracks
+                tracks = album_data.get("tracks", [])
+                self.logger.info(
+                    f"Processing {len(tracks)} tracks from album: {album_name}"
+                )
+                processed_tracks = self.processor.process_tracks(tracks)
+
+                # Set is_directory flag for each track
+                for track in processed_tracks:
+                    track["is_directory"] = False  # Songs are files
+
+                # Cache processed tracks
+                self.cache.set(cache_key, processed_tracks)
+
+                # Cache directory listing with attributes
+                self._cache_directory_listing_with_attrs(album_path, processed_tracks)
+
+                return [track["filename"] for track in processed_tracks]
 
         return []
 
