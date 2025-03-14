@@ -403,6 +403,12 @@ class ContentFetcher:
                 # Use .get() with default value to safely handle missing 'artist' keys
                 name = artist.get("artist", "Unknown Artist")
                 artist_id = artist.get("artistId")
+
+                # Skip artists without IDs
+                if not artist_id:
+                    self.logger.warning(f"Artist {name} has no artistId, skipping")
+                    continue
+
                 self.logger.debug(f"Processing artist - Name: {name}, ID: {artist_id}")
                 sanitized_name = self.processor.sanitize_filename(name)
 
