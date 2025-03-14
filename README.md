@@ -77,7 +77,7 @@ YTMusicFS uses OAuth for authentication, which provides better reliability and l
 Run the setup utility with your OAuth credentials:
 
 ```bash
-ytmusicfs-oauth --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET
+ytmusicfs oauth --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET
 ```
 
 This will:
@@ -89,19 +89,32 @@ This will:
 
 ## Usage
 
+### Command Structure
+
+YTMusicFS uses a command-based structure with the following format:
+
+```bash
+ytmusicfs <command> [options]
+```
+
+Available commands:
+
+- `mount`: Mount YouTube Music as a filesystem
+- `oauth`: Set up OAuth authentication
+
 ### Mount the Filesystem
 
 Create a mount point (if it doesn't exist) and mount the filesystem:
 
 ```bash
 mkdir -p ~/Music/ytmusic
-ytmusicfs --mount-point ~/Music/ytmusic
+ytmusicfs mount --mount-point ~/Music/ytmusic
 ```
 
 Or with custom options:
 
 ```bash
-ytmusicfs \
+ytmusicfs mount \
   --mount-point ~/Music/ytmusic \
   --auth-file /path/to/oauth.json \
   --credentials-file /path/to/credentials.json \
@@ -113,7 +126,7 @@ ytmusicfs \
 You can also specify a browser for cookie retrieval:
 
 ```bash
-ytmusicfs --mount-point ~/Music/ytmusic --browser brave
+ytmusicfs mount --mount-point ~/Music/ytmusic --browser brave
 ```
 
 Supported browsers include: chrome, firefox, brave, edge, safari, opera, and others supported by yt-dlp.
@@ -154,14 +167,14 @@ fusermount -u ~/Music/ytmusic
 
 ## Command Line Options
 
-### ytmusicfs
+### ytmusicfs mount
 
 ```
-usage: ytmusicfs [-h] --mount-point MOUNT_POINT [--auth-file AUTH_FILE]
-                 [--credentials-file CREDENTIALS_FILE] [--client-id CLIENT_ID]
-                 [--client-secret CLIENT_SECRET] [--cache-dir CACHE_DIR]
-                 [--cache-timeout CACHE_TIMEOUT] [--foreground] [--debug]
-                 [--browser BROWSER] [--version]
+usage: ytmusicfs mount [-h] --mount-point MOUNT_POINT [--auth-file AUTH_FILE]
+                       [--credentials-file CREDENTIALS_FILE] [--client-id CLIENT_ID]
+                       [--client-secret CLIENT_SECRET] [--cache-dir CACHE_DIR]
+                       [--cache-timeout CACHE_TIMEOUT] [--foreground] [--debug]
+                       [--browser BROWSER]
 
 Mount YouTube Music as a filesystem
 
@@ -169,7 +182,6 @@ Options:
   -h, --help            Show this help message and exit
   --mount-point, -m MOUNT_POINT
                         Directory where the filesystem will be mounted
-  --version, -v         Show version and exit
 
 Authentication Options:
   --auth-file, -a AUTH_FILE
@@ -197,13 +209,13 @@ Operational Options:
                         If not specified, no browser cookies will be used
 ```
 
-### ytmusicfs-oauth
+### ytmusicfs oauth
 
 ```
-usage: ytmusicfs-oauth [-h] [--client-id CLIENT_ID]
-                       [--client-secret CLIENT_SECRET]
-                       [--auth-file AUTH_FILE] [--credentials-file CREDENTIALS_FILE]
-                       [--open-browser] [--no-open-browser] [--debug]
+usage: ytmusicfs oauth [-h] [--client-id CLIENT_ID]
+                     [--client-secret CLIENT_SECRET]
+                     [--auth-file AUTH_FILE] [--credentials-file CREDENTIALS_FILE]
+                     [--open-browser] [--no-open-browser] [--debug]
 
 Set up OAuth authentication for YTMusicFS
 
@@ -235,7 +247,7 @@ Options:
 ### Authentication Issues
 
 - Ensure your OAuth token is valid and refresh tokens are working
-- Try regenerating your token with `ytmusicfs-oauth`
+- Try regenerating your token with `ytmusicfs oauth`
 - Check if your Google Cloud project has YouTube Data API enabled
 
 ### Playback Issues

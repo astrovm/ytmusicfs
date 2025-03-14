@@ -2,119 +2,23 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from fuse import FUSE, Operations
-from pathlib import Path
-from typing import Dict, Any, Optional, List, Callable
-from yt_dlp import YoutubeDL
+from typing import Dict, Any, Optional, List
 from ytmusicfs.cache import CacheManager
 from ytmusicfs.client import YouTubeMusicClient
+from ytmusicfs.content_fetcher import ContentFetcher
+from ytmusicfs.file_handler import FileHandler
+from ytmusicfs.path_router import PathRouter
 from ytmusicfs.processor import TrackProcessor
+from ytmusicfs.oauth_adapter import YTMusicOAuthAdapter
 import errno
+import inspect
 import logging
 import os
 import re
-import requests
 import stat
 import threading
 import time
-
-
-class PathRouter:
-    """Router for handling FUSE filesystem paths."""
-
-    def __init__(self):
-        """Initialize the path router with empty handler collections."""
-        self.handlers: Dict[str, Callable] = {}
-        self.subpath_handlers: List[tuple[str, Callable]] = []
-        self.pattern_handlers: List[tuple[str, Callable]] = []  # For wildcard patterns
-
-    def register(self, path: str, handler: Callable) -> None:
-        """Register a handler for an exact path match.
-
-        Args:
-            path: The exact path to match
-            handler: The handler function to call
-        """
-        self.handlers[path] = handler
-
-    def register_subpath(self, prefix: str, handler: Callable) -> None:
-        """Register a handler for a path prefix match.
-
-        Args:
-            prefix: The path prefix to match
-            handler: The handler function to call with the full path
-        """
-        self.subpath_handlers.append((prefix, handler))
-
-    def register_dynamic(self, pattern: str, handler: Callable) -> None:
-        """Register a handler for a path pattern with wildcards.
-
-        Wildcards:
-        - * matches any sequence of characters within a path segment
-        - ** matches any sequence of characters across multiple path segments
-
-        Args:
-            pattern: The path pattern to match (e.g., "/playlists/*", "/artists/**/tracks")
-            handler: The handler function to call with the full path
-        """
-        self.pattern_handlers.append((pattern, handler))
-
-    def _match_wildcard_pattern(self, pattern: str, path: str) -> tuple[bool, list]:
-        """Check if a path matches a wildcard pattern and extract wildcard values.
-
-        Args:
-            pattern: The pattern with wildcards to match against
-            path: The path to check
-
-        Returns:
-            Tuple of (match_success, captured_values)
-        """
-        # Convert pattern to regex
-        import re
-
-        # Escape special regex characters except * which we'll handle specially
-        regex_pattern = (
-            re.escape(pattern).replace("\\*\\*", "(.+)").replace("\\*", "([^/]+)")
-        )
-
-        # Add start and end anchors
-        regex_pattern = f"^{regex_pattern}$"
-
-        # Match the path against the pattern
-        match = re.match(regex_pattern, path)
-        if match:
-            # Return captured values
-            return True, list(match.groups())
-        return False, []
-
-    def route(self, path: str) -> List[str]:
-        """Route a path to the appropriate handler.
-
-        Args:
-            path: The path to route
-
-        Returns:
-            List of directory entries from the handler
-        """
-        # First try exact matches
-        if path in self.handlers:
-            return self.handlers[path]()
-
-        # Then try prefix matches
-        for prefix, handler in self.subpath_handlers:
-            if path.startswith(prefix):
-                return handler(path)
-
-        # Finally try pattern matches
-        for pattern, handler in self.pattern_handlers:
-            match_success, captured_values = self._match_wildcard_pattern(pattern, path)
-            if match_success:
-                # Pass both the full path and the captured values
-                if captured_values:
-                    return handler(path, *captured_values)
-                else:
-                    return handler(path)
-
-        return [".", ".."]
+import traceback
 
 
 class YouTubeMusicFS(Operations):
@@ -125,13 +29,15 @@ class YouTubeMusicFS(Operations):
         auth_file: str,
         client_id: str = None,
         client_secret: str = None,
-        cache_dir: str = None,
+        cache_dir: Optional[str] = None,
         cache_timeout: int = 2592000,
         max_workers: int = 8,
-        browser: str = None,
+        browser: Optional[str] = None,
         cache_maxsize: int = 10000,
         preload_cache: bool = True,
-        request_cooldown: int = 100,
+        request_cooldown: int = 1000,
+        logger: Optional[logging.Logger] = None,
+        credentials_file: Optional[str] = None,
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
@@ -145,17 +51,26 @@ class YouTubeMusicFS(Operations):
             browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
             cache_maxsize: Maximum number of items to keep in memory cache (default: 10000)
             preload_cache: Whether to preload cache data at startup (default: True)
-            request_cooldown: Time in milliseconds between allowed repeated requests to the same path (default: 100)
+            request_cooldown: Time in milliseconds between allowed repeated requests to the same path (default: 1000)
+            logger: Logger instance to use (default: creates a new logger)
+            credentials_file: Path to the client credentials file (default: None)
         """
-        # Get the logger
-        self.logger = logging.getLogger("YTMusicFS")
+        # Get or create the logger
+        self.logger = logger or logging.getLogger("YTMusicFS")
 
-        # Initialize the client component
-        self.client = YouTubeMusicClient(
+        # Initialize the OAuth adapter first
+        oauth_adapter = YTMusicOAuthAdapter(
             auth_file=auth_file,
             client_id=client_id,
             client_secret=client_secret,
             browser=browser,
+            logger=self.logger,
+            credentials_file=credentials_file,
+        )
+
+        # Initialize the client component with the OAuth adapter
+        self.client = YouTubeMusicClient(
+            oauth_adapter=oauth_adapter,
             logger=self.logger,
         )
 
@@ -167,11 +82,26 @@ class YouTubeMusicFS(Operations):
             logger=self.logger,
         )
 
-        # Initialize the track processor component
-        self.processor = TrackProcessor(logger=self.logger)
+        # Initialize the track processor component with cache access
+        self.processor = TrackProcessor(logger=self.logger, cache_manager=self.cache)
+
+        # Initialize the content fetcher component
+        self.fetcher = ContentFetcher(
+            client=self.client,
+            processor=self.processor,
+            cache=self.cache,
+            logger=self.logger,
+            browser=browser,
+        )
+
+        # Set the callback for caching directory listings with attributes
+        self.fetcher.cache_directory_callback = self._cache_directory_listing_with_attrs
 
         # Initialize the path router
         self.router = PathRouter()
+
+        # Set the content fetcher in the router to enable the search path handlers
+        self.router.set_fetcher(self.fetcher)
 
         # Store parameters for future reference
         self.auth_file = auth_file
@@ -180,55 +110,125 @@ class YouTubeMusicFS(Operations):
         self.browser = browser
         self.request_cooldown = request_cooldown / 1000.0  # Convert to seconds
 
-        # File handling state
-        self.open_files = {}  # Store file handles: {handle: {'stream_url': ...}}
-        self.next_fh = 1  # Next file handle to assign
-        self.path_to_fh = {}  # Store path to file handle mapping
-
         # Debounce mechanism for repeated requests
         self.last_access_time = {}  # {operation_path: last_access_time}
-        self.last_access_lock = threading.RLock()  # Lock for last_access_time operations
+        self.last_access_lock = (
+            threading.RLock()
+        )  # Lock for last_access_time operations
         self.last_access_results = {}  # {operation_path: cached_result}
 
         # Thread-related objects
-        self.file_handle_lock = threading.RLock()  # Lock for file handle operations
         self.thread_pool = ThreadPoolExecutor(max_workers=max_workers)
         self.logger.info(f"Thread pool initialized with {max_workers} workers")
 
-        self.download_progress = (
-            {}
-        )  # Track download progress: {video_id: bytes_downloaded or status}
+        # Initialize thread-local storage for per-operation caching
+        self._thread_local = threading.local()
+
+        # Initialize the file handler component
+        self.file_handler = FileHandler(
+            cache_dir=self.cache.cache_dir,
+            browser=browser,
+            cache=self.cache,
+            logger=self.logger,
+            update_file_size_callback=self._update_file_size,
+        )
 
         # Register exact path handlers
         self.router.register(
-            "/", lambda: [".", "..", "playlists", "liked_songs", "artists", "albums"]
+            "/",
+            lambda: [
+                ".",
+                "..",
+                "playlists",
+                "liked_songs",
+                "artists",
+                "albums",
+                "search",
+            ],
         )
         self.router.register(
-            "/playlists", lambda: [".", ".."] + self._readdir_playlists()
+            "/playlists", lambda: [".", ".."] + self.fetcher.readdir_playlists()
         )
         self.router.register(
-            "/liked_songs", lambda: [".", ".."] + self._readdir_liked_songs()
+            "/liked_songs", lambda: [".", ".."] + self.fetcher.readdir_liked_songs()
         )
-        self.router.register("/artists", lambda: [".", ".."] + self._readdir_artists())
-        self.router.register("/albums", lambda: [".", ".."] + self._readdir_albums())
+        self.router.register(
+            "/artists", lambda: [".", ".."] + self.fetcher.readdir_artists()
+        )
+        self.router.register(
+            "/albums", lambda: [".", ".."] + self.fetcher.readdir_albums()
+        )
+        self.router.register(
+            "/search", lambda: [".", ".."] + self.fetcher.readdir_search_categories()
+        )
+        # Add handlers for /search/library and /search/catalog to show categories
+        self.router.register(
+            "/search/library",
+            lambda: [".", ".."] + self.fetcher.readdir_search_category_options(),
+        )
+        self.router.register(
+            "/search/catalog",
+            lambda: [".", ".."] + self.fetcher.readdir_search_category_options(),
+        )
 
         # Register dynamic handlers with wildcard capture
         self.router.register_dynamic(
             "/playlists/*",
-            lambda path, *args: [".", ".."] + self._readdir_playlist_content(path),
+            lambda path, *args: [".", ".."]
+            + self.fetcher.readdir_playlist_content(path),
         )
         self.router.register_dynamic(
             "/artists/*",
-            lambda path, *args: [".", ".."] + self._readdir_artist_content(path),
+            lambda path, *args: [".", ".."] + self.fetcher.readdir_artist_content(path),
         )
         self.router.register_dynamic(
             "/artists/*/*",
-            lambda path, *args: [".", ".."] + self._readdir_album_content(path),
+            lambda path, *args: [".", ".."] + self.fetcher.readdir_album_content(path),
         )
         self.router.register_dynamic(
             "/albums/*",
-            lambda path, *args: [".", ".."] + self._readdir_album_content(path),
+            lambda path, *args: [".", ".."] + self.fetcher.readdir_album_content(path),
         )
+
+        # Search routes - focused on library and catalog paths
+        self.router.register_dynamic(
+            "/search/*",
+            lambda path, *args: [".", ".."]
+            + self.fetcher.readdir_search_results(path, *args),
+        )
+        self.router.register_dynamic(
+            "/search/library/*",
+            lambda path, *args: [".", ".."]
+            + self.fetcher.readdir_search_results(path, *args, scope="library"),
+        )
+        self.router.register_dynamic(
+            "/search/catalog/*",
+            lambda path, *args: [".", ".."]
+            + self.fetcher.readdir_search_results(path, *args, scope=None),
+        )
+        self.router.register_dynamic(
+            "/search/library/*/*",
+            lambda path, *args: [".", ".."]
+            + self.fetcher.readdir_search_item_content(path, *args, scope="library"),
+        )
+        self.router.register_dynamic(
+            "/search/catalog/*/*",
+            lambda path, *args: [".", ".."]
+            + self.fetcher.readdir_search_item_content(path, *args, scope=None),
+        )
+        self.router.register_dynamic(
+            "/search/library/*/*/*",
+            lambda path, *args: [".", ".."]
+            + self.fetcher.readdir_search_item_content(path, *args, scope="library"),
+        )
+        self.router.register_dynamic(
+            "/search/catalog/*/*/*",
+            lambda path, *args: [".", ".."]
+            + self.fetcher.readdir_search_item_content(path, *args, scope=None),
+        )
+
+        # Note: The PathRouter now also has a dynamic handler for the categorized search paths
+        # registered via the router.set_fetcher(self.fetcher) call above
 
         # Preload cache if requested
         if preload_cache:
@@ -246,10 +246,15 @@ class YouTubeMusicFS(Operations):
         futures = []
 
         # Start loading each data type
-        futures.append(self.thread_pool.submit(self._readdir_playlists))
-        futures.append(self.thread_pool.submit(self._readdir_liked_songs))
-        futures.append(self.thread_pool.submit(self._readdir_artists))
-        futures.append(self.thread_pool.submit(self._readdir_albums))
+        futures.append(self.thread_pool.submit(self.fetcher.readdir_playlists))
+        futures.append(self.thread_pool.submit(self.fetcher.readdir_liked_songs))
+        futures.append(self.thread_pool.submit(self.fetcher.readdir_artists))
+        futures.append(self.thread_pool.submit(self.fetcher.readdir_albums))
+        futures.append(self.thread_pool.submit(self.fetcher.readdir_search_categories))
+        # Also preload search category options
+        futures.append(
+            self.thread_pool.submit(self.fetcher.readdir_search_category_options)
+        )
 
         # Wait for all preload tasks to complete
         for future in futures:
@@ -264,76 +269,46 @@ class YouTubeMusicFS(Operations):
         self.logger.info("Cache preloading completed")
 
     def optimize_path_validation(self):
-        """Optimize path validation by caching entire directory structure.
+        """Optimize path validation by pre-caching known valid paths.
 
-        This method traverses the directory structure and caches all valid paths
-        to reduce the overhead of path validation during filesystem operations.
+        This method creates a set of known valid paths to avoid repeated validation
+        and improve performance. Static paths that are always valid are checked directly
+        in the _is_valid_path method and don't need caching.
         """
         self.logger.info("Optimizing path validation...")
 
-        # Mark root dir as valid
-        self._cache_valid_dir("/")
+        # We no longer need to cache these static directories since they're checked directly in _is_valid_path
+        # Only cache dynamic paths that need validation
 
-        # Mark main category directories as valid
-        main_dirs = ["/playlists", "/liked_songs", "/artists", "/albums"]
-        for dir_path in main_dirs:
-            self._cache_valid_dir(dir_path)
+        # Cache search category directories - these are still cached to preserve compatibility with other code
+        for category in ["songs", "videos", "albums", "artists", "playlists"]:
+            self._cache_valid_dir(f"/search/library/{category}")
+            self._cache_valid_dir(f"/search/catalog/{category}")
 
-        # Prevalidate playlists
-        try:
-            playlists = self.cache.get("/playlists")
-            if playlists:
-                for playlist in playlists:
-                    playlist_name = self.processor.sanitize_filename(playlist["title"])
-                    playlist_path = f"/playlists/{playlist_name}"
-                    # Mark the playlist directory as valid
-                    self._cache_valid_dir(playlist_path)
-        except Exception as e:
-            self.logger.error(f"Error prevalidating playlists: {e}")
+        # Cache the valid filenames for root
+        self._cache_valid_filenames(
+            "/", ["playlists", "liked_songs", "artists", "albums", "search"]
+        )
 
-        # Prevalidate artists
-        try:
-            artists = self.cache.get("/artists")
-            if artists:
-                for artist in artists:
-                    artist_name = self.processor.sanitize_filename(artist["artist"])
-                    artist_path = f"/artists/{artist_name}"
-                    # Mark the artist directory as valid
-                    self._cache_valid_dir(artist_path)
-        except Exception as e:
-            self.logger.error(f"Error prevalidating artists: {e}")
+        # Cache the valid filenames for search
+        self._cache_valid_filenames("/search", ["library", "catalog"])
 
-        # Prevalidate albums
-        try:
-            albums = self.cache.get("/albums")
-            if albums:
-                for album in albums:
-                    album_name = self.processor.sanitize_filename(album["title"])
-                    album_path = f"/albums/{album_name}"
-                    # Mark the album directory as valid
-                    self._cache_valid_dir(album_path)
-        except Exception as e:
-            self.logger.error(f"Error prevalidating albums: {e}")
+        # Cache the valid filenames for search/library and search/catalog
+        search_categories = ["songs", "videos", "albums", "artists", "playlists"]
+        self._cache_valid_filenames("/search/library", search_categories)
+        self._cache_valid_filenames("/search/catalog", search_categories)
+
+        # For any existing search result paths in cache, make sure they're marked as valid
+        search_metadata_keys = self.cache.get_keys_by_pattern("*_search_metadata")
+        for key in search_metadata_keys:
+            if key.endswith("_search_metadata"):
+                # Extract the path from the metadata key
+                path = key[:-16]  # Remove "_search_metadata" suffix
+                self.logger.debug(f"Pre-validating search path from metadata: {path}")
+                # Mark both the directory and parent directories as valid
+                self._cache_valid_dir(path)
 
         self.logger.info("Path validation optimization completed")
-
-    def cached_data(self, cache_key: str, fetch_func: Callable, *args, **kwargs):
-        """Manage cache fetching and updating.
-
-        Args:
-            cache_key: The cache key to use.
-            fetch_func: Function to fetch data if not cached.
-            *args, **kwargs: Arguments for fetch_func.
-
-        Yields:
-            The cached or freshly fetched data.
-        """
-        data = self.cache.get(cache_key)
-        if data is None:
-            self.logger.debug(f"Cache miss for {cache_key}, fetching data")
-            data = fetch_func(*args, **kwargs)
-            self.cache.set(cache_key, data)
-        yield data
 
     def _is_valid_path(self, path: str) -> bool:
         """Quickly check if a path is potentially valid without expensive operations.
@@ -344,74 +319,128 @@ class YouTubeMusicFS(Operations):
         Returns:
             Boolean indicating if the path might be valid
         """
-        # Root and main category directories are always valid
-        if path == "/" or path in ["/playlists", "/liked_songs", "/artists", "/albums"]:
+        # Get the context for better decision making
+        context = inspect.currentframe().f_back.f_code.co_name
+        self.logger.debug(f"_is_valid_path called from {context} for {path}")
+
+        # For mkdir operations, always return true to let mkdir's own validation handle it
+        if context == "mkdir" or "mkdir" in context:
+            self.logger.debug(f"Allowing path as valid due to mkdir context: {path}")
             return True
 
-        # Extract directory and filename
-        dir_path = os.path.dirname(path)
-        filename = os.path.basename(path)
-
-        # If no filename, it might be a directory - check if we know it's valid
-        if not filename:
-            # Check if we've seen this directory before
-            if self.cache.get(f"valid_dir:{path}"):
-                return True
-
-            # For directories we haven't validated yet, we'll need to check them normally
+        # Root and main category directories are always valid - no need to cache these
+        if path == "/" or path in [
+            "/playlists",
+            "/liked_songs",
+            "/artists",
+            "/albums",
+            "/search",
+            "/search/library",
+            "/search/catalog",
+        ]:
             return True
 
-        # Check if we've already validated this exact path before
-        if self.cache.get(f"exact_path:{path}"):
-            return True
-
-        # Check for known valid base filenames in this directory
-        valid_base_names_key = f"valid_base_names:{dir_path}"
-        valid_base_names_cached = self.cache.get(valid_base_names_key)
-        valid_base_names = (
-            set(valid_base_names_cached) if valid_base_names_cached else set()
+        # Check cache for entry type first - this is the most reliable way
+        # to determine if a path is a file or directory
+        entry_type = (
+            self.cache.get_entry_type(path)
+            or self.cache.get_entry_type(f"valid_dir:{path}")
+            or self.cache.get_entry_type(f"exact_path:{path}")
         )
 
-        # If we have a pattern with numbers in parentheses
-        match = re.search(r"(.*?)\s*\((\d+)\)(\.[^.]+)?$", filename)
-        if match:
-            base_name, number, extension = match.groups()
-            # Check if base name is in our set of valid base names
-            if valid_base_names and base_name in valid_base_names:
-                # We've seen this base name before, but is this the exact valid filename?
-                cache_key = f"valid_path:{dir_path}/{base_name}"
-                cached_valid_path = self.cache.get(cache_key)
+        if entry_type:
+            self.logger.debug(f"Found entry_type '{entry_type}' for {path}")
+            return True
 
-                if cached_valid_path is not None:
-                    # If we have a cached valid path for this base name,
-                    # check if the current path is different
-                    if path != cached_valid_path:
-                        self.logger.debug(
-                            f"Rejecting invalid path probe: {path}, valid path is {cached_valid_path}"
-                        )
-                        return False
-            elif valid_base_names and base_name not in valid_base_names:
-                # We've processed this directory before and this base name wasn't valid
-                self.logger.debug(
-                    f"Rejecting invalid base filename: {base_name} in {dir_path}"
-                )
+        # Check if the parent directory is valid and contains this entry
+        parent_dir = os.path.dirname(path)
+        filename = os.path.basename(path)
+
+        if self.cache.is_valid_path(parent_dir):
+            dir_listing = self.cache.get_directory_listing_with_attrs(parent_dir)
+            if dir_listing and filename in dir_listing:
+                return True
+
+            # Special case for artist directories which may have dots
+            if path.startswith("/artists/"):
+                # If parent is valid and path doesn't end with .m4a, assume it's valid
+                if not path.lower().endswith(".m4a"):
+                    return True
+
+        # Initialize thread-local validation cache if needed
+        if not hasattr(self._thread_local, "validated_dirs"):
+            self._thread_local.validated_dirs = set()
+
+        # Check if this path's parent directory has already been validated in this operation
+        if parent_dir in self._thread_local.validated_dirs:
+            # If parent is validated and we have the directory listing cached,
+            # we can directly check if the file exists in the listing
+            if (
+                hasattr(self._thread_local, "temp_dir_listings")
+                and parent_dir in self._thread_local.temp_dir_listings
+            ):
+                filename = os.path.basename(path)
+                dir_listing = self._thread_local.temp_dir_listings[parent_dir]
+
+                # For files, check the cached listing
+                if dir_listing and filename in dir_listing:
+                    return True
+
+                # Special case for artist directories which may have dots
+                if path.startswith("/artists/"):
+                    # If parent is valid and path doesn't end with .m4a, assume it's valid
+                    if not path.lower().endswith(".m4a"):
+                        return True
+
+                # File not found in valid parent directory
                 return False
 
-        # If this is a file in a directory we know is valid
-        if dir_path and self.cache.get(f"valid_dir:{dir_path}"):
-            parent_dir_filenames_cached = self.cache.get(f"valid_files:{dir_path}")
-            parent_dir_filenames = (
-                set(parent_dir_filenames_cached)
-                if parent_dir_filenames_cached
-                else set()
-            )
-            if parent_dir_filenames and filename not in parent_dir_filenames:
-                self.logger.debug(
-                    f"Rejecting file not in valid file list: {filename} in {dir_path}"
-                )
-                return False
+        # Search category paths are valid - simplified logic
+        if path.startswith("/search/library/") or path.startswith("/search/catalog/"):
+            parts = path.split("/")
 
-        return True
+            # Category paths like /search/library/songs
+            if len(parts) == 4:
+                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+                if parts[3] in valid_categories:
+                    # Mark this directory as validated for future checks
+                    self._thread_local.validated_dirs.add(path)
+                    return True
+
+            # Search query paths - simplified
+            if len(parts) >= 5:
+                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+                if parts[3] in valid_categories:
+                    # For getattr, consider it potentially valid to allow further validation
+                    if context == "getattr":
+                        return True
+                    # For other operations, rely on cache
+                    return self.cache.is_valid_path(path)
+
+        # For file paths with .m4a extension, check directory listing
+        if path.lower().endswith(".m4a"):
+            # First check the thread-local cache to avoid repeated lookups
+            if parent_dir in self._thread_local.temp_dir_listings:
+                dir_listing = self._thread_local.temp_dir_listings[parent_dir]
+                if dir_listing and filename in dir_listing:
+                    # Mark the parent directory as validated
+                    self._thread_local.validated_dirs.add(parent_dir)
+                    return True
+            else:
+                # Get from main cache and store in thread-local for quick access
+                dir_listing = self.cache.get_directory_listing_with_attrs(parent_dir)
+                if dir_listing:
+                    self._thread_local.temp_dir_listings[parent_dir] = dir_listing
+                    if filename in dir_listing:
+                        # Mark the parent directory as validated
+                        self._thread_local.validated_dirs.add(parent_dir)
+                        return True
+
+        # Final fallback to cache
+        is_valid = self.cache.is_valid_path(path)
+        if is_valid:
+            self._thread_local.validated_dirs.add(path)
+        return is_valid
 
     def _cache_valid_path(self, path: str) -> None:
         """Cache a valid path to help with quick validation.
@@ -422,8 +451,8 @@ class YouTubeMusicFS(Operations):
         dir_path = os.path.dirname(path)
         filename = os.path.basename(path)
 
-        # Mark this exact path as valid
-        self.cache.set(f"exact_path:{path}", True)
+        # Mark this exact path as valid using the optimized method
+        self.cache.add_valid_file(path)
 
         # Add to directory's valid files list
         valid_files_cached = self.cache.get(f"valid_files:{dir_path}")
@@ -457,14 +486,14 @@ class YouTubeMusicFS(Operations):
         Args:
             dir_path: The directory path to cache as valid
         """
-        # Mark the directory as valid
-        self.cache.set(f"valid_dir:{dir_path}", True)
+        # Mark the directory as valid using the optimized method
+        self.cache.add_valid_dir(dir_path)
 
         # Also mark parent directories as valid
         parts = dir_path.split("/")
         for i in range(1, len(parts)):
             parent = "/".join(parts[:i]) or "/"
-            self.cache.set(f"valid_dir:{parent}", True)
+            self.cache.add_valid_dir(parent)
 
     # Helper method to cache all valid filenames in a directory
     def _cache_valid_filenames(self, dir_path: str, filenames: List[str]) -> None:
@@ -480,41 +509,128 @@ class YouTubeMusicFS(Operations):
         # Store the complete list of valid files - already a list, so no conversion needed
         self.cache.set(f"valid_files:{dir_path}", filenames)
 
-        valid_base_names = set()
+    def _cache_directory_listing_with_attrs(
+        self, dir_path: str, processed_tracks: List[Dict[str, Any]]
+    ) -> None:
+        """Cache directory listing with file attributes for efficient getattr lookups.
 
-        for filename in filenames:
-            # Mark each path as exactly valid
-            path = f"{dir_path}/{filename}"
-            self.cache.set(f"exact_path:{path}", True)
+        Args:
+            dir_path: Directory path
+            processed_tracks: List of processed track data with filename and metadata
+        """
+        now = time.time()
+        listing_with_attrs = {}
+        valid_filenames = set()
 
-            # Process base names for paths with number patterns
-            match = re.search(r"(.*?)\s*\((\d+)\)(\.[^.]+)?$", filename)
-            if match:
-                base_name, _, _ = match.groups()
-                valid_base_names.add(base_name)
-                # Cache the specific valid path
-                cache_key = f"valid_path:{dir_path}/{base_name}"
-                self.cache.set(cache_key, path)
+        for track in processed_tracks:
+            filename = track.get("filename")
+            if not filename:
+                continue
 
-        if valid_base_names:
-            valid_base_names_key = f"valid_base_names:{dir_path}"
-            # Convert set to list for JSON serialization
-            self.cache.set(valid_base_names_key, list(valid_base_names))
-            self.logger.debug(
-                f"Cached {len(valid_base_names)} valid base names for {dir_path}"
-            )
+            valid_filenames.add(filename)
+
+            # Check if this is explicitly a directory
+            is_directory = track.get("is_directory", False)
+            if is_directory:
+                attrs = {
+                    "st_mode": stat.S_IFDIR | 0o755,
+                    "st_atime": now,
+                    "st_ctime": now,
+                    "st_mtime": now,
+                    "st_nlink": 2,
+                    "st_size": 0,
+                }
+                # Mark as directory in cache system
+                self.cache.add_valid_dir(f"{dir_path}/{filename}")
+                self.logger.debug(f"Cached directory: {dir_path}/{filename}")
+            else:
+                attrs = {
+                    "st_mode": stat.S_IFREG | 0o644,
+                    "st_atime": now,
+                    "st_ctime": now,
+                    "st_mtime": now,
+                    "st_nlink": 1,
+                }
+                duration_seconds = track.get("duration_seconds")
+                if duration_seconds:
+                    # Estimate file size based on duration (128kbps = 16KB/sec)
+                    attrs["st_size"] = duration_seconds * 16 * 1024
+                else:
+                    # Default placeholder size
+                    attrs["st_size"] = 4096
+
+                file_size_cache_key = f"filesize:{dir_path}/{filename}"
+                cached_size = self.cache.get(file_size_cache_key)
+                if cached_size is not None:
+                    attrs["st_size"] = cached_size
+
+            # Preserve important metadata fields from the original track
+            for key, value in track.items():
+                if key in ["browseId", "channelId", "id", "playlistId", "videoId"]:
+                    attrs[key] = value
+
+            listing_with_attrs[filename] = attrs
+
+            # Mark path as valid and store metadata with explicit is_directory flag
+            file_path = f"{dir_path}/{filename}"
+            self.cache.add_valid_path(file_path, is_directory=is_directory)
+
+            # If it's a file, handle video ID to duration mapping if available
+            if not is_directory:
+                video_id = track.get("videoId")
+                if video_id and track.get("duration_seconds"):
+                    self.cache.set_duration(video_id, track.get("duration_seconds"))
+
+        # Cache the directory listing with attributes
+        self.cache.set_directory_listing_with_attrs(dir_path, listing_with_attrs)
+
+        # Also cache the filenames separately for backward compatibility
+        self.cache.set(f"valid_files:{dir_path}", list(valid_filenames))
+
+        # Mark this directory as valid
+        self._cache_valid_dir(dir_path)
+
+        # Pre-populate thread-local caches if they exist
+        # This helps maintain optimizations across operations
+        if hasattr(self._thread_local, "temp_dir_listings"):
+            self._thread_local.temp_dir_listings[dir_path] = listing_with_attrs
+
+        if hasattr(self._thread_local, "validated_dirs"):
+            self._thread_local.validated_dirs.add(dir_path)
+
+        if hasattr(self._thread_local, "validated_paths"):
+            for filename in valid_filenames:
+                file_path = f"{dir_path}/{filename}"
+                self._thread_local.validated_paths[file_path] = True
 
     def readdir(self, path: str, fh: Optional[int] = None) -> List[str]:
         """Read directory contents.
 
         Args:
-            path: The directory path
+            path: Directory path
             fh: File handle (unused)
 
         Returns:
             List of directory entries
         """
         self.logger.debug(f"readdir: {path}")
+
+        # For debugging, log the entry type from cache
+        entry_type = self.cache.get_entry_type(path)
+        self.logger.debug(f"Entry type for {path}: {entry_type}")
+
+        # Clear thread-local cache at the beginning of a new directory operation
+        self._clear_thread_local_cache()
+
+        # First check if this path is already known as a directory
+        if not (entry_type == "directory" or path.startswith("/artists/")):
+            # Only check for non-m4a files if it's not a known directory or an artist path
+            if "." in os.path.basename(path) and not path.lower().endswith(".m4a"):
+                self.logger.debug(
+                    f"Rejecting non-m4a file extension in readdir: {path}"
+                )
+                # Just return empty directory for these special files
+                return [".", ".."]
 
         # Check if this request is too soon after the last one
         operation_key = f"readdir:{path}"
@@ -525,19 +641,13 @@ class YouTubeMusicFS(Operations):
             if current_time - last_time < self.request_cooldown:
                 # Request is within cooldown period, return cached result if available
                 if operation_key in self.last_access_results:
-                    self.logger.debug(f"Using cached result for {operation_key} (within cooldown: {current_time - last_time:.3f}s)")
+                    self.logger.debug(
+                        f"Using cached result for {operation_key} (within cooldown: {current_time - last_time:.3f}s)"
+                    )
                     return self.last_access_results[operation_key]
 
             # Update the last access time for this operation
             self.last_access_time[operation_key] = current_time
-
-        # Quick validation to reject invalid paths
-        if not self._is_valid_path(path):
-            self.logger.debug(f"Rejecting invalid path in readdir: {path}")
-            result = [".", ".."]
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = result
-            return result
 
         # Ignore hidden paths
         if any(part.startswith(".") for part in path.split("/") if part):
@@ -549,10 +659,42 @@ class YouTubeMusicFS(Operations):
 
         # Use the router to handle the path
         try:
+            # Check if path is valid (simplified validation)
+            if not self._is_valid_path(path):
+                self.logger.debug(f"Rejecting invalid path in readdir: {path}")
+                result = [".", ".."]
+                with self.last_access_lock:
+                    self.last_access_results[operation_key] = result
+                return result
+
+            # Delegate directory listing to the router
             result = self.router.route(path)
 
             # Mark this as a valid directory and cache all valid filenames for future validation
             if path != "/" and len(result) > 2:  # More than just "." and ".."
+                # Pre-fetch the directory listing with attributes and store in thread-local cache
+                dir_listing = self.cache.get_directory_listing_with_attrs(path)
+                if dir_listing:
+                    # Store in thread-local cache for subsequent getattr calls
+                    if not hasattr(self._thread_local, "temp_dir_listings"):
+                        self._thread_local.temp_dir_listings = {}
+                    self._thread_local.temp_dir_listings[path] = dir_listing
+
+                    # Mark this directory as validated
+                    if not hasattr(self._thread_local, "validated_dirs"):
+                        self._thread_local.validated_dirs = set()
+                    self._thread_local.validated_dirs.add(path)
+
+                    # Pre-validate all files in this directory
+                    if not hasattr(self._thread_local, "validated_paths"):
+                        self._thread_local.validated_paths = {}
+
+                    for filename in result:
+                        if filename not in [".", ".."]:
+                            file_path = f"{path}/{filename}"
+                            self._thread_local.validated_paths[file_path] = True
+
+                # Continue with normal caching
                 self._cache_valid_filenames(
                     path, [entry for entry in result if entry not in [".", ".."]]
                 )
@@ -565,627 +707,115 @@ class YouTubeMusicFS(Operations):
             return result
         except Exception as e:
             self.logger.error(f"Error in readdir for {path}: {e}")
-            import traceback
-
             self.logger.error(traceback.format_exc())
             result = [".", ".."]
             with self.last_access_lock:
                 self.last_access_results[operation_key] = result
             return result
 
-    def _fetch_and_cache(self, cache_key: str, fetch_func, *args, **kwargs) -> Any:
-        """Fetch data from cache or API and update cache if needed.
-
-        Args:
-            cache_key: The key to use for caching
-            fetch_func: The function to call to fetch data
-            *args, **kwargs: Arguments to pass to fetch_func
-
-        Returns:
-            The fetched or cached data
-        """
-        with self.cached_data(cache_key, fetch_func, *args, **kwargs) as data:
-            return data
-
-    def _readdir_playlists(self) -> List[str]:
-        """Handle listing playlists.
-
-        Returns:
-            List of playlist names
-        """
-        # Use the helper method to handle cache auto-refreshing
-        self._auto_refresh_cache("/playlists")
-
-        with self.cache.cached_data(
-            "/playlists", self.client.get_library_playlists, limit=100
-        ) as playlists:
-            return [
-                self.processor.sanitize_filename(playlist["title"])
-                for playlist in playlists
-            ]
-
-    def _readdir_liked_songs(self) -> List[str]:
-        """Handle listing liked songs.
-
-        Returns:
-            List of liked song filenames
-        """
-        # Use the helper method to handle cache auto-refreshing
-        self._auto_refresh_cache("/liked_songs")
-
-        # First check if we have processed tracks in cache
-        processed_tracks = self.cache.get("/liked_songs_processed")
-        if processed_tracks:
-            self.logger.debug(
-                f"Using {len(processed_tracks)} cached processed tracks for /liked_songs"
-            )
-            return [track["filename"] for track in processed_tracks]
-
-        # If no processed tracks in cache, fetch and process raw data
-        with self.cache.cached_data(
-            "/liked_songs", self.client.get_liked_songs, limit=10000
-        ) as liked_songs:
-            # Process the raw liked songs data
-            self.logger.debug(f"Processing raw liked songs data: {type(liked_songs)}")
-
-            # Handle both possible response formats from the API:
-            # 1. A dictionary with a 'tracks' key containing the list of tracks
-            # 2. A direct list of tracks
-            tracks_to_process = liked_songs
-            if isinstance(liked_songs, dict) and "tracks" in liked_songs:
-                tracks_to_process = liked_songs["tracks"]
-
-            # Use the track processor to process tracks and create filenames
-            processed_tracks, filenames = self.processor.process_tracks(
-                tracks_to_process
-            )
-
-            # Cache the processed song list with filename mappings
-            self.logger.debug(
-                f"Caching {len(processed_tracks)} processed tracks for /liked_songs"
-            )
-            self.cache.set("/liked_songs_processed", processed_tracks)
-
-            return filenames
-
-    def _readdir_playlist_content(self, path: str) -> List[str]:
-        """Handle listing contents of a specific playlist.
-
-        Args:
-            path: Playlist path
-
-        Returns:
-            List of track filenames in the playlist
-        """
-        playlist_name = path.split("/")[2]
-
-        # Early return for hidden files
-        if playlist_name.startswith("."):
-            self.logger.debug(f"Ignoring hidden playlist: {playlist_name}")
-            return []
-
-        # Find the playlist ID
-        with self.cache.cached_data(
-            "/playlists", self.client.get_library_playlists, limit=10000
-        ) as playlists:
-            playlist_id = None
-            for playlist in playlists:
-                if self.processor.sanitize_filename(playlist["title"]) == playlist_name:
-                    playlist_id = playlist["playlistId"]
-                    break
-
-        if not playlist_id:
-            self.logger.error(f"Could not find playlist ID for {playlist_name}")
-            return []
-
-        # Check if we have processed tracks in cache
-        processed_cache_key = f"/playlist/{playlist_id}_processed"
-        processed_tracks = self.cache.get(processed_cache_key)
-        if processed_tracks:
-            self.logger.debug(
-                f"Using {len(processed_tracks)} cached processed tracks for {playlist_name}"
-            )
-            return [track["filename"] for track in processed_tracks]
-
-        # Get the playlist tracks
-        playlist_cache_key = f"/playlist/{playlist_id}"
-
-        def fetch_playlist_tracks():
-            return self.client.get_playlist(playlist_id, limit=10000).get("tracks", [])
-
-        with self.cache.cached_data(
-            playlist_cache_key, fetch_playlist_tracks
-        ) as playlist_tracks:
-            # Process tracks and create filenames using the processor
-            processed_tracks, filenames = self.processor.process_tracks(playlist_tracks)
-
-            # Cache the processed tracks for this playlist
-            self.logger.debug(
-                f"Caching {len(processed_tracks)} processed tracks for {playlist_name}"
-            )
-            self.cache.set(processed_cache_key, processed_tracks)
-
-            return filenames
-
-    def _readdir_artists(self) -> List[str]:
-        """Handle listing artists.
-
-        Returns:
-            List of artist names
-        """
-        # Use the helper method to handle cache auto-refreshing
-        self._auto_refresh_cache("/artists")
-
-        with self.cache.cached_data(
-            "/artists", self.client.get_library_artists
-        ) as artists:
-            return [
-                self.processor.sanitize_filename(artist["artist"]) for artist in artists
-            ]
-
-    def _readdir_albums(self) -> List[str]:
-        """Handle listing albums.
-
-        Returns:
-            List of album names
-        """
-        # Use the helper method to handle cache auto-refreshing
-        self._auto_refresh_cache("/albums")
-
-        with self.cache.cached_data(
-            "/albums", self.client.get_library_albums
-        ) as albums:
-            return [
-                self.processor.sanitize_filename(album["title"]) for album in albums
-            ]
-
-    def _readdir_artist_content(self, path: str) -> List[str]:
-        """Handle listing contents of a specific artist directory.
-
-        Args:
-            path: Artist path
-
-        Returns:
-            List of album names by the artist
-        """
-        # Check for cached processed data first
-        processed_albums = self.cache.get(path)
-        if processed_albums:
-            self.logger.debug(f"Using cached albums for {path}")
-            return processed_albums
-
-        artist_name = path.split("/")[2]
-
-        # Early return for hidden files
-        if artist_name.startswith("."):
-            self.logger.debug(f"Ignoring hidden artist: {artist_name}")
-            return []
-
-        # Find the artist ID
-        with self.cache.cached_data(
-            "/artists", self.client.get_library_artists, limit=10000
-        ) as artists:
-            artist_id = None
-            for artist in artists:
-                if self.processor.sanitize_filename(artist["artist"]) == artist_name:
-                    # Safely access ID fields with fallbacks
-                    artist_id = artist.get("artistId")
-                    if not artist_id:
-                        artist_id = artist.get("browseId")
-                    if not artist_id:
-                        artist_id = artist.get("id")
-                    break
-
-        if not artist_id:
-            self.logger.error(f"Could not find artist ID for {artist_name}")
-            return []
-
-        # Get the artist's albums and singles
-        artist_cache_key = f"/artist/{artist_id}"
-
-        def fetch_artist_albums():
-            artist_data = self.client.get_artist(artist_id)
-            artist_albums = []
-
-            # Get albums
-            if "albums" in artist_data:
-                for album in artist_data["albums"]["results"]:
-                    artist_albums.append(
-                        {
-                            "title": album.get("title", "Unknown Album"),
-                            "year": album.get("year", ""),
-                            "type": "album",
-                            "browseId": album.get("browseId"),
-                        }
-                    )
-
-            # Get singles
-            if "singles" in artist_data:
-                for single in artist_data["singles"]["results"]:
-                    artist_albums.append(
-                        {
-                            "title": single.get("title", "Unknown Single"),
-                            "year": single.get("year", ""),
-                            "type": "single",
-                            "browseId": single.get("browseId"),
-                        }
-                    )
-
-            return artist_albums
-
-        with self.cache.cached_data(
-            artist_cache_key, fetch_artist_albums
-        ) as artist_albums:
-            # Create filenames for the albums
-            album_filenames = [
-                self.processor.sanitize_filename(item["title"])
-                for item in artist_albums
-            ]
-
-            # Cache the result
-            self.cache.set(path, album_filenames)
-
-            # Return the albums
-            return album_filenames
-
-    def _readdir_album_content(self, path: str) -> List[str]:
-        """Handle listing contents of a specific album.
-
-        Args:
-            path: Album path
-
-        Returns:
-            List of track filenames in the album
-        """
-        # Check for cached processed tracks first
-        processed_tracks = self.cache.get(path)
-        if processed_tracks:
-            self.logger.debug(
-                f"Using {len(processed_tracks)} cached processed tracks for {path}"
-            )
-            return [track["filename"] for track in processed_tracks]
-
-        # Determine if this is an artist's album or a library album
-        is_artist_album = path.startswith("/artists/")
-        album_id = None
-        album_title = None  # Store the album title for metadata
-        artist_albums = []  # Initialize as empty list by default
-
-        # Check for hidden files
-        path_parts = path.split("/")
-        for part in path_parts:
-            if part and part.startswith("."):
-                self.logger.debug(f"Ignoring hidden album path: {path}")
-                return []
-
-        if is_artist_album:
-            parts = path.split("/")
-            artist_name = parts[2]
-            album_name = parts[3]
-
-            # Find the artist ID
-            with self.cache.cached_data(
-                "/artists", self.client.get_library_artists, limit=10000
-            ) as artists:
-                artist_id = None
-                for artist in artists:
-                    if (
-                        self.processor.sanitize_filename(artist["artist"])
-                        == artist_name
-                    ):
-                        # Safely access ID fields with fallbacks
-                        artist_id = artist.get("artistId")
-                        if not artist_id:
-                            artist_id = artist.get("browseId")
-                        if not artist_id:
-                            artist_id = artist.get("id")
-                        break
-
-            if not artist_id:
-                self.logger.error(f"Could not find artist ID for {artist_name}")
-                return []
-
-            # Get the artist's albums
-            artist_cache_key = f"/artist/{artist_id}"
-
-            def fetch_artist_albums():
-                artist_data = self.client.get_artist(artist_id)
-                artist_albums = []
-
-                # Get albums
-                if "albums" in artist_data:
-                    for album in artist_data["albums"]["results"]:
-                        artist_albums.append(
-                            {
-                                "title": album.get("title", "Unknown Album"),
-                                "year": album.get("year", ""),
-                                "type": "album",
-                                "browseId": album.get("browseId"),
-                            }
-                        )
-
-                # Get singles
-                if "singles" in artist_data:
-                    for single in artist_data["singles"]["results"]:
-                        artist_albums.append(
-                            {
-                                "title": single.get("title", "Unknown Single"),
-                                "year": single.get("year", ""),
-                                "type": "single",
-                                "browseId": single.get("browseId"),
-                            }
-                        )
-
-                return artist_albums
-
-            with self.cache.cached_data(
-                artist_cache_key, fetch_artist_albums
-            ) as artist_albums:
-                # Find the album ID
-                for album in artist_albums:
-                    if self.processor.sanitize_filename(album["title"]) == album_name:
-                        album_id = album["browseId"]
-                        album_title = album["title"]
-                        break
-        else:
-            # Regular album path
-            album_name = path.split("/")[2]
-
-            # Find the album ID
-            with self.cache.cached_data(
-                "/albums", self.client.get_library_albums, limit=10000
-            ) as albums:
-                for album in albums:
-                    if self.processor.sanitize_filename(album["title"]) == album_name:
-                        album_id = album["browseId"]
-                        album_title = album["title"]
-                        break
-
-        if not album_id:
-            self.logger.error(f"Could not find album ID for album in path: {path}")
-            return []
-
-        # Get the album tracks
-        album_cache_key = f"/album/{album_id}"
-
-        def fetch_album_tracks():
-            album_data = self.client.get_album(album_id)
-            return album_data.get("tracks", [])
-
-        with self.cache.cached_data(
-            album_cache_key, fetch_album_tracks
-        ) as album_tracks:
-            # Process tracks using the processor
-            processed_tracks, filenames = self.processor.process_tracks(album_tracks)
-
-            # Add additional album-specific information
-            for track in processed_tracks:
-                # Override album title with the one from the path
-                if album_title:
-                    track["album"] = album_title
-
-                # For artist albums, try to find the album year if available
-                if is_artist_album and artist_albums and not track.get("year"):
-                    for album in artist_albums:
-                        if (
-                            self.processor.sanitize_filename(album["title"])
-                            == album_name
-                        ):
-                            track["year"] = album.get("year")
-                            break
-
-            # Cache the processed track list for this album
-            self.cache.set(path, processed_tracks)
-
-            return filenames
-
-    def getattr(self, path: str, fh: Optional[int] = None) -> Dict[str, Any]:
-        """Get file attributes.
-
-        Args:
-            path: The file or directory path
-            fh: File handle (unused)
-
-        Returns:
-            File attributes dictionary
-        """
-        self.logger.debug(f"getattr: {path}")
-
-        # Check if this request is too soon after the last one
-        operation_key = f"getattr:{path}"
-        current_time = time.time()
-
-        with self.last_access_lock:
-            last_time = self.last_access_time.get(operation_key, 0)
-            if current_time - last_time < self.request_cooldown:
-                # Request is within cooldown period, return cached result if available
-                if operation_key in self.last_access_results:
-                    self.logger.debug(f"Using cached result for {operation_key} (within cooldown: {current_time - last_time:.3f}s)")
-                    return self.last_access_results[operation_key]
-
-            # Update the last access time for this operation
-            self.last_access_time[operation_key] = current_time
-
-        # Quick validation to reject invalid paths
-        if not self._is_valid_path(path):
-            self.logger.debug(f"Rejecting invalid path in getattr: {path}")
-            raise OSError(errno.ENOENT, "No such file or directory")
-
-        now = time.time()
-        attr = {
-            "st_atime": now,
-            "st_ctime": now,
-            "st_mtime": now,
-            "st_nlink": 2,
-        }
-
-        # Root directory
-        if path == "/":
-            attr["st_mode"] = stat.S_IFDIR | 0o755
-            attr["st_size"] = 0
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = attr.copy()
-            return attr
-
-        # Main categories
-        if path in ["/playlists", "/liked_songs", "/artists", "/albums"]:
-            attr["st_mode"] = stat.S_IFDIR | 0o755
-            attr["st_size"] = 0
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = attr.copy()
-            return attr
-
-        # Check if this is a song file (ends with .m4a)
-        if path.lower().endswith(".m4a"):
-            # Check if it's a valid song file by examining its parent directory
-            parent_dir = os.path.dirname(path)
-            filename = os.path.basename(path)
-
-            # Check if we have a cached file size for this path
-            file_size_cache_key = f"filesize:{path}"
-            cached_size = self.cache.get(file_size_cache_key)
-
-            if cached_size is not None:
-                self.logger.debug(f"Using cached file size for {path}: {cached_size}")
-                attr["st_mode"] = stat.S_IFREG | 0o644
-                attr["st_size"] = cached_size
-                with self.last_access_lock:
-                    self.last_access_results[operation_key] = attr.copy()
-                return attr
-
-            try:
-                # Get directory listing of parent
-                dirlist = self.readdir(parent_dir, None)
-                if filename in dirlist:
-                    # It's a valid song file
-                    attr["st_mode"] = stat.S_IFREG | 0o644
-
-                    # Get a more accurate file size estimate based on song duration if available
-                    songs = self.cache.get(parent_dir)
-                    if (
-                        songs
-                        and isinstance(songs, list)
-                        and songs
-                        and isinstance(songs[0], dict)
-                    ):
-                        for song in songs:
-                            if song.get("filename") == filename:
-                                # Check if we have an actual file size in cache
-                                file_size_cache_key = f"filesize:{path}"
-                                cached_size = self.cache.get(file_size_cache_key)
-
-                                if cached_size is not None:
-                                    self.logger.debug(
-                                        f"Using cached actual file size for {path}: {cached_size}"
-                                    )
-                                    attr["st_size"] = cached_size
-                                    with self.last_access_lock:
-                                        self.last_access_results[operation_key] = attr.copy()
-                                    return attr
-
-                                # No duration-based estimation - use minimal size
-                                # This will be updated with actual size when file is opened
-                                attr["st_size"] = 4096  # Minimal placeholder size
-                                with self.last_access_lock:
-                                    self.last_access_results[operation_key] = attr.copy()
-                                return attr
-
-                    # No duration-based fallback anymore - just use minimal size
-                    attr["st_size"] = 4096  # Minimal placeholder size
-                    with self.last_access_lock:
-                        self.last_access_results[operation_key] = attr.copy()
-                    return attr
-            except Exception as e:
-                self.logger.debug(f"Error checking file existence: {e}")
-                # Continue to other checks
-                pass
-
-        # Check if path is a directory by trying to list it
-        try:
-            if path.endswith("/"):
-                path = path[:-1]
-
-            entries = self.readdir(path, None)
-            if entries:
-                attr["st_mode"] = stat.S_IFDIR | 0o755
-                attr["st_size"] = 0
-                with self.last_access_lock:
-                    self.last_access_results[operation_key] = attr.copy()
-                return attr
-        except Exception:
-            pass
-
-        # Check if path is a file
-        parent_dir = os.path.dirname(path)
-        filename = os.path.basename(path)
-
-        if not filename:
-            raise OSError(errno.ENOENT, "No such file or directory")
-
-        # Check if file exists in parent directory
-        try:
-            dirlist = self.readdir(parent_dir, None)
-            if filename in dirlist:
-                # It's a file
-                attr["st_mode"] = stat.S_IFREG | 0o644
-
-                # Same but for other file paths - no estimation
-                file_size_cache_key = f"filesize:{path}"
-                cached_size = self.cache.get(file_size_cache_key)
-
-                if cached_size is not None:
-                    attr["st_size"] = cached_size
-                else:
-                    attr["st_size"] = (
-                        4096  # Minimal placeholder size instead of default estimate
-                    )
-
-                # If we successfully determined attributes for a file path with a number pattern,
-                # cache it as a valid path to help with future validation
-                self._cache_valid_path(path)
-
-                with self.last_access_lock:
-                    self.last_access_results[operation_key] = attr.copy()
-                return attr
-        except Exception:
-            pass
-
-        # If we get here, the file or directory doesn't exist
-        raise OSError(errno.ENOENT, "No such file or directory")
-
-    def open(self, path: str, flags: int) -> int:
-        """Open a file and return a file handle.
+    def _get_video_id(self, path: str) -> str:
+        """Helper to extract videoId from a path.
 
         Args:
             path: The file path
-            flags: File open flags
 
         Returns:
-            File handle
+            Video ID for the file
+
+        Raises:
+            OSError: If the video ID could not be found
         """
-        self.logger.debug(f"open: {path} with flags {flags}")
+        # Check if path is a music file
+        if not path.lower().endswith(".m4a"):
+            self.logger.warning(
+                f"Attempting to get video ID for non-music file: {path}"
+            )
+            raise OSError(errno.EINVAL, "Not a music file")
 
-        # Cache this as a valid path since it's being opened
-        self._cache_valid_path(path)
+        # Create a thread-local cache for video IDs if it doesn't exist
+        if not hasattr(self._thread_local, "video_id_cache"):
+            self._thread_local.video_id_cache = {}
 
-        if path == "/":
-            raise OSError(errno.EISDIR, "Is a directory")
+        # Check if we already have the video ID for this path in thread-local cache
+        if path in self._thread_local.video_id_cache:
+            video_id = self._thread_local.video_id_cache[path]
+            self.logger.debug(f"Using cached video ID {video_id} for {path}")
+            return video_id
 
-        # Extract directory path and filename
         dir_path = os.path.dirname(path)
         filename = os.path.basename(path)
-        self.logger.debug(f"Looking for {filename} in {dir_path}")
+        self.logger.debug(f"Looking up video ID for {filename} in {dir_path}")
 
+        # Check if we have the directory listing with file attributes in thread-local cache
+        if (
+            hasattr(self._thread_local, "temp_dir_listings")
+            and dir_path in self._thread_local.temp_dir_listings
+        ):
+
+            dir_listing = self._thread_local.temp_dir_listings[dir_path]
+            # The listing maps filenames to attributes - we need to find the song data
+
+            # Try to find the song data to extract the video ID
+            if dir_path == "/liked_songs":
+                songs = self.cache.get("/liked_songs_processed")
+                if songs:
+                    for song in songs:
+                        if isinstance(song, dict) and song.get("filename") == filename:
+                            video_id = song.get("videoId")
+                            if video_id:
+                                # Cache for future use
+                                self._thread_local.video_id_cache[path] = video_id
+                                return video_id
+            elif dir_path.startswith("/playlists/"):
+                # For playlists, we need to find the playlist ID first
+                playlist_name = dir_path.split("/")[2]
+                playlists = self.cache.get("/playlists")
+                if playlists:
+                    playlist_id = None
+                    for playlist in playlists:
+                        if (
+                            self.processor.sanitize_filename(playlist["title"])
+                            == playlist_name
+                        ):
+                            playlist_id = playlist["playlistId"]
+                            break
+
+                    if playlist_id:
+                        processed_cache_key = f"/playlist/{playlist_id}_processed"
+                        songs = self.cache.get(processed_cache_key)
+                        if songs:
+                            for song in songs:
+                                if (
+                                    isinstance(song, dict)
+                                    and song.get("filename") == filename
+                                ):
+                                    video_id = song.get("videoId")
+                                    if video_id:
+                                        # Cache for future use
+                                        self._thread_local.video_id_cache[path] = (
+                                            video_id
+                                        )
+                                        return video_id
+            else:
+                # For other directories (like artists or albums)
+                songs = self.cache.get(dir_path)
+                if songs:
+                    for song in songs:
+                        if isinstance(song, dict) and song.get("filename") == filename:
+                            video_id = song.get("videoId")
+                            if video_id:
+                                # Cache for future use
+                                self._thread_local.video_id_cache[path] = video_id
+                                return video_id
+
+        # If we didn't find it in thread-local cache, use the original implementation
+        # Determine where to look for the song data
         songs = None
-
-        # Special handling for liked songs which use a different cache key
         if dir_path == "/liked_songs":
             songs = self.cache.get("/liked_songs_processed")
-            self.logger.debug(f"Liked songs cache: {'Found' if songs else 'Not found'}")
-        # Special handling for playlists which need to use the playlist ID in the cache key
         elif dir_path.startswith("/playlists/"):
+            # Special handling for playlists which need the playlist ID
             playlist_name = dir_path.split("/")[2]
-            # Find the playlist ID
             playlists = self.cache.get("/playlists")
             if playlists:
                 playlist_id = None
@@ -1200,26 +830,17 @@ class YouTubeMusicFS(Operations):
                 if playlist_id:
                     processed_cache_key = f"/playlist/{playlist_id}_processed"
                     songs = self.cache.get(processed_cache_key)
-                    self.logger.debug(
-                        f"Playlist songs cache ({processed_cache_key}): {'Found' if songs else 'Not found'}"
-                    )
         else:
             songs = self.cache.get(dir_path)
-            self.logger.debug(
-                f"Cache status for {dir_path}: {'Found' if songs else 'Not found'}"
-            )
 
+        # Try to fetch directory contents if not in cache
         if not songs:
-            # Re-fetch if not in cache
-            self.logger.debug(f"Re-fetching directory {dir_path}")
+            self.logger.debug(f"Songs not in cache for {dir_path}, attempting to fetch")
             self.readdir(dir_path, None)
 
-            # Try to get from cache again after refetching
+            # Try again after refetching
             if dir_path == "/liked_songs":
                 songs = self.cache.get("/liked_songs_processed")
-                self.logger.debug(
-                    f"After re-fetch, liked songs cache: {'Found' if songs else 'Not found'}"
-                )
             elif dir_path.startswith("/playlists/"):
                 playlist_name = dir_path.split("/")[2]
                 playlists = self.cache.get("/playlists")
@@ -1236,189 +857,401 @@ class YouTubeMusicFS(Operations):
                     if playlist_id:
                         processed_cache_key = f"/playlist/{playlist_id}_processed"
                         songs = self.cache.get(processed_cache_key)
-                        self.logger.debug(
-                            f"After re-fetch, playlist songs cache ({processed_cache_key}): {'Found' if songs else 'Not found'}"
-                        )
             else:
                 songs = self.cache.get(dir_path)
-                self.logger.debug(
-                    f"After re-fetch, songs: {'Found' if songs else 'Not found'}"
-                )
 
-        if not songs:
-            self.logger.error(f"Could not find songs in directory {dir_path}")
-            raise OSError(errno.ENOENT, "File not found")
-
-        # Handle songs as either list of strings or list of dictionaries
-        video_id = None
-
-        # Check if the cache contains song objects (dictionaries) or just filenames (strings)
-        if isinstance(songs, list) and songs and isinstance(songs[0], str):
-            # Cache contains only filenames
-            self.logger.debug(f"Cache contains string filenames")
-            if filename in songs:
-                # Matched by filename, but we don't have videoId
-                self.logger.error(
-                    f"File found in cache but no videoId available: {filename}"
-                )
-                raise OSError(errno.ENOENT, "No video ID for file")
-        else:
-            # Cache contains song dictionaries as expected
+        # Find the video ID in the songs list
+        if songs:
             for song in songs:
-                # Check if song is a dictionary before trying to use .get()
-                if isinstance(song, dict):
-                    self.logger.debug(
-                        f"Checking song: {song.get('filename', 'Unknown')} for match with {filename}"
-                    )
-                    if song.get("filename") == filename:
-                        video_id = song.get("videoId")
-                        self.logger.debug(f"Found matching song, videoId: {video_id}")
-                        break
-                else:
-                    self.logger.debug(
-                        f"Skipping non-dictionary song object: {type(song)}"
-                    )
+                if isinstance(song, dict) and song.get("filename") == filename:
+                    video_id = song.get("videoId")
+                    if video_id:
+                        # Cache for future use
+                        self._thread_local.video_id_cache[path] = video_id
+                        return video_id
 
-        if not video_id:
-            self.logger.error(f"Could not find videoId for {filename}")
+        self.logger.error(f"Could not find video ID for {filename} in {dir_path}")
+        raise OSError(errno.ENOENT, "Video ID not found")
 
-            # Special debug to see what's in the cache
+    def getattr(self, path: str, fh: Optional[int] = None) -> Dict[str, Any]:
+        """Get file attributes.
+
+        Args:
+            path: The file or directory path
+            fh: File handle (unused)
+
+        Returns:
+            File attributes dictionary
+        """
+        self.logger.debug(f"getattr: {path}")
+
+        # For debugging, log the entry type from cache
+        entry_type = self.cache.get_entry_type(path)
+        self.logger.debug(f"Entry type for {path}: {entry_type}")
+
+        # Check if this request is too soon after the last one
+        operation_key = f"getattr:{path}"
+        current_time = time.time()
+
+        with self.last_access_lock:
+            last_time = self.last_access_time.get(operation_key, 0)
+            if current_time - last_time < self.request_cooldown:
+                # Request is within cooldown period, return cached result if available
+                if operation_key in self.last_access_results:
+                    self.logger.debug(
+                        f"Using cached result for {operation_key} (within cooldown: {current_time - last_time:.3f}s)"
+                    )
+                    return self.last_access_results[operation_key]
+
+            # Update the last access time for this operation
+            self.last_access_time[operation_key] = current_time
+
+        # Check context for operations like mkdir that need to check existence
+        context = (
+            inspect.currentframe().f_back.f_code.co_name
+            if inspect.currentframe().f_back
+            else "unknown"
+        )
+        is_mkdir_context = context == "mkdir" or "mkdir" in context
+
+        # For mkdir operations on search paths, report path doesn't exist to allow creation
+        if is_mkdir_context and path.startswith("/search/"):
+            parts = path.split("/")
+            if len(parts) == 5 and parts[2] in ["library", "catalog"]:
+                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+                if parts[3] in valid_categories:
+                    self.logger.debug(
+                        f"mkdir context detected, forcing non-existence for {path}"
+                    )
+                    raise OSError(errno.ENOENT, "No such file or directory")
+
+        # Get current user's UID and GID
+        uid = os.getuid()
+        gid = os.getgid()
+
+        now = time.time()
+        attr = {
+            "st_atime": now,
+            "st_ctime": now,
+            "st_mtime": now,
+            "st_nlink": 2,
+            "st_uid": uid,  # Set to current user
+            "st_gid": gid,  # Set to current group
+        }
+
+        # Handle root and standard top-level directories
+        if path == "/" or path in [
+            "/playlists",
+            "/liked_songs",
+            "/artists",
+            "/albums",
+            "/search",
+        ]:
+            attr["st_mode"] = stat.S_IFDIR | 0o755
+            attr["st_size"] = 0
+            with self.last_access_lock:
+                self.last_access_results[operation_key] = attr.copy()
+            return attr
+
+        # ----------------------------------------------------------------------
+        # First check if the path is a directory before rejecting based on extension
+        # ----------------------------------------------------------------------
+
+        # Check cache for entry type - this is the most reliable way to determine
+        # if a path is a file or directory
+        if entry_type == "directory":
+            attr["st_mode"] = stat.S_IFDIR | 0o755
+            attr["st_size"] = 0
+            with self.last_access_lock:
+                self.last_access_results[operation_key] = attr.copy()
+            return attr
+
+        # Critical section: Handle paths under /artists/ with special attention
+        if path.startswith("/artists/"):
+            # If entry type not found, use smarter inference
+            parts = path.split("/")
+            if len(parts) == 3:  # Artist top-level directory
+                # Force top-level artist directories to be treated as directories
+                # regardless of dots in the name
+                self.logger.debug(f"Artist directory inferred for {path}")
+
+                # Ensure this path is recorded as a directory for future lookups
+                self.cache.add_valid_dir(path)
+
+                attr["st_mode"] = stat.S_IFDIR | 0o755
+                attr["st_size"] = 0
+                with self.last_access_lock:
+                    self.last_access_results[operation_key] = attr.copy()
+                return attr
+            elif len(parts) > 3 and not path.lower().endswith(".m4a"):
+                # For subdirectories under artists, also force directory attributes
+                # unless it explicitly ends with .m4a
+                self.logger.debug(f"Artist subdirectory inferred for {path}")
+
+                # Ensure this path is recorded as a directory for future lookups
+                self.cache.add_valid_dir(path)
+
+                attr["st_mode"] = stat.S_IFDIR | 0o755
+                attr["st_size"] = 0
+                with self.last_access_lock:
+                    self.last_access_results[operation_key] = attr.copy()
+                return attr
+
+        # Now check if this is a potentially valid file or an invalid extension
+        # Only apply the extension check after we've confirmed it's not a directory
+        if "." in os.path.basename(path) and not path.lower().endswith(".m4a"):
+            self.logger.debug(f"Rejecting non-m4a file extension in getattr: {path}")
+            raise OSError(errno.ENOENT, "No such file or directory")
+
+        # Handle search path directories
+        if path.startswith("/search/"):
+            parts = path.split("/")
+
+            # Basic search paths like /search/library or /search/catalog
+            if len(parts) == 3 and parts[2] in ["library", "catalog"]:
+                attr["st_mode"] = stat.S_IFDIR | 0o755
+                attr["st_size"] = 0
+                with self.last_access_lock:
+                    self.last_access_results[operation_key] = attr.copy()
+                return attr
+
+            # Search category paths like /search/library/songs
+            if len(parts) == 4 and parts[2] in ["library", "catalog"]:
+                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+                if parts[3] in valid_categories:
+                    attr["st_mode"] = stat.S_IFDIR | 0o755
+                    attr["st_size"] = 0
+                    with self.last_access_lock:
+                        self.last_access_results[operation_key] = attr.copy()
+                    return attr
+
+            if len(parts) >= 5 and parts[2] in ["library", "catalog"]:
+                # Check for search query directories (like /search/library/songs/query)
+                if len(parts) == 5:
+                    # Only report existing if it's in the cache or if mkdir is in progress
+                    if self.cache.is_valid_path(path) or is_mkdir_context:
+                        attr["st_mode"] = stat.S_IFDIR | 0o755
+                        attr["st_size"] = 0
+                        with self.last_access_lock:
+                            self.last_access_results[operation_key] = attr.copy()
+                        return attr
+
+                # Check for categorized search results (like /search/library/songs/query/top_album)
+                if len(parts) == 6:
+                    if self.cache.is_valid_path(path):
+                        attr["st_mode"] = stat.S_IFDIR | 0o755
+                        attr["st_size"] = 0
+                        with self.last_access_lock:
+                            self.last_access_results[operation_key] = attr.copy()
+                        return attr
+
+        # Initialize thread-local path validation cache if needed
+        if not hasattr(self._thread_local, "validated_paths"):
+            self._thread_local.validated_paths = {}
+
+        # Check thread-local validation cache first
+        if path in self._thread_local.validated_paths:
+            if self._thread_local.validated_paths[path] is False:
+                # We've already determined this path is invalid
+                raise OSError(errno.ENOENT, "No such file or directory")
+
+        # For files (especially those with .m4a extension)
+        parent_dir = os.path.dirname(path)
+        filename = os.path.basename(path)
+
+        # Fast path: if we have already validated the parent directory and have
+        # the directory listing in thread-local cache, we can skip the validity check
+        if (
+            hasattr(self._thread_local, "validated_dirs")
+            and parent_dir in self._thread_local.validated_dirs
+            and hasattr(self._thread_local, "temp_dir_listings")
+            and parent_dir in self._thread_local.temp_dir_listings
+        ):
+            dir_listing = self._thread_local.temp_dir_listings[parent_dir]
+            if dir_listing and filename in dir_listing:
+                # Use the cached attributes directly
+                self.logger.debug(f"Fast path: using validated directory for {path}")
+                cached_attrs = dir_listing[filename].copy()
+
+                # Update timestamps and check for file size updates
+                cached_attrs["st_atime"] = now
+                cached_attrs["st_ctime"] = now
+                cached_attrs["st_mtime"] = now
+
+                file_size_cache_key = f"filesize:{path}"
+                cached_size = self.cache.get(file_size_cache_key)
+                if cached_size is not None:
+                    cached_attrs["st_size"] = cached_size
+
+                with self.last_access_lock:
+                    self.last_access_results[operation_key] = cached_attrs.copy()
+
+                # Cache validation result
+                self._thread_local.validated_paths[path] = True
+
+                return cached_attrs
+            else:
+                # File not found in validated directory
+                self._thread_local.validated_paths[path] = False
+                raise OSError(errno.ENOENT, "No such file or directory")
+
+        # Otherwise fallback to the normal path validation
+        if not self._is_valid_path(path):
+            self.logger.debug(f"Invalid path in getattr: {path}")
+            self._thread_local.validated_paths[path] = False
+            raise OSError(errno.ENOENT, "No such file or directory")
+
+        # Mark this path as valid for future reference
+        self._thread_local.validated_paths[path] = True
+
+        # Use thread-local cached directory listing if available
+        if (
+            hasattr(self._thread_local, "temp_dir_listings")
+            and parent_dir in self._thread_local.temp_dir_listings
+        ):
+            dir_listing = self._thread_local.temp_dir_listings[parent_dir]
+            if dir_listing and filename in dir_listing:
+                self.logger.debug(f"Using thread-local cached attributes for {path}")
+                cached_attrs = dir_listing[filename].copy()
+
+                # Update with fresh timestamps
+                cached_attrs["st_atime"] = now
+                cached_attrs["st_ctime"] = now
+                cached_attrs["st_mtime"] = now
+
+                # Check for updated file size
+                file_size_cache_key = f"filesize:{path}"
+                cached_size = self.cache.get(file_size_cache_key)
+                if cached_size is not None:
+                    cached_attrs["st_size"] = cached_size
+
+                with self.last_access_lock:
+                    self.last_access_results[operation_key] = cached_attrs.copy()
+                return cached_attrs
+
+        # If not in thread-local cache, try to get from main cache
+        cached_attrs = self.cache.get_file_attrs_from_parent_dir(path)
+        if cached_attrs:
             self.logger.debug(
-                f"Cache contents for debugging: {songs[:5] if isinstance(songs, list) else songs}"
+                f"Using cached attributes from parent directory for {path}"
             )
 
-            raise OSError(errno.ENOENT, "File not found")
+            # Update with fresh timestamps
+            cached_attrs["st_atime"] = now
+            cached_attrs["st_ctime"] = now
+            cached_attrs["st_mtime"] = now
 
-        # First check if the audio is already cached
-        cache_path = Path(self.cache.cache_dir / "audio" / f"{video_id}.m4a")
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
+            # Check for updated file size
+            file_size_cache_key = f"filesize:{path}"
+            cached_size = self.cache.get(file_size_cache_key)
+            if cached_size is not None:
+                cached_attrs["st_size"] = cached_size
 
-        # Set up the file handle first with just the video_id and cache_path
-        with self.file_handle_lock:
-            fh = self.next_fh
-            self.next_fh += 1
-            self.open_files[fh] = {
-                "cache_path": str(cache_path),
-                "video_id": video_id,
-                "stream_url": None,  # Will be populated only if needed
-            }
-            self.path_to_fh[path] = fh
-            self.logger.debug(f"Assigned file handle {fh} to {path}")
+            # Store in thread-local cache for future lookups during this operation
+            if not hasattr(self._thread_local, "temp_dir_listings"):
+                self._thread_local.temp_dir_listings = {}
 
-        # Check if the audio file is already cached completely
-        if self._check_cached_audio(video_id):
-            self.logger.debug(f"Found complete cached audio for {video_id}")
-            return fh
+            if parent_dir not in self._thread_local.temp_dir_listings:
+                # Retrieve and store the entire directory listing
+                dir_listing = self.cache.get_directory_listing_with_attrs(parent_dir)
+                if dir_listing:
+                    self._thread_local.temp_dir_listings[parent_dir] = dir_listing
 
-        # If not cached, fetch stream URL using yt-dlp
+            with self.last_access_lock:
+                self.last_access_results[operation_key] = cached_attrs.copy()
+            return cached_attrs
+
+        # If no cached attributes, we'll try to get video_id and check for duration
         try:
-            # Use yt-dlp to get the audio stream URL
-            ydl_opts = {
-                "format": "141/bestaudio[ext=m4a]",
-                "extractor_args": {
-                    "youtube": {
-                        "formats": ["missing_pot"],
-                    },
-                },
-            }
+            # Get the video ID
+            video_id = self._get_video_id(path)
 
-            # Add browser cookies if a browser is specified
-            if self.browser:
-                ydl_opts["cookiesfrombrowser"] = (self.browser,)
-                self.logger.debug(f"Using cookies from browser: {self.browser}")
+            # Check if we already have cached duration
+            duration = self.cache.get_duration(video_id)
 
-            url = f"https://music.youtube.com/watch?v={video_id}"
-            self.logger.debug(f"Extracting stream URL for {url}")
+            if duration is not None:
+                # Estimate file size based on duration (128kbps = 16KB/sec)
+                estimated_size = duration * 16 * 1024
+            else:
+                # Default size if we don't know duration
+                estimated_size = 4096
 
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                stream_url = info["url"]
+            # Create basic file attributes
+            attr["st_mode"] = stat.S_IFREG | 0o644
+            attr["st_size"] = estimated_size
+            attr["st_nlink"] = 1
 
-            if not stream_url:
-                self.logger.error("No suitable audio stream found")
-                raise OSError(errno.EIO, "No suitable audio stream found")
+            with self.last_access_lock:
+                self.last_access_results[operation_key] = attr.copy()
 
-            self.logger.debug(f"Successfully got stream URL for {video_id}")
-
-            # Get the actual file size using a HEAD request
-            try:
-                head_response = requests.head(stream_url, timeout=10)
-                if (
-                    head_response.status_code == 200
-                    and "content-length" in head_response.headers
-                ):
-                    actual_size = int(head_response.headers["content-length"])
-                    self.logger.debug(
-                        f"Got actual file size for {video_id}: {actual_size} bytes"
-                    )
-                    # Update the file size cache
-                    self._update_file_size(path, actual_size)
-                else:
-                    self.logger.warning(
-                        f"Couldn't get file size from HEAD request for {video_id}"
-                    )
-            except Exception as e:
-                self.logger.warning(f"Error getting file size for {video_id}: {str(e)}")
-                # Continue even if we can't get the file size
-
-            # Update the file handle with the stream URL
-            with self.file_handle_lock:
-                self.open_files[fh]["stream_url"] = stream_url
-
-            # Initialize download status and start the download
-            if video_id not in self.download_progress:
-                self.download_progress[video_id] = 0
-                self._start_background_download(video_id, stream_url, cache_path)
-
-            return fh
-
+            return attr
         except Exception as e:
-            self.logger.error(f"Error getting stream URL: {e}")
-            raise OSError(errno.EIO, f"Failed to get stream URL: {str(e)}")
+            self.logger.error(f"Error getting file attributes for {path}: {e}")
+            raise OSError(errno.ENOENT, "No such file or directory")
 
-    def _update_file_size(self, path: str, size: int) -> None:
-        """Update the file size cache for a given path.
+    def open(self, path: str, flags: int) -> int:
+        """Open a file.
 
         Args:
             path: The file path
-            size: The actual file size in bytes
+            flags: Open flags
+
+        Returns:
+            File handle
         """
-        file_size_cache_key = f"filesize:{path}"
-        self.cache.set(file_size_cache_key, size)
-        self.logger.debug(f"Updated file size cache for {path}: {size} bytes")
+        self.logger.debug(f"open: {path} with flags {flags}")
+
+        # Skip validation if we know the path is valid from thread-local cache
+        valid_from_cache = False
+        if (
+            hasattr(self._thread_local, "validated_paths")
+            and path in self._thread_local.validated_paths
+        ):
+            valid_from_cache = self._thread_local.validated_paths[path]
+
+        if not valid_from_cache and not self._is_valid_path(path):
+            self.logger.warning(f"Rejecting invalid path in open: {path}")
+            raise OSError(errno.ENOENT, "No such file or directory")
+
+        try:
+            # Get video ID
+            video_id = self._get_video_id(path)
+            if not video_id:
+                self.logger.error(f"Empty video ID extracted for {path}")
+                raise OSError(errno.EINVAL, "Invalid video ID")
+
+            self.logger.debug(
+                f"Successfully extracted video ID: {video_id} for path: {path}"
+            )
+
+            # Delegate to file handler
+            fh = self.file_handler.open(path, video_id, self.thread_pool)
+            return fh
+        except OSError as e:
+            # Preserve the original OSError without wrapping it
+            self.logger.error(f"OS Error opening file {path}: {e}")
+            raise
+        except Exception as e:
+            self.logger.error(f"Error opening file {path}: {e}")
+            raise OSError(errno.EIO, str(e))
 
     def read(self, path: str, size: int, offset: int, fh: int) -> bytes:
-        """Read data that might be partially downloaded."""
-        if fh not in self.open_files:
-            raise OSError(errno.EBADF, "Bad file descriptor")
+        """Read data from a file.
 
-        file_info = self.open_files[fh]
-        cache_path = file_info["cache_path"]
-        video_id = file_info["video_id"]
-        stream_url = file_info["stream_url"]
+        Args:
+            path: The file path
+            size: Number of bytes to read
+            offset: Offset to start reading from
+            fh: File handle
 
-        status = self.download_progress.get(video_id)
-
-        # If download is complete, read from cache
-        if status == "complete":
-            with open(cache_path, "rb") as f:
-                f.seek(offset)
-                return f.read(size)
-
-        # If we have enough of the file downloaded, read from cache
-        if isinstance(status, int) and status > offset + size:
-            with open(cache_path, "rb") as f:
-                f.seek(offset)
-                return f.read(size)
-
-        # Otherwise, stream directly - no waiting
-        self.logger.debug(
-            f"Requested range not cached yet, streaming directly: offset={offset}, size={size}"
-        )
-        return self._stream_content(stream_url, offset, size)
+        Returns:
+            The requested bytes
+        """
+        # Delegate to file handler
+        return self.file_handler.read(path, size, offset, fh)
 
     def release(self, path: str, fh: int) -> int:
-        """Release (close) a file handle.
+        """Release (close) a file.
 
         Args:
             path: The file path
@@ -1427,219 +1260,252 @@ class YouTubeMusicFS(Operations):
         Returns:
             0 on success
         """
-        with self.file_handle_lock:
-            if fh in self.open_files:
-                del self.open_files[fh]
-                # Remove path_to_fh entry for this path
-                if path in self.path_to_fh and self.path_to_fh[path] == fh:
-                    del self.path_to_fh[path]
-        return 0
+        self.logger.debug(f"release: {path} (fh={fh})")
 
-    def _auto_refresh_cache(self, cache_key: str, refresh_interval: int = 600) -> None:
-        """Automatically refresh the cache if the last refresh time exceeds the interval.
+        # Clear thread-local cache to prevent memory leaks
+        self._clear_thread_local_cache()
+
+        # Delegate to file handler
+        return self.file_handler.release(path, fh)
+
+    def _update_file_size(self, path: str, size: int) -> None:
+        """Update the cached file size for a path.
 
         Args:
-            cache_key: The cache key to check (e.g., '/playlists').
-            refresh_interval: Time in seconds before triggering a refresh (default: 600).
+            path: The file path
+            size: The new file size
         """
-        # Use the CacheManager's auto_refresh_cache method instead
-        self.cache.auto_refresh_cache(
-            cache_key=cache_key,
-            refresh_method=self.refresh_cache,
-            refresh_interval=refresh_interval,
-        )
+        file_size_cache_key = f"filesize:{path}"
+        self.cache.set(file_size_cache_key, size)
 
-    def refresh_liked_songs_cache(self) -> None:
-        """Refresh the cache for liked songs.
-
-        This method updates the liked songs cache with any newly liked songs,
-        without deleting the entire cache.
-        """
-        self.cache.refresh_cache_data(
-            cache_key="/liked_songs",
-            fetch_func=self.client.get_liked_songs,
-            processor=self.processor,
-            id_fields=["videoId"],
-            fetch_args={"limit": 100},
-            process_items=True,
-            processed_cache_key="/liked_songs_processed",
-            extract_nested_items="tracks",
-            prepend_new_items=True,
-        )
-
-    def refresh_playlists_cache(self) -> None:
-        """Refresh the cache for playlists.
-
-        This method updates the playlists cache with any changes in playlists,
-        without deleting the entire cache.
-        """
-        self.cache.refresh_cache_data(
-            cache_key="/playlists",
-            fetch_func=self.client.get_library_playlists,
-            id_fields=["playlistId"],
-            check_updates=True,
-            update_field="title",
-            clear_related_cache=True,
-            related_cache_prefix="/playlist/",
-            related_cache_suffix="_processed",
-            fetch_args={"limit": 100},
-        )
-
-    def refresh_artists_cache(self) -> None:
-        """Refresh the cache for artists.
-
-        This method updates the artists cache with any changes in the user's library,
-        without deleting the entire cache.
-        """
-        self.cache.refresh_cache_data(
-            cache_key="/artists",
-            fetch_func=self.client.get_library_artists,
-            id_fields=["artistId", "browseId", "id"],
-        )
-
-    def refresh_albums_cache(self) -> None:
-        """Refresh the cache for albums.
-
-        This method updates the albums cache with any changes in the user's library,
-        without deleting the entire cache.
-        """
-        self.cache.refresh_cache_data(
-            cache_key="/albums",
-            fetch_func=self.client.get_library_albums,
-            id_fields=["albumId", "browseId", "id"],
-        )
+        # Also update the file attributes in the parent directory's cached listing
+        attr = {
+            "st_mode": stat.S_IFREG | 0o644,
+            "st_atime": time.time(),
+            "st_ctime": time.time(),
+            "st_mtime": time.time(),
+            "st_nlink": 1,
+            "st_size": size,
+        }
+        self.cache.update_file_attrs_in_parent_dir(path, attr)
 
     def refresh_cache(self) -> None:
         """Refresh all caches.
 
         This method updates all caches with any changes in the user's library.
-        It uses a unified approach to refresh all content types consistently,
-        preserving existing cached data and only updating what's changed,
-        making it efficient for large libraries.
         """
         self.logger.info("Refreshing all caches...")
 
-        # Refresh individual caches using a consistent approach
-        self.refresh_liked_songs_cache()
-        self.refresh_playlists_cache()
-        self.refresh_artists_cache()
-        self.refresh_albums_cache()
+        # Use the fetcher to refresh the caches
+        self.fetcher.refresh_all_caches()
 
-        current_time = time.time()
+        # Delete all search-related cache entries
+        self.cache.delete_pattern("/search/*")
+        self.cache.delete_pattern("/search/*/*_processed")
+
+        # Also delete search metadata entries
+        self.cache.delete_pattern("*_search_metadata")
+        self.logger.debug("Deleted search metadata entries")
 
         # Mark all caches as freshly refreshed
-        self.cache.set_metadata("/liked_songs", "last_refresh_time", current_time)
-        self.cache.set_metadata("/playlists", "last_refresh_time", current_time)
-        self.cache.set_metadata("/artists", "last_refresh_time", current_time)
-        self.cache.set_metadata("/albums", "last_refresh_time", current_time)
+        current_time = time.time()
+        for cache_key in ["/liked_songs", "/playlists", "/artists", "/albums"]:
+            self.cache.set_metadata(cache_key, "last_refresh_time", current_time)
 
         self.logger.info("All caches refreshed successfully")
 
-    def _delete_from_cache(self, path: str) -> None:
-        """Delete data from cache.
+    def _perform_search(self, search_query, scope, filter_type):
+        """Perform a search operation.
 
         Args:
-            path: The path to delete from cache
+            search_query: Query string to search for
+            scope: Search scope (library or None for all)
+            filter_type: Type of items to filter for (songs, albums, etc.)
+
+        Returns:
+            Search results
         """
-        self.cache.delete(path)
+        # Delegate to ContentFetcher for search operations
+        return self.fetcher._perform_search(search_query, scope, filter_type)
 
-    def _start_background_download(self, video_id, stream_url, cache_path):
-        """Start downloading a file in the background and track progress."""
+    def mkdir(self, path, mode):
+        """Create a directory.
 
-        def download_task():
-            try:
-                self.logger.debug(f"Starting background download for {video_id}")
-                with requests.get(stream_url, stream=True) as response:
-                    # Update file size from content-length if available
-                    if "content-length" in response.headers:
-                        actual_size = int(response.headers["content-length"])
-                        # Find all paths that use this video_id to update their file sizes
-                        with self.file_handle_lock:
-                            for handle, info in self.open_files.items():
-                                if info.get("video_id") == video_id:
-                                    # Get the path from handle
-                                    for path in self.path_to_fh:
-                                        if self.path_to_fh[path] == handle:
-                                            self._update_file_size(path, actual_size)
-                                            self.logger.debug(
-                                                f"Updated size for {path} to {actual_size} from download response"
-                                            )
-                                            break
+        Args:
+            path: The directory path
+            mode: Directory permissions (unused)
 
-                    with open(cache_path, "wb") as f:
-                        for chunk in response.iter_content(chunk_size=4096):
-                            f.write(chunk)
-                            # Update download progress
-                            self.download_progress[video_id] = f.tell()
+        Returns:
+            0 on success
+        """
+        self.logger.debug(f"mkdir: {path}")
 
-                # Mark download as complete
-                self.download_progress[video_id] = "complete"
+        # Only allow creating directories under the /search path
+        if not path.startswith("/search/"):
+            self.logger.warning(f"Rejecting mkdir for non-search path: {path}")
+            raise OSError(errno.EPERM, "Can only create directories under /search")
 
-                self.logger.debug(f"Download task completed for {video_id}")
-
-                # When a download completes:
-                status_path = self.cache.cache_dir / "audio" / f"{video_id}.status"
-                with open(status_path, "w") as f:
-                    f.write("complete")
-
-            except Exception as e:
-                self.logger.error(f"Error downloading {video_id}: {e}")
-                # Mark download as failed
-                self.download_progress[video_id] = "failed"
-
-        # Start the download in a background thread
-        self.thread_pool.submit(download_task)
-
-    def _stream_content(self, stream_url, offset, size):
-        """Stream content directly from URL (fallback if download is too slow)."""
-        headers = {"Range": f"bytes={offset}-{offset + size - 1}"}
-        response = requests.get(stream_url, headers=headers, stream=False)
-
-        if response.status_code in (200, 206):
-            return response.content
-        else:
-            self.logger.error(f"Failed to stream: {response.status_code}")
-            raise OSError(errno.EIO, "Failed to read stream")
-
-    def _check_cached_audio(self, video_id):
-        """Check if an audio file is already cached completely."""
-        cache_path = self.cache.cache_dir / "audio" / f"{video_id}.m4a"
-        status_path = self.cache.cache_dir / "audio" / f"{video_id}.status"
-
-        # First check for status file (most reliable)
-        if status_path.exists():
-            try:
-                with open(status_path, "r") as f:
-                    status = f.read().strip()
-                if status == "complete":
-                    self.logger.debug(
-                        f"Found status file indicating {video_id} is complete"
-                    )
-                    self.download_progress[video_id] = "complete"
-                    return True
-            except Exception as e:
-                self.logger.debug(f"Error reading status file for {video_id}: {e}")
-
-        # Fall back to checking if the file exists and has content
-        if cache_path.exists() and cache_path.stat().st_size > 0:
-            self.logger.debug(
-                f"Found existing audio file for {video_id}, marking as complete"
+        # Validate the search path structure
+        parts = path.split("/")
+        if len(parts) < 4 or parts[2] not in ["library", "catalog"]:
+            self.logger.warning(f"Invalid search path structure for mkdir: {path}")
+            raise OSError(
+                errno.EINVAL,
+                "Invalid search path format (must be /search/{library|catalog}/...)",
             )
-            self.download_progress[video_id] = "complete"
 
-            # If file exists but status doesn't, create the status file
-            if not status_path.exists():
-                try:
-                    with open(status_path, "w") as f:
-                        f.write("complete")
-                except Exception as e:
-                    self.logger.debug(
-                        f"Failed to create status file for {video_id}: {e}"
-                    )
+        # For /search/{library|catalog}/{songs|videos|albums|artists|playlists}
+        if len(parts) == 4:
+            valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+            if parts[3] not in valid_categories:
+                self.logger.warning(f"Invalid search category for mkdir: {parts[3]}")
+                raise OSError(
+                    errno.EINVAL,
+                    f"Invalid search category (must be one of {', '.join(valid_categories)})",
+                )
+            # These directories already exist virtually
+            self._cache_valid_dir(path)
+            # Clear thread-local cache
+            self._clear_thread_local_cache()
+            return 0
 
-            return True
+        # For /search/{library|catalog}/{songs|videos|albums|artists|playlists}/{query}
+        if len(parts) == 5:
+            valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+            if parts[3] not in valid_categories:
+                self.logger.warning(f"Invalid search category for mkdir: {parts[3]}")
+                raise OSError(
+                    errno.EINVAL,
+                    f"Invalid search category (must be one of {', '.join(valid_categories)})",
+                )
 
-        return False
+            # This is a search query directory - perform the search
+            search_query = parts[4]
+            scope = parts[2]  # 'library' or 'catalog'
+            filter_type = parts[3]  # category
+
+            # Store search metadata for later use
+            self.cache.store_search_metadata(path, search_query, scope, filter_type)
+
+            try:
+                # Perform the search
+                self._perform_search(search_query, scope, filter_type)
+                # Mark as valid
+                self._cache_valid_dir(path)
+                # Clear thread-local cache
+                self._clear_thread_local_cache()
+                return 0
+            except Exception as e:
+                self.logger.error(f"Search failed for {path}: {e}")
+                raise OSError(errno.EIO, f"Search failed: {str(e)}")
+
+        self.logger.warning(f"Rejecting mkdir for unsupported path depth: {path}")
+        raise OSError(
+            errno.EINVAL, "Can only create directories at the category or query level"
+        )
+
+    def rmdir(self, path):
+        """Remove a directory.
+
+        Args:
+            path: The directory path
+
+        Returns:
+            0 on success
+        """
+        self.logger.debug(f"rmdir: {path}")
+
+        # Only allow removing directories under the /search path
+        if not path.startswith("/search/"):
+            self.logger.warning(f"Rejecting rmdir for non-search path: {path}")
+            raise OSError(errno.EPERM, "Can only remove directories under /search")
+
+        # Validate the search path structure
+        parts = path.split("/")
+        if len(parts) < 4 or parts[2] not in ["library", "catalog"]:
+            self.logger.warning(f"Invalid search path structure for rmdir: {path}")
+            raise OSError(
+                errno.EINVAL,
+                "Invalid search path format (must be /search/{library|catalog}/...)",
+            )
+
+        # For /search/{library|catalog}/{songs|videos|albums|artists|playlists}
+        if len(parts) == 4:
+            valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+            if parts[3] not in valid_categories:
+                self.logger.warning(f"Invalid search category for rmdir: {parts[3]}")
+                raise OSError(
+                    errno.EINVAL,
+                    f"Invalid search category (must be one of {', '.join(valid_categories)})",
+                )
+            # These directories are virtual and permanent
+            self.logger.warning(f"Cannot remove category directory: {path}")
+            raise OSError(errno.EPERM, "Cannot remove category directories")
+
+        # For /search/{library|catalog}/{songs|videos|albums|artists|playlists}/{query}
+        if len(parts) == 5:
+            valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+            if parts[3] not in valid_categories:
+                self.logger.warning(f"Invalid search category for rmdir: {parts[3]}")
+                raise OSError(
+                    errno.EINVAL,
+                    f"Invalid search category (must be one of {', '.join(valid_categories)})",
+                )
+
+            # This is a search query directory - check if it's a valid path
+            if not self.cache.is_valid_path(path):
+                self.logger.warning(f"Cannot remove non-existent directory: {path}")
+                raise OSError(errno.ENOENT, "No such directory")
+
+            # Find all child paths in the cache that start with this path
+            search_pattern = f"{path}/*"
+            child_keys = self.cache.get_keys_by_pattern(search_pattern)
+
+            # Clear the child paths from cache
+            for key in child_keys:
+                self.cache.delete(key)
+
+            # Remove the directory itself from cache
+            self.cache.remove_valid_path(path)
+            self.cache.delete(path)
+
+            # Clean up associated metadata
+            self.cache.delete(f"{path}_listing_with_attrs")
+            self.cache.delete(f"valid_files:{path}")
+
+            # Clear thread-local cache
+            self._clear_thread_local_cache()
+
+            return 0
+
+        self.logger.warning(f"Rejecting rmdir for unsupported path depth: {path}")
+        raise OSError(errno.EPERM, "Cannot remove directory outside of search paths")
+
+    def _clear_thread_local_cache(self):
+        """Clear the thread-local cache to prevent memory leaks.
+        This should be called at the end of major operations.
+        """
+        # Clear all thread-local caches
+        if hasattr(self._thread_local, "temp_dir_listings"):
+            self._thread_local.temp_dir_listings = {}
+        if hasattr(self._thread_local, "validated_dirs"):
+            self._thread_local.validated_dirs = set()
+        if hasattr(self._thread_local, "validated_paths"):
+            self._thread_local.validated_paths = {}
+        if hasattr(self._thread_local, "video_id_cache"):
+            self._thread_local.video_id_cache = {}
+
+    def __call__(self, op, *args):
+        """Override the __call__ method to ensure thread-local cache cleanup.
+
+        This method is called by FUSE for each filesystem operation.
+        """
+        try:
+            # Call the parent class implementation
+            return super().__call__(op, *args)
+        finally:
+            # Clean up thread-local cache after every operation to prevent memory leaks
+            self._clear_thread_local_cache()
 
 
 def mount_ytmusicfs(
@@ -1649,14 +1515,15 @@ def mount_ytmusicfs(
     client_secret: str,
     foreground: bool = False,
     debug: bool = False,
-    cache_dir: str = None,
+    cache_dir: Optional[str] = None,
     cache_timeout: int = 2592000,
     max_workers: int = 8,
-    browser: str = None,
-    credentials_file: str = None,
+    browser: Optional[str] = None,
+    credentials_file: Optional[str] = None,
     cache_maxsize: int = 10000,
     preload_cache: bool = True,
-    request_cooldown: int = 100,
+    request_cooldown: int = 1000,
+    logger: Optional[logging.Logger] = None,
 ) -> None:
     """Mount the YouTube Music filesystem.
 
@@ -1674,8 +1541,20 @@ def mount_ytmusicfs(
         credentials_file: Path to the client credentials file (default: None)
         cache_maxsize: Maximum number of items to keep in memory cache (default: 10000)
         preload_cache: Whether to preload cache data at startup (default: True)
-        request_cooldown: Time in milliseconds between allowed repeated requests to the same path (default: 100)
+        request_cooldown: Time in milliseconds between allowed repeated requests to the same path (default: 1000)
+        logger: Logger instance to use (default: None, creates a new logger)
     """
+    # Set fuse logger to WARNING level to suppress debug messages about unsupported operations
+    logging.getLogger("fuse").setLevel(logging.WARNING)
+
+    # Define FUSE options
+    fuse_options = {
+        "foreground": foreground,
+        "nothreads": False,
+        "uid": os.getuid(),  # Set mount UID to current user
+        "gid": os.getgid(),  # Set mount GID to current group
+    }
+
     FUSE(
         YouTubeMusicFS(
             auth_file=auth_file,
@@ -1688,8 +1567,9 @@ def mount_ytmusicfs(
             cache_maxsize=cache_maxsize,
             preload_cache=preload_cache,
             request_cooldown=request_cooldown,
+            logger=logger,
+            credentials_file=credentials_file,
         ),
         mount_point,
-        foreground=foreground,
-        nothreads=False,
+        **fuse_options,
     )
