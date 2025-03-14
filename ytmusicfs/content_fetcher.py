@@ -106,47 +106,58 @@ class ContentFetcher:
         Returns:
             List of playlist names
         """
+        self.logger.info("Fetching playlists for /playlists directory")
 
-        # Define a processing function for the playlists data
         def process_playlists(playlists):
+            if not playlists:
+                self.logger.warning("No playlists returned from API")
+                return []
+
             sanitized_names = []
             processed_playlists = []
 
-            # More robust handling with error checking
             for playlist in playlists:
-                # Skip invalid entries
-                if not isinstance(playlist, dict):
+                if (
+                    not isinstance(playlist, dict)
+                    or "title" not in playlist
+                    or "playlistId" not in playlist
+                ):
+                    self.logger.warning(f"Invalid playlist entry: {playlist}")
                     continue
 
-                # Use .get() with default value to safely handle missing 'title' keys
-                title = playlist.get("title", "Unknown Playlist")
+                title = playlist["title"]
+                playlist_id = playlist["playlistId"]
                 sanitized_name = self.processor.sanitize_filename(title)
 
-                sanitized_names.append(sanitized_name)
+                if not sanitized_name:
+                    self.logger.warning(f"Empty sanitized name for playlist: {title}")
+                    continue
 
-                # Add to processed playlists list for directory caching
+                sanitized_names.append(sanitized_name)
                 processed_playlists.append(
                     {
                         "filename": sanitized_name,
-                        "playlistId": playlist.get("playlistId"),
-                        "is_directory": True,  # Playlists are directories
+                        "playlistId": playlist_id,
+                        "is_directory": True,
                     }
                 )
 
-            # Cache directory listing with attributes
+            self.logger.debug(f"Processed {len(sanitized_names)} playlists")
             if hasattr(self, "cache_directory_callback") and callable(
                 self.cache_directory_callback
             ):
                 self.cache_directory_callback("/playlists", processed_playlists)
+                self.logger.debug("Cached playlist directory listing")
 
             return sanitized_names
 
-        # Use the centralized helper to fetch and process playlists
+        # Fetch and cache playlists
         return self.fetch_and_cache(
             path="/playlists",
             fetch_func=self.client.get_library_playlists,
             limit=1000,
             process_func=process_playlists,
+            auto_refresh=True,
         )
 
     def readdir_liked_songs(self) -> List[str]:
