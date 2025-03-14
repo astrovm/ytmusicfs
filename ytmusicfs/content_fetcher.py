@@ -498,19 +498,23 @@ class ContentFetcher:
         artist_name = os.path.basename(path)
         self.logger.debug(f"Handling artist content for: {artist_name}")
 
-        # First check cache for the artist data
-        cache_key = f"{path}_data"
-        artist_data = self.cache.get(cache_key)
-
-        if not artist_data:
-            # Get the list of artists to find the ID
+        # Check cached directory listing for artist ID
+        dir_listing = self.cache.get_directory_listing_with_attrs("/artists")
+        artist_id = None
+        if dir_listing and artist_name in dir_listing:
+            artist_id = dir_listing[artist_name].get("artistId")
+            self.logger.debug(f"Retrieved artist ID from cache: {artist_id}")
+        else:
+            self.logger.debug(
+                f"Artist {artist_name} not in cached listing, falling back to search"
+            )
+            # Fall back to the original method if not in directory listing
             artists = self.cache.get("/artists")
             if not artists:
                 self.logger.warning("No cached artists found")
                 return []
 
             # Find the artist by name with fallback for missing 'name'
-            artist_id = None
             for artist in artists:
                 # Use .get() with default to avoid KeyError
                 name = artist.get("name", artist.get("artist", "Unknown Artist"))
@@ -525,17 +529,15 @@ class ContentFetcher:
                     )
                     break
 
-            if not artist_id:
-                self.logger.warning(f"Artist not found: {artist_name}")
-                # Log all artist names and IDs for debugging
-                self.logger.debug("Available artists in cache:")
-                for artist in artists:
-                    name = artist.get("name", artist.get("artist", "Unknown Artist"))
-                    artist_id = artist.get("artistId")
-                    sanitized_name = self.processor.sanitize_filename(name)
-                    self.logger.debug(f"  - '{sanitized_name}' (ID: {artist_id})")
-                return []
+        if not artist_id:
+            self.logger.warning(f"Artist ID not found for: {artist_name}")
+            return []
 
+        # First check cache for the artist data
+        cache_key = f"{path}_data"
+        artist_data = self.cache.get(cache_key)
+
+        if not artist_data:
             # Fetch the artist content
             self.logger.debug(f"Fetching content for artist ID: {artist_id}")
             artist_data = self.client.get_artist(artist_id)
