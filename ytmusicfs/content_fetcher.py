@@ -407,6 +407,15 @@ class ContentFetcher:
                 # Skip artists without IDs
                 if not artist_id:
                     self.logger.warning(f"Artist {name} has no artistId, skipping")
+                    # Log all artist names and IDs for debugging
+                    self.logger.debug("Available artists in cache:")
+                    for artist in artists:
+                        name = artist.get(
+                            "name", artist.get("artist", "Unknown Artist")
+                        )
+                        artist_id = artist.get("artistId")
+                        sanitized_name = self.processor.sanitize_filename(name)
+                        self.logger.debug(f"  - '{sanitized_name}' (ID: {artist_id})")
                     continue
 
                 self.logger.debug(f"Processing artist - Name: {name}, ID: {artist_id}")
