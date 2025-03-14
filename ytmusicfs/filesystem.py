@@ -725,16 +725,26 @@ class YouTubeMusicFS(Operations):
         Raises:
             OSError: If the video ID could not be found
         """
+        # Check if path is a music file
+        if not path.lower().endswith(".m4a"):
+            self.logger.warning(
+                f"Attempting to get video ID for non-music file: {path}"
+            )
+            raise OSError(errno.EINVAL, "Not a music file")
+
         # Create a thread-local cache for video IDs if it doesn't exist
         if not hasattr(self._thread_local, "video_id_cache"):
             self._thread_local.video_id_cache = {}
 
         # Check if we already have the video ID for this path in thread-local cache
         if path in self._thread_local.video_id_cache:
-            return self._thread_local.video_id_cache[path]
+            video_id = self._thread_local.video_id_cache[path]
+            self.logger.debug(f"Using cached video ID {video_id} for {path}")
+            return video_id
 
         dir_path = os.path.dirname(path)
         filename = os.path.basename(path)
+        self.logger.debug(f"Looking up video ID for {filename} in {dir_path}")
 
         # Check if we have the directory listing with file attributes in thread-local cache
         if (
@@ -1206,10 +1216,21 @@ class YouTubeMusicFS(Operations):
         try:
             # Get video ID
             video_id = self._get_video_id(path)
+            if not video_id:
+                self.logger.error(f"Empty video ID extracted for {path}")
+                raise OSError(errno.EINVAL, "Invalid video ID")
+
+            self.logger.debug(
+                f"Successfully extracted video ID: {video_id} for path: {path}"
+            )
 
             # Delegate to file handler
             fh = self.file_handler.open(path, video_id, self.thread_pool)
             return fh
+        except OSError as e:
+            # Preserve the original OSError without wrapping it
+            self.logger.error(f"OS Error opening file {path}: {e}")
+            raise
         except Exception as e:
             self.logger.error(f"Error opening file {path}: {e}")
             raise OSError(errno.EIO, str(e))
