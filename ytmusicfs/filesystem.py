@@ -910,12 +910,18 @@ class YouTubeMusicFS(Operations):
                     )
                     raise OSError(errno.ENOENT, "No such file or directory")
 
+        # Get current user's UID and GID
+        uid = os.getuid()
+        gid = os.getgid()
+
         now = time.time()
         attr = {
             "st_atime": now,
             "st_ctime": now,
             "st_mtime": now,
             "st_nlink": 2,
+            "st_uid": uid,  # Set to current user
+            "st_gid": gid,  # Set to current group
         }
 
         # Handle root and standard top-level directories
@@ -1493,6 +1499,14 @@ def mount_ytmusicfs(
     # Set fuse logger to WARNING level to suppress debug messages about unsupported operations
     logging.getLogger("fuse").setLevel(logging.WARNING)
 
+    # Define FUSE options
+    fuse_options = {
+        "foreground": foreground,
+        "nothreads": False,
+        "uid": os.getuid(),  # Set mount UID to current user
+        "gid": os.getgid(),  # Set mount GID to current group
+    }
+
     FUSE(
         YouTubeMusicFS(
             auth_file=auth_file,
@@ -1509,6 +1523,5 @@ def mount_ytmusicfs(
             credentials_file=credentials_file,
         ),
         mount_point,
-        foreground=foreground,
-        nothreads=False,
+        **fuse_options,
     )
