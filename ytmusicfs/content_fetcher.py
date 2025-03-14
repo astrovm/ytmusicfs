@@ -109,16 +109,42 @@ class ContentFetcher:
 
         # Define a processing function for the playlists data
         def process_playlists(playlists):
-            return [
-                self.processor.sanitize_filename(playlist["title"])
-                for playlist in playlists
-            ]
+            sanitized_names = []
+            processed_playlists = []
+
+            # More robust handling with error checking
+            for playlist in playlists:
+                # Skip invalid entries
+                if not isinstance(playlist, dict):
+                    continue
+
+                # Use .get() with default value to safely handle missing 'title' keys
+                title = playlist.get("title", "Unknown Playlist")
+                sanitized_name = self.processor.sanitize_filename(title)
+
+                sanitized_names.append(sanitized_name)
+
+                # Add to processed playlists list for directory caching
+                processed_playlists.append(
+                    {
+                        "filename": sanitized_name,
+                        "playlistId": playlist.get("playlistId"),
+                    }
+                )
+
+            # Cache directory listing with attributes
+            if hasattr(self, "cache_directory_callback") and callable(
+                self.cache_directory_callback
+            ):
+                self.cache_directory_callback("/playlists", processed_playlists)
+
+            return sanitized_names
 
         # Use the centralized helper to fetch and process playlists
         return self.fetch_and_cache(
             path="/playlists",
             fetch_func=self.client.get_library_playlists,
-            limit=100,
+            limit=1000,
             process_func=process_playlists,
         )
 
@@ -251,7 +277,9 @@ class ContentFetcher:
             return []
 
         # Use yt-dlp to fetch playlist content
-        self.logger.debug(f"Fetching content for playlist ID: {playlist_id} using yt-dlp")
+        self.logger.debug(
+            f"Fetching content for playlist ID: {playlist_id} using yt-dlp"
+        )
         playlist_url = f"https://music.youtube.com/playlist?list={playlist_id}"
         ydl_opts = {
             "extract_flat": True,  # Get metadata without downloading
@@ -263,36 +291,45 @@ class ContentFetcher:
             ydl_opts["cookiesfrombrowser"] = (self.browser,)
 
         from yt_dlp import YoutubeDL
+
         try:
             with YoutubeDL(ydl_opts) as ydl:
                 result = ydl.extract_info(playlist_url, download=False)
-                
+
                 if not result or "entries" not in result:
-                    self.logger.warning(f"No tracks found for playlist: {playlist_name}")
+                    self.logger.warning(
+                        f"No tracks found for playlist: {playlist_name}"
+                    )
                     return []
-                
+
                 tracks = result["entries"]
-                self.logger.info(f"Fetched {len(tracks)} tracks from playlist: {playlist_name}")
-                
+                self.logger.info(
+                    f"Fetched {len(tracks)} tracks from playlist: {playlist_name}"
+                )
+
                 # Process tracks with yt-dlp metadata
                 processed_tracks = []
                 for entry in tracks:
                     if not entry:
                         continue
-                    
+
                     track_info = {
                         "title": entry.get("title", "Unknown Title"),
                         "artist": entry.get("uploader", "Unknown Artist"),
                         "videoId": entry.get("id"),
-                        "duration_seconds": int(entry.get("duration", 0)) if entry.get("duration") else None,
+                        "duration_seconds": (
+                            int(entry.get("duration", 0))
+                            if entry.get("duration")
+                            else None
+                        ),
                     }
-                    
+
                     # Format the filename
                     filename = self.processor.sanitize_filename(
                         f"{track_info['artist']} - {track_info['title']}.m4a"
                     )
                     track_info["filename"] = filename
-                    
+
                     # Process through the track processor to ensure consistent format
                     processed_track = self.processor.extract_track_info(track_info)
                     processed_track["filename"] = filename
@@ -354,9 +391,31 @@ class ContentFetcher:
         # Define a processing function for the artists data
         def process_artists(artists):
             sanitized_names = []
+            processed_artists = []
+
+            # More robust handling with error checking
             for artist in artists:
-                name = artist.get("name", "Unknown Artist")  # Use .get() with default
-                sanitized_names.append(self.processor.sanitize_filename(name))
+                # Skip invalid entries
+                if not isinstance(artist, dict):
+                    continue
+
+                # Use .get() with default value to safely handle missing 'name' keys
+                name = artist.get("name", "Unknown Artist")
+                sanitized_name = self.processor.sanitize_filename(name)
+
+                sanitized_names.append(sanitized_name)
+
+                # Add to processed artists list for directory caching
+                processed_artists.append(
+                    {"filename": sanitized_name, "artistId": artist.get("artistId")}
+                )
+
+            # Cache directory listing with attributes
+            if hasattr(self, "cache_directory_callback") and callable(
+                self.cache_directory_callback
+            ):
+                self.cache_directory_callback("/artists", processed_artists)
+
             return sanitized_names
 
         # Use the centralized helper to fetch and process artists
@@ -376,9 +435,33 @@ class ContentFetcher:
 
         # Define a processing function for the albums data
         def process_albums(albums):
-            return [
-                self.processor.sanitize_filename(album["title"]) for album in albums
-            ]
+            sanitized_names = []
+            processed_albums = []
+
+            # More robust handling with error checking
+            for album in albums:
+                # Skip invalid entries
+                if not isinstance(album, dict):
+                    continue
+
+                # Use .get() with default value to safely handle missing 'title' keys
+                title = album.get("title", "Unknown Album")
+                sanitized_name = self.processor.sanitize_filename(title)
+
+                sanitized_names.append(sanitized_name)
+
+                # Add to processed albums list for directory caching
+                processed_albums.append(
+                    {"filename": sanitized_name, "browseId": album.get("browseId")}
+                )
+
+            # Cache directory listing with attributes
+            if hasattr(self, "cache_directory_callback") and callable(
+                self.cache_directory_callback
+            ):
+                self.cache_directory_callback("/albums", processed_albums)
+
+            return sanitized_names
 
         # Use the centralized helper to fetch and process albums
         return self.fetch_and_cache(
@@ -973,7 +1056,7 @@ class ContentFetcher:
             # Cache processed tracks
             self.cache.set(cache_key, processed_tracks)
 
-            # Cache directory listing with attributes
+            # Cache directory listing with attributes for efficient getattr lookups
             self._cache_directory_listing_with_attrs(path, processed_tracks)
 
             return [track["filename"] for track in processed_tracks]
