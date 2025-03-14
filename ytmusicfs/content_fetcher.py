@@ -399,8 +399,9 @@ class ContentFetcher:
                 if not isinstance(artist, dict):
                     continue
 
-                # Use .get() with default value to safely handle missing 'name' keys
-                name = artist.get("name", "Unknown Artist")
+                # Use .get() with default value to safely handle missing 'artist' keys
+                name = artist.get("artist", "Unknown Artist")
+                self.logger.debug(f"Processing artist: {name}")
                 sanitized_name = self.processor.sanitize_filename(name)
 
                 sanitized_names.append(sanitized_name)
