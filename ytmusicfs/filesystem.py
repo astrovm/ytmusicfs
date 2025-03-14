@@ -121,6 +121,9 @@ class YouTubeMusicFS(Operations):
         self.thread_pool = ThreadPoolExecutor(max_workers=max_workers)
         self.logger.info(f"Thread pool initialized with {max_workers} workers")
 
+        # Initialize thread-local storage for per-operation caching
+        self._thread_local = threading.local()
+
         # Initialize the file handler component
         self.file_handler = FileHandler(
             cache_dir=self.cache.cache_dir,
@@ -357,15 +360,26 @@ class YouTubeMusicFS(Operations):
                     # For other operations, rely on cache
                     return self.cache.is_valid_path(path)
 
+        # Use thread-local storage to cache directory listings during a single operation
+        if not hasattr(self._thread_local, "temp_dir_listings"):
+            self._thread_local.temp_dir_listings = {}
+
         # For file paths, check if they exist in parent directory's listings with attributes
         if "." in path and path.lower().endswith(".m4a"):
             parent_dir = os.path.dirname(path)
             filename = os.path.basename(path)
 
-            # Check if file exists in parent directory's cached listing with attributes
-            dir_listing = self.cache.get_directory_listing_with_attrs(parent_dir)
-            if dir_listing and filename in dir_listing:
-                return True
+            # First check the thread-local cache to avoid repeated lookups
+            if parent_dir in self._thread_local.temp_dir_listings:
+                dir_listing = self._thread_local.temp_dir_listings[parent_dir]
+                if dir_listing and filename in dir_listing:
+                    return True
+            else:
+                # Get from main cache and store in thread-local for quick access
+                dir_listing = self.cache.get_directory_listing_with_attrs(parent_dir)
+                self._thread_local.temp_dir_listings[parent_dir] = dir_listing
+                if dir_listing and filename in dir_listing:
+                    return True
 
         # Use the cache's optimized path validation for all other paths
         return self.cache.is_valid_path(path)
@@ -507,6 +521,10 @@ class YouTubeMusicFS(Operations):
             List of directory entries
         """
         self.logger.debug(f"readdir: {path}")
+        
+        # Clear thread-local cache at the beginning of a new directory operation
+        if hasattr(self._thread_local, "temp_dir_listings"):
+            self._thread_local.temp_dir_listings = {}
 
         # Check if this is a file (contains a period) and not an m4a file
         if "." in os.path.basename(path) and not path.lower().endswith(".m4a"):
@@ -554,6 +572,15 @@ class YouTubeMusicFS(Operations):
 
             # Mark this as a valid directory and cache all valid filenames for future validation
             if path != "/" and len(result) > 2:  # More than just "." and ".."
+                # Pre-fetch the directory listing with attributes to warm the thread-local cache
+                dir_listing = self.cache.get_directory_listing_with_attrs(path)
+                if dir_listing:
+                    # Store in thread-local cache for subsequent getattr calls
+                    if not hasattr(self._thread_local, "temp_dir_listings"):
+                        self._thread_local.temp_dir_listings = {}
+                    self._thread_local.temp_dir_listings[path] = dir_listing
+                
+                # Continue with normal caching
                 self._cache_valid_filenames(
                     path, [entry for entry in result if entry not in [".", ".."]]
                 )
@@ -773,7 +800,33 @@ class YouTubeMusicFS(Operations):
 
         # Check cached attributes for files
         if path.lower().endswith(".m4a"):
-            # Try to get attributes from parent dir's cached listing
+            # First check if the parent dir listing is in thread-local cache
+            parent_dir = os.path.dirname(path)
+            filename = os.path.basename(path)
+            
+            # Use thread-local cached directory listing if available
+            if hasattr(self._thread_local, "temp_dir_listings") and parent_dir in self._thread_local.temp_dir_listings:
+                dir_listing = self._thread_local.temp_dir_listings[parent_dir]
+                if dir_listing and filename in dir_listing:
+                    self.logger.debug(f"Using thread-local cached attributes for {path}")
+                    cached_attrs = dir_listing[filename].copy()
+                    
+                    # Update with fresh timestamps
+                    cached_attrs["st_atime"] = now
+                    cached_attrs["st_ctime"] = now
+                    cached_attrs["st_mtime"] = now
+                    
+                    # Check for updated file size
+                    file_size_cache_key = f"filesize:{path}"
+                    cached_size = self.cache.get(file_size_cache_key)
+                    if cached_size is not None:
+                        cached_attrs["st_size"] = cached_size
+                        
+                    with self.last_access_lock:
+                        self.last_access_results[operation_key] = cached_attrs.copy()
+                    return cached_attrs
+            
+            # If not in thread-local cache, try to get from main cache
             cached_attrs = self.cache.get_file_attrs_from_parent_dir(path)
             if cached_attrs:
                 self.logger.debug(
@@ -790,6 +843,16 @@ class YouTubeMusicFS(Operations):
                 cached_size = self.cache.get(file_size_cache_key)
                 if cached_size is not None:
                     cached_attrs["st_size"] = cached_size
+                
+                # Store in thread-local cache for future lookups during this operation
+                if not hasattr(self._thread_local, "temp_dir_listings"):
+                    self._thread_local.temp_dir_listings = {}
+                    
+                if parent_dir not in self._thread_local.temp_dir_listings:
+                    # Retrieve and store the entire directory listing
+                    dir_listing = self.cache.get_directory_listing_with_attrs(parent_dir)
+                    if dir_listing:
+                        self._thread_local.temp_dir_listings[parent_dir] = dir_listing
 
                 with self.last_access_lock:
                     self.last_access_results[operation_key] = cached_attrs.copy()
@@ -1051,7 +1114,7 @@ class YouTubeMusicFS(Operations):
         return self.file_handler.read(path, size, offset, fh)
 
     def release(self, path: str, fh: int) -> int:
-        """Release (close) a file handle.
+        """Release (close) a file.
 
         Args:
             path: The file path
@@ -1060,6 +1123,11 @@ class YouTubeMusicFS(Operations):
         Returns:
             0 on success
         """
+        self.logger.debug(f"release: {path} (fh={fh})")
+        
+        # Clear thread-local cache to prevent memory leaks
+        self._clear_thread_local_cache()
+        
         # Delegate to file handler
         return self.file_handler.release(path, fh)
 
@@ -1124,165 +1192,174 @@ class YouTubeMusicFS(Operations):
         return self.fetcher._perform_search(search_query, scope, filter_type)
 
     def mkdir(self, path, mode):
-        """Create a directory in the FUSE filesystem.
-
-        This implementation primarily supports creating search query directories
-        in the search path structure.
+        """Create a directory.
 
         Args:
-            path: The directory path to create
-            mode: Directory permissions mode
+            path: The directory path
+            mode: Directory permissions (unused)
 
         Returns:
             0 on success
         """
-        self.logger.debug(f"mkdir: {path} with mode {mode}")
+        self.logger.debug(f"mkdir: {path}")
 
-        # Handle search path directories
-        if path.startswith("/search/"):
-            parts = path.split("/")
+        # Only allow creating directories under the /search path
+        if not path.startswith("/search/"):
+            self.logger.warning(f"Rejecting mkdir for non-search path: {path}")
+            raise OSError(errno.EPERM, "Can only create directories under /search")
 
-            # Don't allow creating directories with invalid path structure
-            if len(parts) < 3:
-                raise OSError(errno.EINVAL, "Invalid search path")
+        # Validate the search path structure
+        parts = path.split("/")
+        if len(parts) < 4 or parts[2] not in ["library", "catalog"]:
+            self.logger.warning(f"Invalid search path structure for mkdir: {path}")
+            raise OSError(
+                errno.EINVAL, "Invalid search path format (must be /search/{library|catalog}/...)"
+            )
 
-            # /search/library or /search/catalog are valid
-            if len(parts) == 3 and parts[2] in ["library", "catalog"]:
-                self.logger.debug(f"Creating search scope directory: {parts[2]}")
-                # Allow creating these directories (they're already virtually handled)
+        # For /search/{library|catalog}/{songs|videos|albums|artists|playlists}
+        if len(parts) == 4:
+            valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+            if parts[3] not in valid_categories:
+                self.logger.warning(f"Invalid search category for mkdir: {parts[3]}")
+                raise OSError(
+                    errno.EINVAL,
+                    f"Invalid search category (must be one of {', '.join(valid_categories)})",
+                )
+            # These directories already exist virtually
+            self._cache_valid_dir(path)
+            # Clear thread-local cache
+            self._clear_thread_local_cache()
+            return 0
+
+        # For /search/{library|catalog}/{songs|videos|albums|artists|playlists}/{query}
+        if len(parts) == 5:
+            valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+            if parts[3] not in valid_categories:
+                self.logger.warning(f"Invalid search category for mkdir: {parts[3]}")
+                raise OSError(
+                    errno.EINVAL,
+                    f"Invalid search category (must be one of {', '.join(valid_categories)})",
+                )
+
+            # This is a search query directory - perform the search
+            search_query = parts[4]
+            scope = parts[2]  # 'library' or 'catalog'
+            filter_type = parts[3]  # category
+
+            # Store search metadata for later use
+            self.cache.store_search_metadata(path, search_query, scope, filter_type)
+
+            try:
+                # Perform the search
+                self._perform_search(search_query, scope, filter_type)
+                # Mark as valid
+                self._cache_valid_dir(path)
+                # Clear thread-local cache
+                self._clear_thread_local_cache()
                 return 0
+            except Exception as e:
+                self.logger.error(f"Search failed for {path}: {e}")
+                raise OSError(errno.EIO, f"Search failed: {str(e)}")
 
-            # /search/library/songs, /search/catalog/songs, etc.
-            if len(parts) == 4 and parts[2] in ["library", "catalog"]:
-                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
-                if parts[3] in valid_categories:
-                    self.logger.debug(f"Creating search category directory: {parts[3]}")
-                    # Allow creating category directories
-                    return 0
-                else:
-                    raise OSError(errno.EINVAL, "Invalid search category")
-
-            # /search/library/songs/query or /search/catalog/songs/query - this is the actual search query
-            if len(parts) == 5 and parts[2] in ["library", "catalog"]:
-                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
-                if parts[3] in valid_categories:
-                    search_query = parts[4]
-                    scope = "library" if parts[2] == "library" else None
-                    filter_type = parts[3]  # Keep plural form as expected by the API
-
-                    # Clean any existing cached data for this path
-                    self.cache.clean_path_metadata(path)
-
-                    # Log the operation
-                    self.logger.info(
-                        f"Creating search query directory: {search_query} with scope {scope} and filter {filter_type}"
-                    )
-
-                    # Perform the search
-                    search_results = self._perform_search(
-                        search_query, scope, filter_type
-                    )
-
-                    # Cache the results with metadata using the enhanced method
-                    if search_results:
-                        self.fetcher._cache_search_results(
-                            path, search_results, scope, filter_type, search_query
-                        )
-                        self.logger.info(f"Created search directory {path}")
-                        return 0
-                    else:
-                        self.logger.warning(
-                            f"No search results found for {search_query}"
-                        )
-                        # Still mark the directory as valid but empty
-                        self.cache.add_valid_dir(path)
-                        return 0
-
-                raise OSError(errno.EINVAL, "Invalid search category")
-
-        # Don't allow creating directories outside of search paths
-        raise OSError(errno.EPERM, "Cannot create directory outside search paths")
+        self.logger.warning(f"Rejecting mkdir for unsupported path depth: {path}")
+        raise OSError(
+            errno.EINVAL, "Can only create directories at the category or query level"
+        )
 
     def rmdir(self, path):
-        """Remove a directory from the FUSE filesystem.
-
-        This implementation primarily supports removing search query directories.
+        """Remove a directory.
 
         Args:
-            path: The directory path to remove
+            path: The directory path
 
         Returns:
             0 on success
         """
         self.logger.debug(f"rmdir: {path}")
 
-        # Handle search path directories
-        if path.startswith("/search/"):
-            parts = path.split("/")
+        # Only allow removing directories under the /search path
+        if not path.startswith("/search/"):
+            self.logger.warning(f"Rejecting rmdir for non-search path: {path}")
+            raise OSError(errno.EPERM, "Can only remove directories under /search")
 
-            # Don't allow removing the base search directory
-            if path == "/search":
-                raise OSError(errno.EPERM, "Cannot remove base search directory")
+        # Validate the search path structure
+        parts = path.split("/")
+        if len(parts) < 4 or parts[2] not in ["library", "catalog"]:
+            self.logger.warning(f"Invalid search path structure for rmdir: {path}")
+            raise OSError(
+                errno.EINVAL, "Invalid search path format (must be /search/{library|catalog}/...)"
+            )
 
-            # /search/library or /search/catalog - can be removed
-            if len(parts) == 3 and parts[2] in ["library", "catalog"]:
-                self.logger.debug(f"Removing search scope directory: {parts[2]}")
-                return 0
+        # For /search/{library|catalog}/{songs|videos|albums|artists|playlists}
+        if len(parts) == 4:
+            valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+            if parts[3] not in valid_categories:
+                self.logger.warning(f"Invalid search category for rmdir: {parts[3]}")
+                raise OSError(
+                    errno.EINVAL,
+                    f"Invalid search category (must be one of {', '.join(valid_categories)})",
+                )
+            # These directories are virtual and permanent
+            self.logger.warning(f"Cannot remove category directory: {path}")
+            raise OSError(errno.EPERM, "Cannot remove category directories")
 
-            # /search/library/songs, etc. - can be removed
-            if len(parts) == 4 and parts[2] in ["library", "catalog"]:
-                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
-                if parts[3] in valid_categories:
-                    self.logger.debug(f"Removing search category directory: {parts[3]}")
-                    return 0
-                else:
-                    raise OSError(errno.EINVAL, "Invalid search category")
+        # For /search/{library|catalog}/{songs|videos|albums|artists|playlists}/{query}
+        if len(parts) == 5:
+            valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+            if parts[3] not in valid_categories:
+                self.logger.warning(f"Invalid search category for rmdir: {parts[3]}")
+                raise OSError(
+                    errno.EINVAL,
+                    f"Invalid search category (must be one of {', '.join(valid_categories)})",
+                )
 
-            # /search/library/songs/query - this is a search query, remove from cache
-            if len(parts) == 5 and parts[2] in ["library", "catalog"]:
-                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
-                if parts[3] in valid_categories:
-                    search_query = parts[4]
-                    scope = "library" if parts[2] == "library" else None
-                    filter_type = parts[3]
+            # This is a search query directory - check if it's a valid path
+            if not self.cache.is_valid_path(path):
+                self.logger.warning(f"Cannot remove non-existent directory: {path}")
+                raise OSError(errno.ENOENT, "No such directory")
 
-                    self.logger.info(f"Removing search query directory: {search_query}")
+            # Find all child paths in the cache that start with this path
+            search_pattern = f"{path}/*"
+            child_keys = self.cache.get_keys_by_pattern(search_pattern)
+            
+            # Clear the child paths from cache
+            for key in child_keys:
+                self.cache.delete(key)
+            
+            # Remove the directory itself from cache
+            self.cache.remove_valid_path(path)
+            self.cache.delete(path)
+            
+            # Clean up associated metadata
+            self.cache.delete(f"{path}_listing_with_attrs")
+            self.cache.delete(f"valid_files:{path}")
+            
+            # Clear thread-local cache
+            self._clear_thread_local_cache()
+            
+            return 0
 
-                    # Generate the cache key
-                    scope_suffix = f"_library" if scope == "library" else ""
-                    filter_suffix = f"_{filter_type}" if filter_type else ""
-                    cache_key = f"/search/{search_query}{scope_suffix}{filter_suffix}"
-
-                    # Delete the processed cache as well
-                    processed_cache_key = f"{path}_processed"
-
-                    # Remove from cache
-                    self.cache.delete(cache_key)
-                    self.cache.delete(processed_cache_key)
-                    self.logger.debug(f"Removed search results from cache: {cache_key}")
-
-                    # Clean up path validation caches
-                    self.cache.delete(f"valid_dir:{path}")
-                    self.cache.delete(f"exact_path:{path}")
-
-                    # Remove from optimized valid paths set
-                    self.cache.remove_valid_path(path)
-
-                    return 0
-                else:
-                    raise OSError(errno.EINVAL, "Invalid search category")
-
-        # Check if directory is empty
-        try:
-            entries = self.readdir(path, None)
-            if len(entries) > 2:  # More than "." and ".."
-                raise OSError(errno.ENOTEMPTY, "Directory not empty")
-        except Exception as e:
-            self.logger.error(f"Error checking if directory is empty: {e}")
-
-        # Disallow removing directories in other parts of the filesystem
-        self.logger.warning(f"Attempt to remove directory not in search path: {path}")
+        self.logger.warning(f"Rejecting rmdir for unsupported path depth: {path}")
         raise OSError(errno.EPERM, "Cannot remove directory outside of search paths")
+
+    def _clear_thread_local_cache(self):
+        """Clear the thread-local cache to prevent memory leaks.
+        This should be called at the end of major operations.
+        """
+        if hasattr(self._thread_local, "temp_dir_listings"):
+            self._thread_local.temp_dir_listings = {}
+
+    def __call__(self, op, *args):
+        """Override the __call__ method to ensure thread-local cache cleanup.
+        
+        This method is called by FUSE for each filesystem operation.
+        """
+        try:
+            # Call the parent class implementation
+            return super().__call__(op, *args)
+        finally:
+            # Clean up thread-local cache after every operation to prevent memory leaks
+            self._clear_thread_local_cache()
 
 
 def mount_ytmusicfs(
