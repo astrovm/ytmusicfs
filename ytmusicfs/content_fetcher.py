@@ -393,21 +393,6 @@ class ContentFetcher:
             sanitized_names = []
             processed_artists = []
 
-            # Log full structure of first few artists for debugging
-            if artists and len(artists) > 0:
-                self.logger.info(f"Total artists found: {len(artists)}")
-                self.logger.info("Examining artist data structure...")
-
-                # Print detailed structure of up to 3 artists
-                for i, artist in enumerate(artists[:3]):
-                    if isinstance(artist, dict):
-                        self.logger.info(f"Artist {i+1} structure:")
-                        self._log_object_structure(artist)
-                    else:
-                        self.logger.warning(
-                            f"Artist {i+1} is not a dictionary: {type(artist)}"
-                        )
-
             # More robust handling with error checking
             for artist in artists:
                 # Skip invalid entries
@@ -418,50 +403,15 @@ class ContentFetcher:
                 # Use .get() with default value to safely handle missing 'artist' keys
                 name = artist.get("artist", "Unknown Artist")
 
-                # Try to find an ID from multiple possible fields
-                artist_id = artist.get("artistId")
-                if not artist_id:
-                    # Try alternative fields that might contain the ID
-                    for id_field in [
-                        "id",
-                        "browseId",
-                        "channelId",
-                        "userId",
-                        "browseEndpoint.browseId",
-                    ]:
-                        # Handle nested fields with dots
-                        if "." in id_field:
-                            parts = id_field.split(".")
-                            value = artist
-                            for part in parts:
-                                if isinstance(value, dict) and part in value:
-                                    value = value[part]
-                                else:
-                                    value = None
-                                    break
-                            if value:
-                                artist_id = value
-                                self.logger.debug(
-                                    f"Found artist ID in nested field '{id_field}': {artist_id}"
-                                )
-                                break
-                        elif id_field in artist:
-                            artist_id = artist[id_field]
-                            self.logger.debug(
-                                f"Found artist ID in field '{id_field}': {artist_id}"
-                            )
-                            break
+                # YouTube Music uses browseId for artists, not artistId
+                browse_id = artist.get("browseId")
 
-                # Skip artists without IDs
-                if not artist_id:
-                    self.logger.warning(
-                        f"Artist {name} has no ID field found, skipping"
-                    )
+                # Skip artists without browseId
+                if not browse_id:
+                    self.logger.warning(f"Artist {name} has no browseId, skipping")
                     continue
 
-                self.logger.debug(
-                    f"Processing artist - Name: {name}, ID: {artist_id} (Field: {id_field if not artist.get('artistId') else 'artistId'})"
-                )
+                self.logger.debug(f"Processing artist - Name: {name}, ID: {browse_id}")
                 sanitized_name = self.processor.sanitize_filename(name)
 
                 sanitized_names.append(sanitized_name)
@@ -470,7 +420,7 @@ class ContentFetcher:
                 processed_artists.append(
                     {
                         "filename": sanitized_name,
-                        "artistId": artist_id,  # Store whatever ID we found
+                        "browseId": browse_id,  # Store browseId instead of artistId
                         "is_directory": True,  # Add flag for clarity
                     }
                 )
@@ -610,10 +560,12 @@ class ContentFetcher:
 
         # Check cached directory listing for artist ID
         dir_listing = self.cache.get_directory_listing_with_attrs("/artists")
-        artist_id = None
+        browse_id = None
         if dir_listing and artist_name in dir_listing:
-            artist_id = dir_listing[artist_name].get("artistId")
-            self.logger.debug(f"Retrieved artist ID from cache: {artist_id}")
+            browse_id = dir_listing[artist_name].get(
+                "browseId"
+            )  # Use browseId instead of artistId
+            self.logger.debug(f"Retrieved artist browseId from cache: {browse_id}")
         else:
             self.logger.debug(
                 f"Artist {artist_name} not in cached listing, falling back to search"
@@ -633,14 +585,16 @@ class ContentFetcher:
                     f"Comparing artist names: '{sanitized_name}' vs '{artist_name}'"
                 )
                 if sanitized_name == artist_name:
-                    artist_id = artist.get("artistId")
+                    browse_id = artist.get(
+                        "browseId"
+                    )  # Use browseId instead of artistId
                     self.logger.debug(
-                        f"Found matching artist - Name: {name}, ID: {artist_id}"
+                        f"Found matching artist - Name: {name}, ID: {browse_id}"
                     )
                     break
 
-        if not artist_id:
-            self.logger.warning(f"Artist ID not found for: {artist_name}")
+        if not browse_id:
+            self.logger.warning(f"Artist browse ID not found for: {artist_name}")
             return []
 
         # First check cache for the artist data
@@ -649,13 +603,13 @@ class ContentFetcher:
 
         if not artist_data:
             # Fetch the artist content
-            self.logger.debug(f"Fetching content for artist ID: {artist_id}")
-            artist_data = self.client.get_artist(artist_id)
+            self.logger.debug(f"Fetching content for artist ID: {browse_id}")
+            artist_data = self.client.get_artist(browse_id)  # Pass browseId
 
             if artist_data:
                 self.cache.set(cache_key, artist_data)
             else:
-                self.logger.warning(f"No data fetched for artist ID: {artist_id}")
+                self.logger.warning(f"No data fetched for artist ID: {browse_id}")
                 return []
 
         if not artist_data:
@@ -1321,25 +1275,6 @@ class ContentFetcher:
                         album_path, processed_tracks
                     )
                     return [track["filename"] for track in processed_tracks]
-
-                # Fetch album data
-                album_data = self.client.get_album(album_browse_id)
-
-                if not album_data or "tracks" not in album_data:
-                    self.logger.warning(f"No tracks found for album: {album_name}")
-                    return []
-
-                # Process tracks
-                tracks = album_data.get("tracks", [])
-                processed_tracks = self.processor.process_tracks(tracks)
-
-                # Cache processed tracks
-                self.cache.set(cache_key, processed_tracks)
-
-                # Cache directory listing with attributes
-                self._cache_directory_listing_with_attrs(album_path, processed_tracks)
-
-                return [track["filename"] for track in processed_tracks]
 
         return []
 
