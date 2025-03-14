@@ -608,6 +608,11 @@ class YouTubeMusicFS(Operations):
                 if cached_size is not None:
                     attrs["st_size"] = cached_size
 
+            # Preserve important metadata fields from the original track
+            for key, value in track.items():
+                if key in ["browseId", "channelId", "id", "playlistId", "videoId"]:
+                    attrs[key] = value
+
             listing_with_attrs[filename] = attrs
 
             # Mark path as valid and store metadata
