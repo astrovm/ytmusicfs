@@ -408,7 +408,11 @@ class ContentFetcher:
 
                 # Add to processed artists list for directory caching
                 processed_artists.append(
-                    {"filename": sanitized_name, "artistId": artist.get("artistId")}
+                    {
+                        "filename": sanitized_name,
+                        "artistId": artist.get("artistId"),
+                        "is_directory": True,  # Add flag for clarity
+                    }
                 )
 
             # Cache directory listing with attributes
@@ -416,6 +420,9 @@ class ContentFetcher:
                 self.cache_directory_callback
             ):
                 self.cache_directory_callback("/artists", processed_artists)
+                self.logger.debug(
+                    f"Cached {len(processed_artists)} artists as directories"
+                )
 
             return sanitized_names
 

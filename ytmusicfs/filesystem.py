@@ -340,6 +340,28 @@ class YouTubeMusicFS(Operations):
         ]:
             return True
 
+        # NEW: Explicitly handle artist paths with dots as directories
+        if path.startswith("/artists/"):
+            # Split the path into components
+            parts = path.split("/")
+            # Check if this is a top-level artist directory (e.g., /artists/t.A.T.u)
+            if len(parts) == 3 and parts[1] == "artists":
+                # If it doesn't end with .m4a, treat it as a directory
+                if not path.lower().endswith(".m4a"):
+                    self.logger.debug(f"Recognized {path} as a valid artist directory")
+                    return True
+            # For deeper paths under artists (e.g., /artists/t.A.T.u/Albums), rely on cache
+            parent_dir = os.path.dirname(path)
+            filename = os.path.basename(path)
+            if self.cache.is_valid_path(parent_dir):
+                # If no .m4a extension, assume it's a directory
+                if not path.lower().endswith(".m4a"):
+                    return True
+                # For files, check directory listing
+                dir_listing = self.cache.get_directory_listing_with_attrs(parent_dir)
+                if dir_listing and filename in dir_listing:
+                    return True
+
         # Explicitly validate subdirectories under /albums, /artists, and /playlists
         if path.startswith(("/albums/", "/artists/", "/playlists/")):
             parent_dir = os.path.dirname(path)
@@ -348,14 +370,18 @@ class YouTubeMusicFS(Operations):
             # If the parent dir is one of our root dirs, assume directory is valid
             # This handles paths like /albums/AlbumName
             if parent_dir in ["/albums", "/artists", "/playlists"]:
-                if "." not in filename:  # It's a directory
+                if "." not in filename or (
+                    path.startswith("/artists/") and not path.lower().endswith(".m4a")
+                ):  # Modified to handle artist directories with dots
                     return True
 
             # For subdirectories deeper than first level
             # First, check if parent directory is valid
             if self.cache.is_valid_path(parent_dir):
-                # For directories (no extension), assume valid if parent is valid
-                if "." not in filename:
+                # For directories (no extension or artist directory with dots), assume valid if parent is valid
+                if "." not in filename or (
+                    path.startswith("/artists/") and not path.lower().endswith(".m4a")
+                ):  # Modified to handle artist directories with dots
                     return True
 
                 # For files, check the directory listing if available
@@ -381,7 +407,9 @@ class YouTubeMusicFS(Operations):
                 dir_listing = self._thread_local.temp_dir_listings[parent_dir]
 
                 # If this is a directory, it's always valid if parent is valid
-                if "." not in filename:
+                if "." not in filename or (
+                    path.startswith("/artists/") and not path.lower().endswith(".m4a")
+                ):  # Modified to handle artist directories with dots
                     return True
 
                 # For files, check the cached listing
@@ -393,7 +421,9 @@ class YouTubeMusicFS(Operations):
 
             # Parent is valid but we don't have listing cached
             # For directories, assume valid
-            if "." not in os.path.basename(path):
+            if "." not in os.path.basename(path) or (
+                path.startswith("/artists/") and not path.lower().endswith(".m4a")
+            ):  # Modified to handle artist directories with dots
                 return True
 
         # Search category paths are valid - simplified logic
@@ -447,13 +477,13 @@ class YouTubeMusicFS(Operations):
                         self._thread_local.validated_dirs.add(parent_dir)
                         return True
 
-        # Use the cache's optimized path validation for all other paths
+        # Final fallback to cache
         is_valid = self.cache.is_valid_path(path)
-
-        # If this is a directory and it's valid, add to validated dirs
-        if is_valid and "." not in os.path.basename(path):
+        if is_valid and (
+            "." not in os.path.basename(path)
+            or (path.startswith("/artists/") and not path.lower().endswith(".m4a"))
+        ):  # Modified to handle artist directories with dots
             self._thread_local.validated_dirs.add(path)
-
         return is_valid
 
     def _cache_valid_path(self, path: str) -> None:
@@ -546,42 +576,62 @@ class YouTubeMusicFS(Operations):
 
             valid_filenames.add(filename)
 
-            # Create basic file attributes
-            attrs = {
-                "st_mode": stat.S_IFREG | 0o644,
-                "st_atime": now,
-                "st_ctime": now,
-                "st_mtime": now,
-                "st_nlink": 1,
-            }
+            # Check if this entry is explicitly marked as a directory
+            is_directory = track.get("is_directory", False)
 
-            # Try to get a more accurate file size if duration is available
-            duration_seconds = track.get("duration_seconds")
-            if duration_seconds:
-                # Estimate file size based on duration (128kbps = 16KB/sec)
-                estimated_size = duration_seconds * 16 * 1024
-                attrs["st_size"] = estimated_size
+            # Create attributes based on whether it's a directory or a file
+            if is_directory:
+                # Directory attributes
+                attrs = {
+                    "st_mode": stat.S_IFDIR
+                    | 0o755,  # Directory with rwxr-xr-x permissions
+                    "st_atime": now,
+                    "st_ctime": now,
+                    "st_mtime": now,
+                    "st_nlink": 2,
+                    "st_size": 0,  # Directories have zero size
+                }
+                # Mark this entry as a valid directory in the cache system
+                self._cache_valid_dir(f"{dir_path}/{filename}")
+                self.logger.debug(f"Marked {dir_path}/{filename} as directory")
             else:
-                # Default placeholder size
-                attrs["st_size"] = 4096
+                # File attributes
+                attrs = {
+                    "st_mode": stat.S_IFREG
+                    | 0o644,  # Regular file with rw-r--r-- permissions
+                    "st_atime": now,
+                    "st_ctime": now,
+                    "st_mtime": now,
+                    "st_nlink": 1,
+                }
 
-            # Check if we have an actual cached file size
-            file_size_cache_key = f"filesize:{dir_path}/{filename}"
-            cached_size = self.cache.get(file_size_cache_key)
-            if cached_size is not None:
-                attrs["st_size"] = cached_size
+                # Try to get a more accurate file size if duration is available
+                duration_seconds = track.get("duration_seconds")
+                if duration_seconds:
+                    # Estimate file size based on duration (128kbps = 16KB/sec)
+                    estimated_size = duration_seconds * 16 * 1024
+                    attrs["st_size"] = estimated_size
+                else:
+                    # Default placeholder size
+                    attrs["st_size"] = 4096
+
+                # Check if we have an actual cached file size
+                file_size_cache_key = f"filesize:{dir_path}/{filename}"
+                cached_size = self.cache.get(file_size_cache_key)
+                if cached_size is not None:
+                    attrs["st_size"] = cached_size
+
+                # Mark each individual file path as valid
+                file_path = f"{dir_path}/{filename}"
+                self.cache.add_valid_file(file_path)
+
+                # Save video ID to duration mapping if available
+                video_id = track.get("video_id")
+                if video_id and duration_seconds:
+                    self.cache.set_duration(video_id, duration_seconds)
 
             # Add to the listing
             listing_with_attrs[filename] = attrs
-
-            # Mark each individual file path as valid
-            file_path = f"{dir_path}/{filename}"
-            self.cache.add_valid_file(file_path)
-
-            # Save video ID to duration mapping if available
-            video_id = track.get("video_id")
-            if video_id and duration_seconds:
-                self.cache.set_duration(video_id, duration_seconds)
 
         # Cache the directory listing with attributes
         self.cache.set_directory_listing_with_attrs(dir_path, listing_with_attrs)
@@ -937,6 +987,32 @@ class YouTubeMusicFS(Operations):
             with self.last_access_lock:
                 self.last_access_results[operation_key] = attr.copy()
             return attr
+
+        # NEW: Handle artist directories with dots
+        if path.startswith("/artists/"):
+            parts = path.split("/")
+            # Top-level artist directory (e.g., /artists/t.A.T.u)
+            if len(parts) == 3 and parts[1] == "artists":
+                if not path.lower().endswith(".m4a"):  # Ensure it's not a file
+                    attr["st_mode"] = stat.S_IFDIR | 0o755
+                    attr["st_size"] = 0
+                    with self.last_access_lock:
+                        self.last_access_results[operation_key] = attr.copy()
+                    self.logger.debug(
+                        f"Returning directory attributes for artist: {path}"
+                    )
+                    return attr
+            # Subdirectories under artists (e.g., /artists/t.A.T.u/Albums)
+            elif len(parts) > 3:
+                parent_dir = os.path.dirname(path)
+                if self._is_valid_path(parent_dir):
+                    filename = os.path.basename(path)
+                    if not path.lower().endswith(".m4a"):
+                        attr["st_mode"] = stat.S_IFDIR | 0o755
+                        attr["st_size"] = 0
+                        with self.last_access_lock:
+                            self.last_access_results[operation_key] = attr.copy()
+                        return attr
 
         # Handle search path directories
         if path.startswith("/search/"):
