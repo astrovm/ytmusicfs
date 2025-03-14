@@ -562,11 +562,8 @@ class YouTubeMusicFS(Operations):
             dir_path: Directory path
             processed_tracks: List of processed track data with filename and metadata
         """
-        # Create a dictionary mapping filenames to their attributes
         now = time.time()
         listing_with_attrs = {}
-
-        # Also build a set of valid filenames for this directory
         valid_filenames = set()
 
         for track in processed_tracks:
@@ -576,62 +573,53 @@ class YouTubeMusicFS(Operations):
 
             valid_filenames.add(filename)
 
-            # Check if this entry is explicitly marked as a directory
+            # Check if this is explicitly a directory
             is_directory = track.get("is_directory", False)
-
-            # Create attributes based on whether it's a directory or a file
             if is_directory:
-                # Directory attributes
                 attrs = {
-                    "st_mode": stat.S_IFDIR
-                    | 0o755,  # Directory with rwxr-xr-x permissions
+                    "st_mode": stat.S_IFDIR | 0o755,
                     "st_atime": now,
                     "st_ctime": now,
                     "st_mtime": now,
                     "st_nlink": 2,
-                    "st_size": 0,  # Directories have zero size
+                    "st_size": 0,
                 }
-                # Mark this entry as a valid directory in the cache system
+                # Mark as directory in cache system
                 self._cache_valid_dir(f"{dir_path}/{filename}")
-                self.logger.debug(f"Marked {dir_path}/{filename} as directory")
+                self.logger.debug(f"Cached directory: {dir_path}/{filename}")
             else:
-                # File attributes
                 attrs = {
-                    "st_mode": stat.S_IFREG
-                    | 0o644,  # Regular file with rw-r--r-- permissions
+                    "st_mode": stat.S_IFREG | 0o644,
                     "st_atime": now,
                     "st_ctime": now,
                     "st_mtime": now,
                     "st_nlink": 1,
                 }
-
-                # Try to get a more accurate file size if duration is available
                 duration_seconds = track.get("duration_seconds")
                 if duration_seconds:
                     # Estimate file size based on duration (128kbps = 16KB/sec)
-                    estimated_size = duration_seconds * 16 * 1024
-                    attrs["st_size"] = estimated_size
+                    attrs["st_size"] = duration_seconds * 16 * 1024
                 else:
                     # Default placeholder size
                     attrs["st_size"] = 4096
 
-                # Check if we have an actual cached file size
                 file_size_cache_key = f"filesize:{dir_path}/{filename}"
                 cached_size = self.cache.get(file_size_cache_key)
                 if cached_size is not None:
                     attrs["st_size"] = cached_size
 
-                # Mark each individual file path as valid
-                file_path = f"{dir_path}/{filename}"
-                self.cache.add_valid_file(file_path)
+            listing_with_attrs[filename] = attrs
 
+            # Mark path as valid and store metadata
+            file_path = f"{dir_path}/{filename}"
+            if is_directory:
+                self.cache.add_valid_dir(file_path)
+            else:
+                self.cache.add_valid_file(file_path)
                 # Save video ID to duration mapping if available
                 video_id = track.get("video_id")
                 if video_id and duration_seconds:
                     self.cache.set_duration(video_id, duration_seconds)
-
-            # Add to the listing
-            listing_with_attrs[filename] = attrs
 
         # Cache the directory listing with attributes
         self.cache.set_directory_listing_with_attrs(dir_path, listing_with_attrs)
