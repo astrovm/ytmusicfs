@@ -150,7 +150,9 @@ class YouTubeMusicFS(Operations):
             "/playlists", lambda: [".", ".."] + self.fetcher.readdir_playlists()
         )
         self.router.register(
-            "/liked_songs", lambda: [".", ".."] + self.fetcher.readdir_liked_songs()
+            "/liked_songs",
+            lambda: [".", ".."]
+            + self.fetcher.fetch_playlist_content("LM", "/liked_songs"),
         )
         self.router.register(
             "/artists", lambda: [".", ".."] + self.fetcher.readdir_artists()
@@ -174,8 +176,15 @@ class YouTubeMusicFS(Operations):
         # Register dynamic handlers with wildcard capture
         self.router.register_dynamic(
             "/playlists/*",
-            lambda path, *args: [".", ".."]
-            + self.fetcher.readdir_playlist_content(path),
+            lambda path, playlist_name: [".", ".."]
+            + self.fetcher.fetch_playlist_content(
+                next(
+                    p["id"]
+                    for p in self.fetcher.cache.get("/playlists", [])
+                    if p["name"] == playlist_name
+                ),
+                path,
+            ),
         )
         self.router.register_dynamic(
             "/artists/*",
@@ -187,7 +196,15 @@ class YouTubeMusicFS(Operations):
         )
         self.router.register_dynamic(
             "/albums/*",
-            lambda path, *args: [".", ".."] + self.fetcher.readdir_album_content(path),
+            lambda path, album_name: [".", ".."]
+            + self.fetcher.fetch_playlist_content(
+                next(
+                    a["id"]
+                    for a in self.fetcher.cache.get("/albums", [])
+                    if a["name"] == album_name
+                ),
+                path,
+            ),
         )
 
         # Search routes - focused on library and catalog paths
@@ -247,7 +264,11 @@ class YouTubeMusicFS(Operations):
 
         # Start loading each data type
         futures.append(self.thread_pool.submit(self.fetcher.readdir_playlists))
-        futures.append(self.thread_pool.submit(self.fetcher.readdir_liked_songs))
+        futures.append(
+            self.thread_pool.submit(
+                lambda: self.fetcher.fetch_playlist_content("LM", "/liked_songs")
+            )
+        )
         futures.append(self.thread_pool.submit(self.fetcher.readdir_artists))
         futures.append(self.thread_pool.submit(self.fetcher.readdir_albums))
         futures.append(self.thread_pool.submit(self.fetcher.readdir_search_categories))
