@@ -3,6 +3,7 @@
 from typing import List, Optional, Dict, Any
 from ytmusicfs.processor import TrackProcessor
 from ytmusicfs.cache import CacheManager
+from ytmusicfs.yt_dlp_utils import extract_playlist_content
 import logging
 import time
 import threading
@@ -128,85 +129,58 @@ class ContentFetcher:
             self._cache_directory_listing_with_attrs(path, processed_tracks)
             return [track["filename"] for track in processed_tracks]
 
-        playlist_url = f"https://music.youtube.com/playlist?list={playlist_id}"
-        ydl_opts = {
-            "extract_flat": True,
-            "quiet": True,
-            "no_warnings": True,
-            "ignoreerrors": True,
-            "playlistend": limit,  # Limit the number of entries fetched
-            "extractor_args": {
-                "youtubetab": {"skip": ["authcheck"]}
-            },  # Skip authentication check
-        }
-        if self.browser:
-            ydl_opts["cookiesfrombrowser"] = (self.browser,)
-
         self.logger.debug(
             f"Fetching up to {limit} tracks for playlist ID: {playlist_id} via yt-dlp"
         )
-        from yt_dlp import YoutubeDL
 
         try:
-            with YoutubeDL(ydl_opts) as ydl:
-                result = ydl.extract_info(playlist_url, download=False)
-                if not result or "entries" not in result:
-                    self.logger.warning(
-                        f"No tracks found for playlist ID: {playlist_id}"
-                    )
-                    # Cache empty list to prevent repeated attempts
-                    empty_tracks = []
-                    self.cache.set(cache_key, empty_tracks)
-                    self._cache_directory_listing_with_attrs(path, empty_tracks)
-                    return []
+            tracks = extract_playlist_content(playlist_id, limit, self.browser)
+            self.logger.info(f"Fetched {len(tracks)} tracks for {playlist_id}")
 
-                tracks = result["entries"][:limit]  # Ensure we respect the limit
-                self.logger.info(f"Fetched {len(tracks)} tracks for {playlist_id}")
+            processed_tracks = []
+            # Collect all durations in a batch
+            durations_batch = {}
 
-                processed_tracks = []
-                # Collect all durations in a batch
-                durations_batch = {}
+            for entry in tracks:
+                if not entry:
+                    continue
 
-                for entry in tracks:
-                    if not entry:
-                        continue
+                video_id = entry.get("id")
+                duration_seconds = (
+                    int(entry.get("duration", 0))
+                    if entry.get("duration") is not None
+                    else None
+                )
 
-                    video_id = entry.get("id")
-                    duration_seconds = (
-                        int(entry.get("duration", 0))
-                        if entry.get("duration") is not None
-                        else None
-                    )
+                # Collect durations for batch processing
+                if video_id and duration_seconds is not None:
+                    durations_batch[video_id] = duration_seconds
 
-                    # Collect durations for batch processing
-                    if video_id and duration_seconds is not None:
-                        durations_batch[video_id] = duration_seconds
+                track_info = {
+                    "title": entry.get("title", "Unknown Title"),
+                    "artist": entry.get("uploader", "Unknown Artist"),
+                    "videoId": video_id,
+                    "duration_seconds": duration_seconds,
+                    "is_directory": False,
+                }
 
-                    track_info = {
-                        "title": entry.get("title", "Unknown Title"),
-                        "artist": entry.get("uploader", "Unknown Artist"),
-                        "videoId": video_id,
-                        "duration_seconds": duration_seconds,
-                        "is_directory": False,
-                    }
+                filename = self.processor.sanitize_filename(
+                    f"{track_info['artist']} - {track_info['title']}.m4a"
+                )
+                track_info["filename"] = filename
 
-                    filename = self.processor.sanitize_filename(
-                        f"{track_info['artist']} - {track_info['title']}.m4a"
-                    )
-                    track_info["filename"] = filename
+                processed_track = self.processor.extract_track_info(track_info)
+                processed_track["filename"] = filename
+                processed_track["is_directory"] = False
+                processed_tracks.append(processed_track)
 
-                    processed_track = self.processor.extract_track_info(track_info)
-                    processed_track["filename"] = filename
-                    processed_track["is_directory"] = False
-                    processed_tracks.append(processed_track)
+            # Cache all durations in a single batch operation
+            if durations_batch:
+                self.cache.set_durations_batch(durations_batch)
 
-                # Cache all durations in a single batch operation
-                if durations_batch:
-                    self.cache.set_durations_batch(durations_batch)
-
-                self.cache.set(cache_key, processed_tracks)
-                self._cache_directory_listing_with_attrs(path, processed_tracks)
-                return [track["filename"] for track in processed_tracks]
+            self.cache.set(cache_key, processed_tracks)
+            self._cache_directory_listing_with_attrs(path, processed_tracks)
+            return [track["filename"] for track in processed_tracks]
         except Exception as e:
             self.logger.error(f"Error fetching playlist content: {str(e)}")
             return []

@@ -2,8 +2,8 @@
 
 from pathlib import Path
 from typing import Optional, Any, Callable
-from yt_dlp import YoutubeDL
 from ytmusicfs.downloader import Downloader
+from ytmusicfs.yt_dlp_utils import extract_stream_url_process
 import errno
 import logging
 import multiprocessing
@@ -88,42 +88,7 @@ class FileHandler:
             browser: Browser to use for cookies
             queue: Queue to communicate results back to main process
         """
-        try:
-            ydl_opts = {
-                "format": "141/bestaudio[ext=m4a]",
-                "extractor_args": {
-                    "youtube": {
-                        "formats": ["missing_pot"],
-                    },
-                },
-            }
-
-            if browser:
-                ydl_opts["cookiesfrombrowser"] = (browser,)
-
-            url = f"https://music.youtube.com/watch?v={video_id}"
-
-            with YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                stream_url = info["url"]
-                # Extract and cache duration if available
-                duration = info.get("duration")
-                if duration is not None:
-                    try:
-                        # Add duration to the queue response
-                        queue.put(
-                            {
-                                "status": "success",
-                                "stream_url": stream_url,
-                                "duration": int(duration),
-                            }
-                        )
-                    except (ValueError, TypeError):
-                        queue.put({"status": "success", "stream_url": stream_url})
-                else:
-                    queue.put({"status": "success", "stream_url": stream_url})
-        except Exception as e:
-            queue.put({"status": "error", "error": str(e)})
+        extract_stream_url_process(video_id, browser, queue)
 
     def _stream_content(
         self, stream_url: str, offset: int, size: int, retries: int = 3
