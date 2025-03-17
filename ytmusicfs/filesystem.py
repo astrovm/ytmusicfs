@@ -1337,15 +1337,8 @@ class YouTubeMusicFS(Operations):
         # Delete all search-related cache entries
         self.cache.delete_pattern("/search/*")
         self.cache.delete_pattern("/search/*/*_processed")
-
-        # Also delete search metadata entries
         self.cache.delete_pattern("*_search_metadata")
         self.logger.debug("Deleted search metadata entries")
-
-        # Mark all caches as freshly refreshed
-        current_time = time.time()
-        for cache_key in ["/liked_songs", "/playlists", "/artists", "/albums"]:
-            self.cache.set_metadata(cache_key, "last_refresh_time", current_time)
 
         self.logger.info("All caches refreshed successfully")
 
