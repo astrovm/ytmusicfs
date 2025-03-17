@@ -1259,24 +1259,11 @@ class ContentFetcher:
         return []
 
     def refresh_all_caches(self) -> None:
-        """Refresh all caches using the simplified cache refresh method."""
+        """Refresh all caches with the latest 100 songs from each playlist."""
         self.logger.info("Refreshing all content caches...")
-
-        # Refresh playlists
-        self.cache.refresh_cache(
-            cache_key="/playlists",
-            fetch_func=self.client.get_library_playlists,
-            limit=1000,
-        )
-
-        # Refresh liked songs
-        self.fetch_playlist_content("LM", "/liked_songs")
-
-        # Refresh albums
-        self.cache.refresh_cache(
-            cache_key="/albums",
-            fetch_func=self.client.get_library_albums,
-            limit=1000,
-        )
-
+        for playlist in self.PLAYLIST_REGISTRY:
+            self.logger.debug(
+                f"Refreshing {playlist['type']} at {playlist['path']} with ID {playlist['id']}"
+            )
+            self.fetch_playlist_content(playlist["id"], playlist["path"], limit=100)
         self.logger.info("All content caches refreshed successfully")
