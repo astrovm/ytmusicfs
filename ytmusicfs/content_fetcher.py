@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 
-from typing import List, Callable, Optional, Dict, Any
-from ytmusicfs.client import YouTubeMusicClient
+from typing import List, Optional, Dict, Any
 from ytmusicfs.processor import TrackProcessor
 from ytmusicfs.cache import CacheManager
 import logging
-import os
 import time
 import threading
 

@@ -18,7 +18,6 @@ import stat
 import threading
 import time
 import traceback
-import requests
 
 
 class YouTubeMusicFS(Operations):
