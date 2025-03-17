@@ -288,8 +288,7 @@ class CacheManager:
                 if time.time() - cache_entry["time"] < self.cache_timeout:
                     self.logger.debug(f"Cache hit (memory) for {path}")
                     if include_metadata:
-                        metadata = self.get(f"{path}_search_metadata")
-                        return cache_entry["data"], metadata
+                        return cache_entry["data"], None
                     return cache_entry["data"]
 
         # Then check SQLite cache (outside the lock)
@@ -316,8 +315,7 @@ class CacheManager:
             with self.lock:
                 self.cache[path] = cache_data
             if include_metadata:
-                metadata = self.get(f"{path}_search_metadata")
-                return cache_data["data"], metadata
+                return cache_data["data"], None
             return cache_data["data"]
 
         return None
@@ -396,7 +394,7 @@ class CacheManager:
         """Get all cache keys matching a pattern.
 
         Args:
-            pattern: The pattern to match, e.g. "valid_dir:/search/*"
+            pattern: The pattern to match, e.g. "valid_dir:/playlists/*"
 
         Returns:
             List of matching cache keys
@@ -455,7 +453,7 @@ class CacheManager:
         """Delete all cache keys matching a pattern.
 
         Args:
-            pattern: The pattern to match, e.g. "/search/*"
+            pattern: The pattern to match, e.g. "/playlists/*"
 
         Returns:
             Number of cache keys deleted
@@ -945,3 +943,22 @@ class CacheManager:
         except Exception as e:
             # We can't log here as the logger might be gone
             pass
+
+    def need_refresh(self, cache_key: str, max_age: float = 86400) -> bool:
+        """Check if a cache key needs refreshing.
+
+        Args:
+            cache_key: The cache key to check
+            max_age: Maximum age in seconds before refresh is needed (default: 24h)
+
+        Returns:
+            True if refresh is needed, False otherwise
+        """
+        # Check the last refresh time
+        last_refresh = self.get_last_refresh(cache_key)
+        if last_refresh is None:
+            return True  # Never refreshed
+
+        current_time = time.time()
+        age = current_time - last_refresh
+        return age > max_age

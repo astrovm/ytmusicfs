@@ -659,7 +659,7 @@ class YouTubeMusicFS(Operations):
                                         )
                                         return video_id
             else:
-                # For other directories (like artists or albums)
+                # For other directories (like albums)
                 songs = self.cache.get(dir_path)
                 if songs:
                     for song in songs:
