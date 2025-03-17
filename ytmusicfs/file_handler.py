@@ -83,6 +83,12 @@ class FileHandler:
 
         if self._check_cached_audio(video_id):
             self.logger.debug(f"Using cached audio for {video_id}")
+            # Mark stream_url as "cached" to avoid unnecessary fetch
+            with self.file_handle_lock:
+                file_info = self.open_files[fh]
+                file_info["stream_url"] = (
+                    "cached"  # Special value to indicate file is fully cached
+                )
             return fh
 
         self.logger.debug(f"Stream URL will be fetched on-demand for {video_id}")
@@ -234,8 +240,15 @@ class FileHandler:
                     f.seek(offset)
                     return f.read(size)
 
-        # If we don't have the stream URL yet, fetch it on-demand
-        if not file_info["stream_url"]:
+        # If we don't have the stream URL yet (and it's not a cached file), fetch it on-demand
+        if not file_info["stream_url"] or file_info["stream_url"] == "cached":
+            if file_info["stream_url"] == "cached":
+                # If marked as cached, we can read directly from the file
+                with cache_path.open("rb") as f:
+                    f.seek(offset)
+                    return f.read(size)
+
+            # Otherwise, proceed with fetching the stream URL
             self.logger.debug(f"Fetching stream URL on-demand for {video_id}")
 
             queue = multiprocessing.Queue()
