@@ -141,9 +141,7 @@ class YouTubeMusicFS(Operations):
                 "..",
                 "playlists",
                 "liked_songs",
-                "artists",
                 "albums",
-                "search",
             ],
         )
         self.router.register(
@@ -153,22 +151,7 @@ class YouTubeMusicFS(Operations):
             "/liked_songs", lambda: [".", ".."] + self.fetcher.readdir_liked_songs()
         )
         self.router.register(
-            "/artists", lambda: [".", ".."] + self.fetcher.readdir_artists()
-        )
-        self.router.register(
             "/albums", lambda: [".", ".."] + self.fetcher.readdir_albums()
-        )
-        self.router.register(
-            "/search", lambda: [".", ".."] + self.fetcher.readdir_search_categories()
-        )
-        # Add handlers for /search/library and /search/catalog to show categories
-        self.router.register(
-            "/search/library",
-            lambda: [".", ".."] + self.fetcher.readdir_search_category_options(),
-        )
-        self.router.register(
-            "/search/catalog",
-            lambda: [".", ".."] + self.fetcher.readdir_search_category_options(),
         )
 
         # Register dynamic handlers with wildcard capture
@@ -185,28 +168,6 @@ class YouTubeMusicFS(Operations):
             ),
         )
         self.router.register_dynamic(
-            "/artists/*",
-            lambda path, *args: [".", ".."] + self.fetcher.readdir_artist_content(path),
-        )
-        self.router.register_dynamic(
-            "/artists/*/*",
-            lambda path, artist_name, album_type_or_name: [".", ".."]
-            + (
-                self.fetcher.readdir_artist_content(
-                    f"/artists/{artist_name}/{album_type_or_name}"
-                )
-                if album_type_or_name in ["Albums", "Singles", "Songs"]
-                else self.fetcher.fetch_playlist_content(
-                    # For specific album paths under artists, like /artists/Artist/Albums/AlbumName
-                    # Extract browseId from the album data cached during artist content fetching
-                    self.cache.get(
-                        f"/artists/{artist_name}/Albums/{album_type_or_name}_data", {}
-                    ).get("browseId", ""),
-                    path,
-                )
-            ),
-        )
-        self.router.register_dynamic(
             "/albums/*",
             lambda path, album_name: [".", ".."]
             + self.fetcher.fetch_playlist_content(
@@ -219,71 +180,19 @@ class YouTubeMusicFS(Operations):
             ),
         )
 
-        # Search routes - focused on library and catalog paths
-        self.router.register_dynamic(
-            "/search/*",
-            lambda path, *args: [".", ".."]
-            + self.fetcher.readdir_search_results(path, *args),
-        )
-        self.router.register_dynamic(
-            "/search/library/*",
-            lambda path, *args: [".", ".."]
-            + self.fetcher.readdir_search_results(path, *args, scope="library"),
-        )
-        self.router.register_dynamic(
-            "/search/catalog/*",
-            lambda path, *args: [".", ".."]
-            + self.fetcher.readdir_search_results(path, *args, scope=None),
-        )
-        self.router.register_dynamic(
-            "/search/library/*/*",
-            lambda path, *args: [".", ".."]
-            + self.fetcher.readdir_search_item_content(path, *args, scope="library"),
-        )
-        self.router.register_dynamic(
-            "/search/catalog/*/*",
-            lambda path, *args: [".", ".."]
-            + self.fetcher.readdir_search_item_content(path, *args, scope=None),
-        )
-        self.router.register_dynamic(
-            "/search/library/*/*/*",
-            lambda path, *args: [".", ".."]
-            + self.fetcher.readdir_search_item_content(path, *args, scope="library"),
-        )
-        self.router.register_dynamic(
-            "/search/catalog/*/*/*",
-            lambda path, *args: [".", ".."]
-            + self.fetcher.readdir_search_item_content(path, *args, scope=None),
-        )
-
-        # Note: The PathRouter now also has a dynamic handler for the categorized search paths
-        # registered via the router.set_fetcher(self.fetcher) call above
-
         # Preload cache if requested
         if preload_cache:
             self.preload_cache()
 
     def preload_cache(self) -> None:
-        """Preload important cache data at startup.
+        """Preload common API data to improve initial filesystem performance."""
+        self.logger.info("Preloading cache...")
 
-        This method loads playlist, liked songs, artists, and albums data into cache
-        to avoid on-demand loading when the filesystem is accessed.
-        """
-        self.logger.info("Preloading cache data...")
-
-        # Use a thread pool to load data in parallel
+        # Use thread pool to preload caches concurrently
         futures = []
-
-        # Start loading each data type
         futures.append(self.thread_pool.submit(self.fetcher.readdir_playlists))
         futures.append(self.thread_pool.submit(self.fetcher.readdir_liked_songs))
-        futures.append(self.thread_pool.submit(self.fetcher.readdir_artists))
         futures.append(self.thread_pool.submit(self.fetcher.readdir_albums))
-        futures.append(self.thread_pool.submit(self.fetcher.readdir_search_categories))
-        # Also preload search category options
-        futures.append(
-            self.thread_pool.submit(self.fetcher.readdir_search_category_options)
-        )
 
         # Wait for all preload tasks to complete
         for future in futures:
@@ -292,7 +201,7 @@ class YouTubeMusicFS(Operations):
             except Exception as e:
                 self.logger.error(f"Error during cache preloading: {e}")
 
-        # Optimize path validation by caching known directory structure
+        # Optimize path validation by caching known valid paths
         self.optimize_path_validation()
 
         self.logger.info("Cache preloading completed")
@@ -306,36 +215,8 @@ class YouTubeMusicFS(Operations):
         """
         self.logger.info("Optimizing path validation...")
 
-        # We no longer need to cache these static directories since they're checked directly in _is_valid_path
-        # Only cache dynamic paths that need validation
-
-        # Cache search category directories - these are still cached to preserve compatibility with other code
-        for category in ["songs", "videos", "albums", "artists", "playlists"]:
-            self._cache_valid_dir(f"/search/library/{category}")
-            self._cache_valid_dir(f"/search/catalog/{category}")
-
         # Cache the valid filenames for root
-        self._cache_valid_filenames(
-            "/", ["playlists", "liked_songs", "artists", "albums", "search"]
-        )
-
-        # Cache the valid filenames for search
-        self._cache_valid_filenames("/search", ["library", "catalog"])
-
-        # Cache the valid filenames for search/library and search/catalog
-        search_categories = ["songs", "videos", "albums", "artists", "playlists"]
-        self._cache_valid_filenames("/search/library", search_categories)
-        self._cache_valid_filenames("/search/catalog", search_categories)
-
-        # For any existing search result paths in cache, make sure they're marked as valid
-        search_metadata_keys = self.cache.get_keys_by_pattern("*_search_metadata")
-        for key in search_metadata_keys:
-            if key.endswith("_search_metadata"):
-                # Extract the path from the metadata key
-                path = key[:-16]  # Remove "_search_metadata" suffix
-                self.logger.debug(f"Pre-validating search path from metadata: {path}")
-                # Mark both the directory and parent directories as valid
-                self._cache_valid_dir(path)
+        self._cache_valid_filenames("/", ["playlists", "liked_songs", "albums"])
 
         self.logger.info("Path validation optimization completed")
 
@@ -361,11 +242,7 @@ class YouTubeMusicFS(Operations):
         if path == "/" or path in [
             "/playlists",
             "/liked_songs",
-            "/artists",
             "/albums",
-            "/search",
-            "/search/library",
-            "/search/catalog",
         ]:
             return True
 
@@ -390,12 +267,6 @@ class YouTubeMusicFS(Operations):
             if dir_listing and filename in dir_listing:
                 return True
 
-            # Special case for artist directories which may have dots
-            if path.startswith("/artists/"):
-                # If parent is valid and path doesn't end with .m4a, assume it's valid
-                if not path.lower().endswith(".m4a"):
-                    return True
-
         # Initialize thread-local validation cache if needed
         if not hasattr(self._thread_local, "validated_dirs"):
             self._thread_local.validated_dirs = set()
@@ -415,61 +286,10 @@ class YouTubeMusicFS(Operations):
                 if dir_listing and filename in dir_listing:
                     return True
 
-                # Special case for artist directories which may have dots
-                if path.startswith("/artists/"):
-                    # If parent is valid and path doesn't end with .m4a, assume it's valid
-                    if not path.lower().endswith(".m4a"):
-                        return True
-
                 # File not found in valid parent directory
                 return False
 
-        # Search category paths are valid - simplified logic
-        if path.startswith("/search/library/") or path.startswith("/search/catalog/"):
-            parts = path.split("/")
-
-            # Category paths like /search/library/songs
-            if len(parts) == 4:
-                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
-                if parts[3] in valid_categories:
-                    # Mark this directory as validated for future checks
-                    self._thread_local.validated_dirs.add(path)
-                    return True
-
-            # Search query paths - simplified
-            if len(parts) >= 5:
-                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
-                if parts[3] in valid_categories:
-                    # For getattr, consider it potentially valid to allow further validation
-                    if context == "getattr":
-                        return True
-                    # For other operations, rely on cache
-                    return self.cache.is_valid_path(path)
-
-        # For file paths with .m4a extension, check directory listing
-        if path.lower().endswith(".m4a"):
-            # First check the thread-local cache to avoid repeated lookups
-            if parent_dir in self._thread_local.temp_dir_listings:
-                dir_listing = self._thread_local.temp_dir_listings[parent_dir]
-                if dir_listing and filename in dir_listing:
-                    # Mark the parent directory as validated
-                    self._thread_local.validated_dirs.add(parent_dir)
-                    return True
-            else:
-                # Get from main cache and store in thread-local for quick access
-                dir_listing = self.cache.get_directory_listing_with_attrs(parent_dir)
-                if dir_listing:
-                    self._thread_local.temp_dir_listings[parent_dir] = dir_listing
-                    if filename in dir_listing:
-                        # Mark the parent directory as validated
-                        self._thread_local.validated_dirs.add(parent_dir)
-                        return True
-
-        # Final fallback to cache
-        is_valid = self.cache.is_valid_path(path)
-        if is_valid:
-            self._thread_local.validated_dirs.add(path)
-        return is_valid
+        return self.cache.is_valid_path(path)
 
     def _cache_valid_path(self, path: str) -> None:
         """Cache a valid path to help with quick validation.
@@ -665,8 +485,8 @@ class YouTubeMusicFS(Operations):
         self._clear_thread_local_cache()
 
         # First check if this path is already known as a directory
-        if not (entry_type == "directory" or path.startswith("/artists/")):
-            # Only check for non-m4a files if it's not a known directory or an artist path
+        if not entry_type == "directory":
+            # Only check for non-m4a files if it's not a known directory
             if "." in os.path.basename(path) and not path.lower().endswith(".m4a"):
                 self.logger.debug(
                     f"Rejecting non-m4a file extension in readdir: {path}"
@@ -919,34 +739,56 @@ class YouTubeMusicFS(Operations):
         """Get file attributes.
 
         Args:
-            path: The file or directory path
+            path: The path to get attributes for
             fh: File handle (unused)
 
         Returns:
-            File attributes dictionary
+            Dictionary containing file attributes
         """
         self.logger.debug(f"getattr: {path}")
 
-        # For debugging, log the entry type from cache
-        entry_type = self.cache.get_entry_type(path)
-        self.logger.debug(f"Entry type for {path}: {entry_type}")
-
-        # Check if this request is too soon after the last one
+        # For repeated calls to getattr in a short time, use a cached result
         operation_key = f"getattr:{path}"
-        current_time = time.time()
+        now = time.time()
 
         with self.last_access_lock:
             last_time = self.last_access_time.get(operation_key, 0)
-            if current_time - last_time < self.request_cooldown:
-                # Request is within cooldown period, return cached result if available
+            if now - last_time < self.request_cooldown:
                 if operation_key in self.last_access_results:
                     self.logger.debug(
-                        f"Using cached result for {operation_key} (within cooldown: {current_time - last_time:.3f}s)"
+                        f"Using cached result for {operation_key} (within cooldown: {now - last_time:.3f}s)"
                     )
                     return self.last_access_results[operation_key]
+            self.last_access_time[operation_key] = now
 
-            # Update the last access time for this operation
-            self.last_access_time[operation_key] = current_time
+        # Default attributes (base values for all files/directories)
+        attr = {
+            "st_atime": now,
+            "st_ctime": now,
+            "st_mtime": now,
+            "st_nlink": 2,
+            "st_uid": os.getuid(),
+            "st_gid": os.getgid(),
+        }
+
+        # Special case for the root directory
+        if path == "/":
+            attr["st_mode"] = stat.S_IFDIR | 0o755
+            attr["st_size"] = 0
+            with self.last_access_lock:
+                self.last_access_results[operation_key] = attr.copy()
+            return attr
+
+        # Check the entry type from cache to determine file or directory
+        entry_type = self.cache.get_entry_type(path)
+        if entry_type:
+            # If we know the entry type, we can immediately set the right attributes
+            if entry_type == "directory":
+                attr["st_mode"] = stat.S_IFDIR | 0o755
+                attr["st_size"] = 0
+                with self.last_access_lock:
+                    self.last_access_results[operation_key] = attr.copy()
+                return attr
 
         # Check context for operations like mkdir that need to check existence
         context = (
@@ -960,7 +802,7 @@ class YouTubeMusicFS(Operations):
         if is_mkdir_context and path.startswith("/search/"):
             parts = path.split("/")
             if len(parts) == 5 and parts[2] in ["library", "catalog"]:
-                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+                valid_categories = ["songs", "videos", "albums"]
                 if parts[3] in valid_categories:
                     self.logger.debug(
                         f"mkdir context detected, forcing non-existence for {path}"
@@ -985,7 +827,6 @@ class YouTubeMusicFS(Operations):
         if path == "/" or path in [
             "/playlists",
             "/liked_songs",
-            "/artists",
             "/albums",
             "/search",
         ]:
@@ -1008,37 +849,6 @@ class YouTubeMusicFS(Operations):
                 self.last_access_results[operation_key] = attr.copy()
             return attr
 
-        # Critical section: Handle paths under /artists/ with special attention
-        if path.startswith("/artists/"):
-            # If entry type not found, use smarter inference
-            parts = path.split("/")
-            if len(parts) == 3:  # Artist top-level directory
-                # Force top-level artist directories to be treated as directories
-                # regardless of dots in the name
-                self.logger.debug(f"Artist directory inferred for {path}")
-
-                # Ensure this path is recorded as a directory for future lookups
-                self.cache.add_valid_dir(path)
-
-                attr["st_mode"] = stat.S_IFDIR | 0o755
-                attr["st_size"] = 0
-                with self.last_access_lock:
-                    self.last_access_results[operation_key] = attr.copy()
-                return attr
-            elif len(parts) > 3 and not path.lower().endswith(".m4a"):
-                # For subdirectories under artists, also force directory attributes
-                # unless it explicitly ends with .m4a
-                self.logger.debug(f"Artist subdirectory inferred for {path}")
-
-                # Ensure this path is recorded as a directory for future lookups
-                self.cache.add_valid_dir(path)
-
-                attr["st_mode"] = stat.S_IFDIR | 0o755
-                attr["st_size"] = 0
-                with self.last_access_lock:
-                    self.last_access_results[operation_key] = attr.copy()
-                return attr
-
         # Now check if this is a potentially valid file or an invalid extension
         # Only apply the extension check after we've confirmed it's not a directory
         if "." in os.path.basename(path) and not path.lower().endswith(".m4a"):
@@ -1059,7 +869,7 @@ class YouTubeMusicFS(Operations):
 
             # Search category paths like /search/library/songs
             if len(parts) == 4 and parts[2] in ["library", "catalog"]:
-                valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+                valid_categories = ["songs", "videos", "albums"]
                 if parts[3] in valid_categories:
                     attr["st_mode"] = stat.S_IFDIR | 0o755
                     attr["st_size"] = 0
@@ -1391,7 +1201,7 @@ class YouTubeMusicFS(Operations):
 
         # For /search/{library|catalog}/{songs|videos|albums|artists|playlists}
         if len(parts) == 4:
-            valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+            valid_categories = ["songs", "videos", "albums"]
             if parts[3] not in valid_categories:
                 self.logger.warning(f"Invalid search category for mkdir: {parts[3]}")
                 raise OSError(
@@ -1406,7 +1216,7 @@ class YouTubeMusicFS(Operations):
 
         # For /search/{library|catalog}/{songs|videos|albums|artists|playlists}/{query}
         if len(parts) == 5:
-            valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+            valid_categories = ["songs", "videos", "albums"]
             if parts[3] not in valid_categories:
                 self.logger.warning(f"Invalid search category for mkdir: {parts[3]}")
                 raise OSError(
@@ -1466,7 +1276,7 @@ class YouTubeMusicFS(Operations):
 
         # For /search/{library|catalog}/{songs|videos|albums|artists|playlists}
         if len(parts) == 4:
-            valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+            valid_categories = ["songs", "videos", "albums"]
             if parts[3] not in valid_categories:
                 self.logger.warning(f"Invalid search category for rmdir: {parts[3]}")
                 raise OSError(
@@ -1479,7 +1289,7 @@ class YouTubeMusicFS(Operations):
 
         # For /search/{library|catalog}/{songs|videos|albums|artists|playlists}/{query}
         if len(parts) == 5:
-            valid_categories = ["songs", "videos", "albums", "artists", "playlists"]
+            valid_categories = ["songs", "videos", "albums"]
             if parts[3] not in valid_categories:
                 self.logger.warning(f"Invalid search category for rmdir: {parts[3]}")
                 raise OSError(

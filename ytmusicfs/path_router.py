@@ -24,15 +24,6 @@ class PathRouter:
         """
         self.fetcher = fetcher
 
-        # Register dynamic handler for categorized search results
-        self.register_dynamic(
-            "/search/*/*/*/*",
-            lambda path, scope, category, query, subpath: [".", ".."]
-            + self.fetcher.readdir_search_item_content(
-                path, scope="library" if scope == "library" else None
-            ),
-        )
-
     def register(self, path: str, handler: Callable) -> None:
         """Register a handler for an exact path match.
 
