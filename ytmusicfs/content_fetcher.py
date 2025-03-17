@@ -97,38 +97,6 @@ class ContentFetcher:
             f"Initialized playlist registry with {len(self.PLAYLIST_REGISTRY)} entries"
         )
 
-    def get_playlist_info(self, source: str, data: Dict) -> Dict[str, str]:
-        """Standardize playlist metadata for playlists, liked songs, and albums.
-
-        Args:
-            source: Source of the data ('playlists', 'liked_songs', 'albums')
-            data: Raw data from API or static definition
-
-        Returns:
-            Dict with 'name', 'id', and 'type'
-        """
-        if source == "playlists":
-            return {
-                "name": self.processor.sanitize_filename(data["title"]),
-                "id": data["playlistId"],
-                "type": "playlist",
-            }
-        elif source == "liked_songs":
-            return {
-                "name": "liked_songs",
-                "id": "LM",  # YouTube Music's liked songs playlist ID
-                "type": "liked_songs",
-            }
-        elif source == "albums":
-            return {
-                "name": self.processor.sanitize_filename(data["title"]),
-                "id": data["browseId"],  # Albums use browseId as playlist identifier
-                "type": "album",
-            }
-        else:
-            self.logger.error(f"Unknown playlist source: {source}")
-            return {"name": "", "id": "", "type": ""}
-
     def fetch_playlist_content(
         self, playlist_id: str, path: str, limit: int = 10000
     ) -> List[str]:
@@ -280,58 +248,6 @@ class ContentFetcher:
             self.logger.warning(
                 "No callback set for caching directory listings with attributes"
             )
-
-    def _log_object_structure(self, obj, indent=0, max_depth=3, current_depth=0):
-        """Helper method to log the structure of an object with indentation.
-
-        Args:
-            obj: The object to log
-            indent: Current indentation level
-            max_depth: Maximum depth to traverse
-            current_depth: Current depth in the traversal
-        """
-        if current_depth > max_depth:
-            self.logger.info("  " * indent + "... (max depth reached)")
-            return
-
-        if isinstance(obj, dict):
-            for key, value in obj.items():
-                if isinstance(value, (dict, list)) and value:
-                    self.logger.info("  " * indent + f"{key}: {type(value).__name__}")
-                    self._log_object_structure(
-                        value, indent + 1, max_depth, current_depth + 1
-                    )
-                else:
-                    # For simple values, log the actual value
-                    value_str = str(value)
-                    # Truncate long values
-                    if len(value_str) > 100:
-                        value_str = value_str[:97] + "..."
-                    self.logger.info(
-                        "  " * indent + f"{key}: {value_str} ({type(value).__name__})"
-                    )
-        elif isinstance(obj, list):
-            if obj:
-                # For lists, log the first few items
-                for i, item in enumerate(obj[:3]):
-                    if i == 0:
-                        self.logger.info(
-                            "  " * indent + f"[{i}]: {type(item).__name__}"
-                        )
-                    else:
-                        self.logger.info(
-                            "  " * indent + f"[{i}]: {type(item).__name__}"
-                        )
-                    if isinstance(item, (dict, list)):
-                        self._log_object_structure(
-                            item, indent + 1, max_depth, current_depth + 1
-                        )
-                if len(obj) > 3:
-                    self.logger.info("  " * indent + f"... ({len(obj) - 3} more items)")
-            else:
-                self.logger.info("  " * indent + "[] (empty list)")
-        else:
-            self.logger.info("  " * indent + str(obj))
 
     def _auto_refresh_cache(self, refresh_interval: int = 600) -> None:
         """Auto-refresh all playlist caches every 10 minutes."""
