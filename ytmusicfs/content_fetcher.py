@@ -13,6 +13,16 @@ import threading
 class ContentFetcher:
     """Handles fetching and processing of YouTube Music content."""
 
+    # Centralized registry for all playlist-like items
+    PLAYLIST_REGISTRY = [
+        {
+            "name": "liked_songs",
+            "id": "LM",
+            "type": "liked_songs",
+            "path": "/liked_songs",
+        }
+    ]
+
     def __init__(
         self,
         client: YouTubeMusicClient,
@@ -35,6 +45,42 @@ class ContentFetcher:
         self.cache = cache
         self.logger = logger
         self.browser = browser
+        # Initialize playlist registry with liked songs and fetch others
+        self._initialize_playlist_registry()
+
+    def _initialize_playlist_registry(self):
+        """Initialize the playlist registry with playlists and albums."""
+        # Fetch playlists
+        playlists = self.client.get_library_playlists(
+            limit=1000
+        )  # Initial fetch for IDs
+        for p in playlists:
+            sanitized_name = self.processor.sanitize_filename(p["title"])
+            self.PLAYLIST_REGISTRY.append(
+                {
+                    "name": sanitized_name,
+                    "id": p["playlistId"],
+                    "type": "playlist",
+                    "path": f"/playlists/{sanitized_name}",
+                }
+            )
+
+        # Fetch albums
+        albums = self.client.get_library_albums(limit=1000)  # Initial fetch for IDs
+        for a in albums:
+            sanitized_name = self.processor.sanitize_filename(a["title"])
+            self.PLAYLIST_REGISTRY.append(
+                {
+                    "name": sanitized_name,
+                    "id": a["browseId"],  # Albums use browseId as playlist ID
+                    "type": "album",
+                    "path": f"/albums/{sanitized_name}",
+                }
+            )
+
+        self.logger.info(
+            f"Initialized playlist registry with {len(self.PLAYLIST_REGISTRY)} entries"
+        )
 
     def fetch_and_cache(
         self,
