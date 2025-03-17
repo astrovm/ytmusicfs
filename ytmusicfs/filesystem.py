@@ -148,9 +148,12 @@ class YouTubeMusicFS(Operations):
             lambda path, playlist_name: [".", ".."]
             + self.fetcher.fetch_playlist_content(
                 next(
-                    p["id"]
-                    for p in self.fetcher.cache.get("/playlists", [])
-                    if p["name"] == playlist_name
+                    (
+                        p["id"]
+                        for p in self.fetcher.cache.get("/playlists", [])
+                        if p["name"] == playlist_name
+                    ),
+                    None,
                 ),
                 path,
             ),
@@ -160,9 +163,12 @@ class YouTubeMusicFS(Operations):
             lambda path, album_name: [".", ".."]
             + self.fetcher.fetch_playlist_content(
                 next(
-                    a["id"]
-                    for a in self.fetcher.cache.get("/albums", [])
-                    if a["name"] == album_name
+                    (
+                        a["id"]
+                        for a in self.fetcher.cache.get("/albums", [])
+                        if a["name"] == album_name
+                    ),
+                    None,
                 ),
                 path,
             ),

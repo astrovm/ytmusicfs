@@ -55,6 +55,13 @@ class ContentFetcher:
             limit=1000
         )  # Initial fetch for IDs
         for p in playlists:
+            # Skip podcast playlist type (SE)
+            if p.get("playlistId") == "SE":
+                self.logger.info(
+                    "Skipping podcast playlist (SE) - podcasts not supported"
+                )
+                continue
+
             sanitized_name = self.processor.sanitize_filename(p["title"])
             self.PLAYLIST_REGISTRY.append(
                 {
@@ -127,6 +134,11 @@ class ContentFetcher:
         Returns:
             List of track filenames
         """
+        # Simple check for the podcast playlist ID "SE"
+        if playlist_id == "SE":
+            self.logger.info("Skipping podcast playlist (SE) - podcasts not supported")
+            return []
+
         cache_key = f"{path}_processed"
         processed_tracks = self.cache.get(cache_key)
         if processed_tracks:
