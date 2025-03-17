@@ -100,133 +100,161 @@ class ContentFetcher:
         # Set last refresh time to prevent multiple refreshes
         self.cache.set_last_refresh(cache_key, now)
 
+    def get_playlist_info(self, source: str, data: Dict) -> Dict[str, str]:
+        """Standardize playlist metadata for playlists, liked songs, and albums.
+
+        Args:
+            source: Source of the data ('playlists', 'liked_songs', 'albums')
+            data: Raw data from API or static definition
+
+        Returns:
+            Dict with 'name', 'id', and 'type'
+        """
+        if source == "playlists":
+            return {
+                "name": self.processor.sanitize_filename(data["title"]),
+                "id": data["playlistId"],
+                "type": "playlist",
+            }
+        elif source == "liked_songs":
+            return {
+                "name": "liked_songs",
+                "id": "LM",  # YouTube Music's liked songs playlist ID
+                "type": "liked_songs",
+            }
+        elif source == "albums":
+            return {
+                "name": self.processor.sanitize_filename(data["title"]),
+                "id": data["browseId"],  # Albums use browseId as playlist identifier
+                "type": "album",
+            }
+        else:
+            self.logger.error(f"Unknown playlist source: {source}")
+            return {"name": "", "id": "", "type": ""}
+
+    def fetch_playlist_content(self, playlist_id: str, path: str) -> List[str]:
+        """Fetch playlist content using yt-dlp for any playlist ID.
+
+        Args:
+            playlist_id: Playlist ID (e.g., 'PL123', 'LM', 'MPREb_abc123')
+            path: Filesystem path for caching
+
+        Returns:
+            List of track filenames
+        """
+        cache_key = f"{path}_processed"
+        processed_tracks = self.cache.get(cache_key)
+        if processed_tracks:
+            self.logger.debug(f"Using {len(processed_tracks)} cached tracks for {path}")
+            for track in processed_tracks:
+                track["is_directory"] = False
+            self._cache_directory_listing_with_attrs(path, processed_tracks)
+            return [track["filename"] for track in processed_tracks]
+
+        playlist_url = f"https://music.youtube.com/playlist?list={playlist_id}"
+        ydl_opts = {
+            "extract_flat": True,
+            "quiet": True,
+            "no_warnings": True,
+            "ignoreerrors": True,
+        }
+        if self.browser:
+            ydl_opts["cookiesfrombrowser"] = (self.browser,)
+
+        self.logger.debug(f"Fetching content for playlist ID: {playlist_id} via yt-dlp")
+        from yt_dlp import YoutubeDL
+
+        try:
+            with YoutubeDL(ydl_opts) as ydl:
+                result = ydl.extract_info(playlist_url, download=False)
+                if not result or "entries" not in result:
+                    self.logger.warning(
+                        f"No tracks found for playlist ID: {playlist_id}"
+                    )
+                    return []
+
+                tracks = result["entries"]
+                self.logger.info(f"Fetched {len(tracks)} tracks for {playlist_id}")
+
+                processed_tracks = []
+                for entry in tracks:
+                    if not entry:
+                        continue
+
+                    track_info = {
+                        "title": entry.get("title", "Unknown Title"),
+                        "artist": entry.get("uploader", "Unknown Artist"),
+                        "videoId": entry.get("id"),
+                        "duration_seconds": (
+                            int(entry.get("duration", 0))
+                            if entry.get("duration")
+                            else None
+                        ),
+                        "is_directory": False,  # Songs are files
+                    }
+
+                    # Format the filename
+                    filename = self.processor.sanitize_filename(
+                        f"{track_info['artist']} - {track_info['title']}.m4a"
+                    )
+                    track_info["filename"] = filename
+
+                    # Process through the track processor to ensure consistent format
+                    processed_track = self.processor.extract_track_info(track_info)
+                    processed_track["filename"] = filename
+                    processed_track["is_directory"] = (
+                        False  # Ensure it's set after processing
+                    )
+                    processed_tracks.append(processed_track)
+
+                self.cache.set(cache_key, processed_tracks)
+                self._cache_directory_listing_with_attrs(path, processed_tracks)
+
+                # Start background duration fetching
+                if playlist_id != "LM":  # For non-liked songs playlists
+                    self._fetch_durations_for_playlist(playlist_id)
+
+                return [track["filename"] for track in processed_tracks]
+        except Exception as e:
+            self.logger.error(f"Error fetching playlist content: {str(e)}")
+            return []
+
     def readdir_playlists(self) -> List[str]:
-        """Handle listing playlists.
+        """List all user playlists from YouTube Music API.
 
         Returns:
             List of playlist names
         """
         self.logger.info("Fetching playlists for /playlists directory")
-
-        def process_playlists(playlists):
-            if not playlists:
-                self.logger.warning("No playlists returned from API")
-                return []
-
-            sanitized_names = []
-            processed_playlists = []
-
-            for playlist in playlists:
-                if (
-                    not isinstance(playlist, dict)
-                    or "title" not in playlist
-                    or "playlistId" not in playlist
-                ):
-                    self.logger.warning(f"Invalid playlist entry: {playlist}")
-                    continue
-
-                title = playlist["title"]
-                playlist_id = playlist["playlistId"]
-                sanitized_name = self.processor.sanitize_filename(title)
-
-                if not sanitized_name:
-                    self.logger.warning(f"Empty sanitized name for playlist: {title}")
-                    continue
-
-                sanitized_names.append(sanitized_name)
-                processed_playlists.append(
-                    {
-                        "filename": sanitized_name,
-                        "playlistId": playlist_id,
-                        "is_directory": True,
-                    }
-                )
-
-            self.logger.debug(f"Processed {len(sanitized_names)} playlists")
-            if hasattr(self, "cache_directory_callback") and callable(
-                self.cache_directory_callback
-            ):
-                self.cache_directory_callback("/playlists", processed_playlists)
-                self.logger.debug("Cached playlist directory listing")
-
-            return sanitized_names
-
-        # Fetch and cache playlists
-        return self.fetch_and_cache(
+        playlists = self.fetch_and_cache(
             path="/playlists",
             fetch_func=self.client.get_library_playlists,
             limit=1000,
-            process_func=process_playlists,
+            process_func=lambda data: [
+                self.get_playlist_info("playlists", p) for p in data
+            ],
             auto_refresh=True,
         )
+        if not playlists:
+            return []
+
+        processed_entries = [
+            {"filename": p["name"], "id": p["id"], "is_directory": True}
+            for p in playlists
+        ]
+        self._cache_directory_listing_with_attrs("/playlists", processed_entries)
+        return [p["name"] for p in playlists]
 
     def readdir_liked_songs(self) -> List[str]:
-        """Handle listing liked songs with pre-fetched durations.
+        """List liked songs from YouTube Music using yt-dlp.
 
         Returns:
             List of liked song filenames
         """
-        # First check if we have processed tracks in cache
-        processed_tracks = self.cache.get("/liked_songs_processed")
-        if processed_tracks:
-            self.logger.debug(
-                f"Using {len(processed_tracks)} cached processed tracks for /liked_songs"
-            )
-            # Ensure all tracks have is_directory flag
-            for track in processed_tracks:
-                track["is_directory"] = False  # Songs are files
-
-            # Cache directory listing with attributes for efficient getattr lookups
-            self._cache_directory_listing_with_attrs("/liked_songs", processed_tracks)
-
-            return [track["filename"] for track in processed_tracks]
-
-        # Use the centralized helper to fetch liked songs
-        liked_songs = self.fetch_and_cache(
-            path="/liked_songs",
-            fetch_func=self.client.get_liked_songs,
-            limit=10000,
-            auto_refresh=True,
-        )
-
-        # Continue with processing the data
-        if not liked_songs or "tracks" not in liked_songs:
-            self.logger.warning("No liked songs found or invalid response format")
-            return []
-
-        tracks = liked_songs.get("tracks", [])
-        self.logger.info(f"Fetching durations for {len(tracks)} liked songs")
-
-        # Synchronously fetch durations for all liked songs
-        durations = self.duration_fetcher.fetch_durations_for_liked_songs(
-            update_callback=lambda video_id, duration: self.cache.set_duration(
-                video_id, duration
-            )
-        )
-        self.logger.info(f"Fetched {len(durations)} durations for liked songs")
-
-        # Process the tracks outside of any locks
-        processed_tracks = self.processor.process_tracks(tracks)
-
-        # Apply durations to processed tracks and set is_directory flag
-        for track in processed_tracks:
-            # Set is_directory flag for each track
-            track["is_directory"] = False  # Songs are files
-
-            video_id = track.get("videoId")
-            if video_id and video_id in durations:
-                track["duration_seconds"] = durations[video_id]
-                track["duration_formatted"] = self.processor._format_duration(
-                    durations[video_id]
-                )
-
-        # Cache the processed tracks
-        self.cache.set("/liked_songs_processed", processed_tracks)
-
-        # Cache directory listing with attributes for efficient getattr lookups
-        self._cache_directory_listing_with_attrs("/liked_songs", processed_tracks)
-
-        return [track["filename"] for track in processed_tracks]
+        self.logger.info("Fetching liked songs content")
+        # Use the new centralized playlist fetcher with the LM playlist ID
+        liked_songs_info = self.get_playlist_info("liked_songs", {})
+        return self.fetch_playlist_content(liked_songs_info["id"], "/liked_songs")
 
     def _cache_directory_listing_with_attrs(
         self, dir_path: str, processed_tracks: List[Dict[str, Any]]
@@ -525,53 +553,29 @@ class ContentFetcher:
             self.logger.info("  " * indent + str(obj))
 
     def readdir_albums(self) -> List[str]:
-        """Handle listing albums.
+        """List all albums from YouTube Music API.
 
         Returns:
             List of album names
         """
-
-        # Define a processing function for the albums data
-        def process_albums(albums):
-            sanitized_names = []
-            processed_albums = []
-
-            # More robust handling with error checking
-            for album in albums:
-                # Skip invalid entries
-                if not isinstance(album, dict):
-                    continue
-
-                # Use .get() with default value to safely handle missing 'title' keys
-                title = album.get("title", "Unknown Album")
-                sanitized_name = self.processor.sanitize_filename(title)
-
-                sanitized_names.append(sanitized_name)
-
-                # Add to processed albums list for directory caching
-                processed_albums.append(
-                    {
-                        "filename": sanitized_name,
-                        "browseId": album.get("browseId"),
-                        "is_directory": True,  # Albums are directories
-                    }
-                )
-
-            # Cache directory listing with attributes
-            if hasattr(self, "cache_directory_callback") and callable(
-                self.cache_directory_callback
-            ):
-                self.cache_directory_callback("/albums", processed_albums)
-
-            return sanitized_names
-
-        # Use the centralized helper to fetch and process albums
-        return self.fetch_and_cache(
+        self.logger.info("Fetching albums for /albums directory")
+        albums = self.fetch_and_cache(
             path="/albums",
             fetch_func=self.client.get_library_albums,
             limit=1000,
-            process_func=process_albums,
+            process_func=lambda data: [
+                self.get_playlist_info("albums", a) for a in data
+            ],
+            auto_refresh=True,
         )
+        if not albums:
+            return []
+
+        processed_entries = [
+            {"filename": a["name"], "id": a["id"], "is_directory": True} for a in albums
+        ]
+        self._cache_directory_listing_with_attrs("/albums", processed_entries)
+        return [a["name"] for a in albums]
 
     def readdir_artist_content(self, path: str) -> List[str]:
         """Handle listing artist content (albums, singles, songs).
