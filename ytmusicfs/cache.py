@@ -420,28 +420,6 @@ class CacheManager:
                 f"Failed to delete from database cache for {path}: {e.__class__.__name__}: {e}"
             )
 
-    def child_exists_in_dir(self, parent_dir: str, child_filename: str) -> bool:
-        """Check if a child exists in a parent directory.
-
-        Args:
-            parent_dir: The parent directory path
-            child_filename: The filename to check for
-
-        Returns:
-            True if the child exists in the parent directory, False otherwise
-        """
-        # Try to get directory listing with attributes
-        dir_listing = self.get_directory_listing_with_attrs(parent_dir)
-        if dir_listing and child_filename in dir_listing:
-            return True
-
-        # Also check valid_files key for backward compatibility
-        valid_files = self.get(f"valid_files:{parent_dir}")
-        if valid_files and child_filename in valid_files:
-            return True
-
-        return False
-
     def add_valid_path(self, path: str, is_directory: bool = None) -> None:
         """Add a path to the valid paths set and persist it.
 
@@ -472,24 +450,6 @@ class CacheManager:
             file_path: The file path to mark as valid
         """
         self.mark_valid(file_path, is_directory=False)
-
-    def remove_valid_path(self, path: str) -> None:
-        """Remove a path from the valid paths set.
-
-        Args:
-            path: The path to remove from valid paths
-        """
-        # Remove from in-memory sets
-        if path in self.valid_paths:
-            self.valid_paths.remove(path)
-
-        if path in self.path_types:
-            del self.path_types[path]
-
-        # Remove from database
-        self.delete(f"valid_dir:{path}")
-        self.delete(f"exact_path:{path}")
-        self.delete(f"valid:{path}")
 
     def path_to_key(self, path: str) -> str:
         """Convert a filesystem path to a cache key.
@@ -588,11 +548,6 @@ class CacheManager:
             self.logger.debug(f"Retrieved cached duration for {video_id}: {duration}s")
         return duration
 
-    def set_duration(self, video_id: str, duration_seconds: int) -> None:
-        """Store duration for a video ID."""
-        self.set(f"duration:{video_id}", duration_seconds)
-        self.logger.debug(f"Cached duration for {video_id}: {duration_seconds}s")
-
     def set_durations_batch(self, durations: Dict[str, int]) -> None:
         """Store multiple durations in a batch operation."""
         if not durations:
@@ -686,51 +641,6 @@ class CacheManager:
             return entry_type == "directory"
         return None
 
-    def clean_path_metadata(self, path: str) -> None:
-        """Clean up all cache entries related to a specific path."""
-        self.logger.debug(f"Cleaning all path metadata for: {path}")
-
-        # List of cache keys that might affect path existence checks
-        keys_to_delete = [
-            f"valid_dir:{path}",
-            f"exact_path:{path}",
-            f"valid:{path}",
-            f"{path}_metadata",
-            f"{path}_processed",
-            f"{path}_listing_with_attrs",
-        ]
-
-        # Clean up parent directory metadata
-        parent_dir = os.path.dirname(path)
-        if parent_dir:
-            filename = os.path.basename(path)
-
-            # Update directory listing if it exists
-            dir_listing = self.get_directory_listing_with_attrs(parent_dir)
-            if dir_listing and filename in dir_listing:
-                self.logger.debug(
-                    f"Removing {filename} from {parent_dir} directory listing with attributes"
-                )
-                del dir_listing[filename]
-                self.set_directory_listing_with_attrs(parent_dir, dir_listing)
-
-            # Check valid_files list
-            valid_files = self.get(f"valid_files:{parent_dir}")
-            if valid_files and filename in valid_files:
-                valid_files.remove(filename)
-                self.set(f"valid_files:{parent_dir}", valid_files)
-
-        # Delete all associated keys
-        for key in keys_to_delete:
-            self.delete(key)
-
-        # Remove from in-memory sets
-        if path in self.valid_paths:
-            self.valid_paths.remove(path)
-
-        if path in self.path_types:
-            del self.path_types[path]
-
     def get_last_refresh(self, key: str) -> Optional[float]:
         """Get the last refresh time for a key.
 
@@ -774,35 +684,3 @@ class CacheManager:
                 self.conn.close()
         except Exception:
             pass  # Can't log here as the logger might be gone
-
-    def get_valid_paths(self) -> List[str]:
-        """Get a list of all valid paths.
-
-        Returns:
-            List of valid paths
-        """
-        return list(self.path_types.keys())
-
-    def get_playlist_content(self, path: str) -> Optional[List[Dict]]:
-        """Get playlist content using a consistent cache key pattern.
-
-        Args:
-            path: The filesystem path of the playlist
-
-        Returns:
-            List of track dictionaries if available, None otherwise
-        """
-        # Always use path_processed as the cache key pattern
-        cache_key = f"{path}_processed"
-        return self.get(cache_key)
-
-    def set_playlist_content(self, path: str, content: List[Dict]) -> None:
-        """Set playlist content using a consistent cache key pattern.
-
-        Args:
-            path: The filesystem path of the playlist
-            content: List of track dictionaries to cache
-        """
-        # Always use path_processed as the cache key pattern
-        cache_key = f"{path}_processed"
-        self.set(cache_key, content)

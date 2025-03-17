@@ -65,12 +65,17 @@ class Downloader:
 
         # Check if there's already an active download for this video
         with self.lock:
-            if video_id in self.active_downloads and self.active_downloads[video_id]["status"] == "downloading":
+            if (
+                video_id in self.active_downloads
+                and self.active_downloads[video_id]["status"] == "downloading"
+            ):
                 self.logger.debug(f"Download already in progress for {video_id}")
                 return True
 
         # Create a temporary file for the download
-        temp_file = tempfile.NamedTemporaryFile(delete=False, dir=audio_path.parent, suffix=".tmp")
+        temp_file = tempfile.NamedTemporaryFile(
+            delete=False, dir=audio_path.parent, suffix=".tmp"
+        )
         temp_path = Path(temp_file.name)
 
         # Mark as in-progress before starting download
@@ -91,11 +96,13 @@ class Downloader:
             try:
                 # Add range header if resuming download
                 headers = {"Range": f"bytes={downloaded}-"} if downloaded else {}
-                
+
                 # Verify the stream URL is still valid
                 head_response = requests.head(stream_url, headers=headers, timeout=10)
                 if head_response.status_code not in (200, 206):
-                    raise Exception(f"Stream URL check failed: HTTP {head_response.status_code}")
+                    raise Exception(
+                        f"Stream URL check failed: HTTP {head_response.status_code}"
+                    )
 
                 # If resuming, copy existing content to temp file
                 if downloaded > 0 and audio_path.exists():
@@ -104,18 +111,24 @@ class Downloader:
                             temp_file.write(src.read())
 
                 # Get the expected total size
-                expected_total = int(head_response.headers.get("content-length", 0)) + downloaded
+                expected_total = (
+                    int(head_response.headers.get("content-length", 0)) + downloaded
+                )
                 self.update_file_size_callback(path, expected_total)
 
                 with self.lock:
-                    self.active_downloads[video_id].update({
-                        "total": expected_total,
-                        "status": "downloading",
-                        "progress": downloaded,
-                    })
+                    self.active_downloads[video_id].update(
+                        {
+                            "total": expected_total,
+                            "status": "downloading",
+                            "progress": downloaded,
+                        }
+                    )
 
                 # Download the file
-                with requests.get(stream_url, headers=headers, stream=True, timeout=30) as response:
+                with requests.get(
+                    stream_url, headers=headers, stream=True, timeout=30
+                ) as response:
                     if response.status_code not in (200, 206):
                         raise Exception(f"HTTP {response.status_code}")
 
@@ -123,17 +136,23 @@ class Downloader:
                         for chunk in response.iter_content(chunk_size=chunk_size):
                             # Check if download is marked for stopping
                             with self.lock:
-                                if (video_id in self.active_downloads and 
-                                    self.active_downloads[video_id].get("stop_requested", False)):
-                                    self.logger.info(f"Download of {video_id} was explicitly stopped")
+                                if (
+                                    video_id in self.active_downloads
+                                    and self.active_downloads[video_id].get(
+                                        "stop_requested", False
+                                    )
+                                ):
+                                    self.logger.info(
+                                        f"Download of {video_id} was explicitly stopped"
+                                    )
                                     raise Exception("Download stopped by request")
-                                
+
                             f.write(chunk)
                             downloaded += len(chunk)
-                            
+
                             with self.lock:
                                 self.active_downloads[video_id]["progress"] = downloaded
-                                
+
                             # Periodically update status file (but not on every chunk to reduce I/O)
                             if downloaded % (chunk_size * 50) == 0:
                                 with status_path.open("w") as sf:
@@ -141,7 +160,9 @@ class Downloader:
 
                 # Verify the download is complete
                 if temp_path.stat().st_size < expected_total:
-                    raise Exception(f"Incomplete download: got {temp_path.stat().st_size} bytes, expected {expected_total}")
+                    raise Exception(
+                        f"Incomplete download: got {temp_path.stat().st_size} bytes, expected {expected_total}"
+                    )
 
                 # Validate the file format
                 if not self._validate_file_format(temp_path):
@@ -149,7 +170,7 @@ class Downloader:
 
                 # Replace the old file with the new one
                 temp_path.replace(audio_path)
-                
+
                 # Mark as complete in status file first (most important for recovery)
                 with status_path.open("w") as sf:
                     sf.write("complete")
@@ -157,63 +178,77 @@ class Downloader:
                 with self.lock:
                     self.active_downloads[video_id]["status"] = "complete"
 
-                self.logger.info(f"Download completed for {video_id} ({downloaded} bytes)")
+                self.logger.info(
+                    f"Download completed for {video_id} ({downloaded} bytes)"
+                )
                 return True
 
             except Exception as e:
-                self.logger.warning(f"Download attempt {attempt + 1} failed for {video_id}: {e}")
+                self.logger.warning(
+                    f"Download attempt {attempt + 1} failed for {video_id}: {e}"
+                )
                 try:
                     if temp_file and os.path.exists(temp_file.name):
                         os.unlink(temp_file.name)
                 except Exception as cleanup_error:
-                    self.logger.warning(f"Failed to clean up temp file: {cleanup_error}")
-                
+                    self.logger.warning(
+                        f"Failed to clean up temp file: {cleanup_error}"
+                    )
+
                 if attempt == retries - 1:
                     with self.lock:
                         self.active_downloads[video_id]["status"] = "failed"
                     with status_path.open("w") as sf:
                         sf.write("failed")
                     return False
-                
+
                 # Only sleep between retries if this wasn't an explicit stop
                 with self.lock:
-                    if video_id in self.active_downloads and self.active_downloads[video_id].get("stop_requested", False):
-                        self.logger.debug("Not retrying download that was explicitly stopped")
+                    if video_id in self.active_downloads and self.active_downloads[
+                        video_id
+                    ].get("stop_requested", False):
+                        self.logger.debug(
+                            "Not retrying download that was explicitly stopped"
+                        )
                         return False
-                
+
                 time.sleep(2**attempt)  # Exponential backoff
 
         return False
-        
+
     def _is_download_complete(self, video_id: str) -> bool:
         """Check if download is already complete with a valid file.
-        
+
         Args:
             video_id: YouTube video ID
-            
+
         Returns:
             True if download is complete and file is valid
         """
         audio_path = self.cache_dir / "audio" / f"{video_id}.m4a"
         status_path = self.cache_dir / "audio" / f"{video_id}.status"
-        
+
         # First, check the status file
         if status_path.exists():
             try:
                 with status_path.open("r") as f:
                     status = f.read().strip()
-                if status == "complete" and audio_path.exists() and self._validate_file_format(audio_path):
+                if (
+                    status == "complete"
+                    and audio_path.exists()
+                    and self._validate_file_format(audio_path)
+                ):
                     # We have a complete status and the file exists and is valid
                     with self.lock:
                         self.active_downloads[video_id] = {
                             "status": "complete",
                             "progress": audio_path.stat().st_size,
-                            "total": audio_path.stat().st_size
+                            "total": audio_path.stat().st_size,
                         }
                     return True
             except Exception as e:
                 self.logger.warning(f"Error checking status for {video_id}: {e}")
-        
+
         # If status check doesn't confirm completion, do a more thorough check
         if audio_path.exists() and audio_path.stat().st_size > 0:
             if self._validate_file_format(audio_path):
@@ -224,33 +259,11 @@ class Downloader:
                     self.active_downloads[video_id] = {
                         "status": "complete",
                         "progress": audio_path.stat().st_size,
-                        "total": audio_path.stat().st_size
+                        "total": audio_path.stat().st_size,
                     }
                 return True
-        
+
         return False
-
-    def _get_file_status(self, video_id: str) -> str:
-        """Get the current status of a file from its status file.
-
-        Args:
-            video_id: YouTube video ID
-
-        Returns:
-            Current status as a string: 'complete', 'downloading', 'interrupted', 'failed', or 'unknown'
-        """
-        status_path = self.cache_dir / "audio" / f"{video_id}.status"
-
-        if not status_path.exists():
-            return "unknown"
-
-        try:
-            with status_path.open("r") as f:
-                status = f.read().strip()
-            return status
-        except Exception as e:
-            self.logger.warning(f"Error reading status file: {e}")
-            return "unknown"
 
     def _validate_file_format(self, file_path: Path) -> bool:
         """Basic validation to check if file appears to be a valid m4a file.
@@ -310,7 +323,7 @@ class Downloader:
                 # Use a flag instead of immediately changing status - let the download thread handle it
                 self.active_downloads[video_id]["stop_requested"] = True
                 self.logger.debug(f"Requested stop of download for {video_id}")
-                
+
                 # Only update status file if download is not complete
                 if self.active_downloads[video_id]["status"] != "complete":
                     status_path = self.cache_dir / "audio" / f"{video_id}.status"
@@ -318,6 +331,8 @@ class Downloader:
                         with status_path.open("w") as sf:
                             sf.write("interrupted")
                     except Exception as e:
-                        self.logger.warning(f"Failed to update status file for {video_id}: {e}")
+                        self.logger.warning(
+                            f"Failed to update status file for {video_id}: {e}"
+                        )
             else:
                 self.logger.debug(f"No active download found for {video_id}")
