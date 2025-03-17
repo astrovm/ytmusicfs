@@ -150,7 +150,7 @@ class YouTubeMusicFS(Operations):
                 next(
                     (
                         p["id"]
-                        for p in self.fetcher.cache.get("/playlists", [])
+                        for p in (self.fetcher.cache.get("/playlists") or [])
                         if p["name"] == playlist_name
                     ),
                     None,
@@ -165,7 +165,7 @@ class YouTubeMusicFS(Operations):
                 next(
                     (
                         a["id"]
-                        for a in self.fetcher.cache.get("/albums", [])
+                        for a in (self.fetcher.cache.get("/albums") or [])
                         if a["name"] == album_name
                     ),
                     None,
