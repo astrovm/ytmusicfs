@@ -790,15 +790,8 @@ class YouTubeMusicFS(Operations):
                     self.last_access_results[operation_key] = attr.copy()
                 return attr
 
-        # Check context for operations like mkdir that need to check existence
-        context = (
-            inspect.currentframe().f_back.f_code.co_name
-            if inspect.currentframe().f_back
-            else "unknown"
-        )
-        is_mkdir_context = context == "mkdir" or "mkdir" in context
-
-        # Get current user's UID and GID
+        # We no longer need the context check or is_mkdir_context variable since we removed search-related logic
+        # Just use the current user's UID and GID directly
         uid = os.getuid()
         gid = os.getgid()
 

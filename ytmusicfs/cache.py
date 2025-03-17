@@ -805,26 +805,6 @@ class CacheManager:
         """
         self.set_metadata(cache_key, "last_refresh_time", timestamp)
 
-    def store_search_metadata(
-        self, path: str, query: str, scope: Optional[str], filter_type: Optional[str]
-    ) -> None:
-        """Store metadata for a search query.
-
-        Args:
-            path: The search path (e.g., '/search/library/songs/query')
-            query: The search query string
-            scope: 'library' or None for catalog
-            filter_type: Type of results (e.g., 'songs', 'albums')
-        """
-        metadata = {
-            "query": query,
-            "scope": scope,
-            "filter_type": filter_type,
-            "last_refresh": time.time(),
-        }
-        self.set(f"{path}_search_metadata", metadata)
-        self.logger.debug(f"Stored search metadata for {path}: {metadata}")
-
     def set_duration(self, video_id: str, duration_seconds: int) -> None:
         """Store duration for a video ID.
 
