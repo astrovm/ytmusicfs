@@ -7,6 +7,7 @@ from ytmusicfs.cache import CacheManager
 from ytmusicfs.client import YouTubeMusicClient
 from ytmusicfs.content_fetcher import ContentFetcher
 from ytmusicfs.file_handler import FileHandler
+from ytmusicfs.metadata import MetadataManager
 from ytmusicfs.path_router import PathRouter
 from ytmusicfs.processor import TrackProcessor
 from ytmusicfs.oauth_adapter import YTMusicOAuthAdapter
@@ -88,6 +89,11 @@ class YouTubeMusicFS(Operations):
         # Also explicitly set the cache manager
         self.router.set_cache(self.cache)
 
+        # Initialize the metadata manager
+        self.metadata_manager = MetadataManager(
+            cache=self.cache, logger=self.logger, content_fetcher=self.fetcher
+        )
+
         # Store parameters for future reference
         self.auth_file = auth_file
         self.client_id = client_id
@@ -104,10 +110,6 @@ class YouTubeMusicFS(Operations):
         # Thread-related objects
         self.thread_pool = ThreadPoolExecutor(max_workers=8)
         self.logger.info("Thread pool initialized with 8 workers")
-
-        # Video ID cache with lock protection
-        self.video_id_cache = {}
-        self.video_id_cache_lock = threading.RLock()
 
         # Store the browser parameter
         self.browser = browser
@@ -388,7 +390,7 @@ class YouTubeMusicFS(Operations):
             return result
 
     def _get_video_id(self, path: str) -> str:
-        """Get the video ID for a file.
+        """Get the video ID for a file using MetadataManager.
 
         Args:
             path: The path to get the video ID for
@@ -399,80 +401,7 @@ class YouTubeMusicFS(Operations):
         Raises:
             OSError: If the video ID could not be found
         """
-        # Check if path is a file based on entry_type
-        entry_type = self.cache.get_entry_type(path)
-        if entry_type != "file":
-            self.logger.warning(f"Attempting to get video ID for non-file: {path}")
-            raise OSError(errno.EINVAL, "Not a music file")
-
-        # Check if we already have the video ID for this path in cache
-        with self.video_id_cache_lock:
-            if path in self.video_id_cache:
-                video_id = self.video_id_cache[path]
-                self.logger.debug(f"Using cached video ID {video_id} for {path}")
-                return video_id
-
-        dir_path = os.path.dirname(path)
-        filename = os.path.basename(path)
-        self.logger.debug(f"Looking up video ID for {filename} in {dir_path}")
-
-        # First try to get attributes from the parent directory's cached listing
-        file_attrs = self.cache.get_file_attrs_from_parent_dir(path)
-        if file_attrs and "videoId" in file_attrs:
-            video_id = file_attrs["videoId"]
-            self.logger.debug(f"Found video ID {video_id} in parent directory cache")
-            with self.video_id_cache_lock:
-                self.video_id_cache[path] = video_id
-            return video_id
-
-        # UNIFIED APPROACH:
-        # 1. Find the playlist entry from the ContentFetcher registry
-        # 2. Get the cache key using a consistent pattern
-
-        # Find the corresponding playlist in the fetcher's registry
-        playlist_entry = None
-        for entry in self.fetcher.PLAYLIST_REGISTRY:
-            if entry["path"] == dir_path:
-                playlist_entry = entry
-                break
-
-        if playlist_entry:
-            # Use a consistent cache key pattern for all playlist types
-            cache_key = f"{dir_path}_processed"
-            self.logger.debug(f"Using cache key {cache_key} for {path}")
-
-            # Try to get the track data from the cache
-            tracks = self.cache.get(cache_key)
-            if tracks:
-                for track in tracks:
-                    if isinstance(track, dict) and track.get("filename") == filename:
-                        video_id = track.get("videoId")
-                        if video_id:
-                            # Cache for future use
-                            with self.video_id_cache_lock:
-                                self.video_id_cache[path] = video_id
-                            return video_id
-
-        # If we didn't find the video ID, try to fetch the directory contents
-        self.logger.debug(f"Track not in cache for {dir_path}, attempting to fetch")
-        self.readdir(dir_path, None)
-
-        # Try again with the unified approach
-        if playlist_entry:
-            cache_key = f"{dir_path}_processed"
-            tracks = self.cache.get(cache_key)
-            if tracks:
-                for track in tracks:
-                    if isinstance(track, dict) and track.get("filename") == filename:
-                        video_id = track.get("videoId")
-                        if video_id:
-                            # Cache for future use
-                            with self.video_id_cache_lock:
-                                self.video_id_cache[path] = video_id
-                            return video_id
-
-        self.logger.error(f"Could not find video ID for {filename} in {dir_path}")
-        raise OSError(errno.ENOENT, "Video ID not found")
+        return self.metadata_manager.get_video_id(path)
 
     def getattr(
         self, path: str, fh: Optional[int] = None
