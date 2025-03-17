@@ -125,7 +125,7 @@ class ContentFetcher:
             return {"name": "", "id": "", "type": ""}
 
     def fetch_playlist_content(self, playlist_id: str, path: str) -> List[str]:
-        """Fetch playlist content using yt-dlp for any playlist ID.
+        """Fetch playlist content using yt-dlp for any playlist ID and cache durations.
 
         Args:
             playlist_id: Playlist ID (e.g., 'PL123', 'LM', 'MPREb_abc123')
@@ -173,35 +173,37 @@ class ContentFetcher:
                     if not entry:
                         continue
 
+                    video_id = entry.get("id")
+                    duration_seconds = (
+                        int(entry.get("duration", 0))
+                        if entry.get("duration") is not None
+                        else None
+                    )
+
+                    # Cache duration immediately if available
+                    if video_id and duration_seconds is not None:
+                        self.cache.set_duration(video_id, duration_seconds)
+
                     track_info = {
                         "title": entry.get("title", "Unknown Title"),
                         "artist": entry.get("uploader", "Unknown Artist"),
-                        "videoId": entry.get("id"),
-                        "duration_seconds": (
-                            int(entry.get("duration", 0))
-                            if entry.get("duration")
-                            else None
-                        ),
-                        "is_directory": False,  # Songs are files
+                        "videoId": video_id,
+                        "duration_seconds": duration_seconds,
+                        "is_directory": False,
                     }
 
-                    # Format the filename
                     filename = self.processor.sanitize_filename(
                         f"{track_info['artist']} - {track_info['title']}.m4a"
                     )
                     track_info["filename"] = filename
 
-                    # Process through the track processor to ensure consistent format
                     processed_track = self.processor.extract_track_info(track_info)
                     processed_track["filename"] = filename
-                    processed_track["is_directory"] = (
-                        False  # Ensure it's set after processing
-                    )
+                    processed_track["is_directory"] = False
                     processed_tracks.append(processed_track)
 
                 self.cache.set(cache_key, processed_tracks)
                 self._cache_directory_listing_with_attrs(path, processed_tracks)
-
                 return [track["filename"] for track in processed_tracks]
         except Exception as e:
             self.logger.error(f"Error fetching playlist content: {str(e)}")
