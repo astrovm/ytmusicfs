@@ -47,6 +47,8 @@ class ContentFetcher:
         self.browser = browser
         # Initialize playlist registry with liked songs and fetch others
         self._initialize_playlist_registry()
+        # Start auto-refresh in a background thread
+        threading.Thread(target=self._run_auto_refresh, daemon=True).start()
 
     def _initialize_playlist_registry(self):
         """Initialize the playlist registry with playlists and albums."""
@@ -104,7 +106,7 @@ class ContentFetcher:
         """
         # Handle cache auto-refreshing if enabled
         if auto_refresh:
-            self._auto_refresh_cache(path)
+            self._auto_refresh_cache()
 
         # Check if we have cached data
         data = self.cache.get(path)
@@ -120,23 +122,19 @@ class ContentFetcher:
 
         return data
 
-    def _auto_refresh_cache(self, cache_key: str, refresh_interval: int = 600) -> None:
-        """Auto-refresh cache in a background thread after a delay.
-
-        Args:
-            cache_key: The cache key to refresh
-            refresh_interval: Time in seconds before refresh (default: 10 minutes)
-        """
-        # Check when this cache key was last refreshed
-        last_refresh = self.cache.get_last_refresh(cache_key)
+    def _auto_refresh_cache(self, refresh_interval: int = 600) -> None:
+        """Auto-refresh all playlist caches every 10 minutes."""
         now = time.time()
-
-        # Only schedule refresh if sufficient time has passed
-        if last_refresh and (now - last_refresh) < refresh_interval:
-            return
-
-        # Set last refresh time to prevent multiple refreshes
-        self.cache.set_last_refresh(cache_key, now)
+        for playlist in self.PLAYLIST_REGISTRY:
+            cache_key = f"{playlist['path']}_processed"
+            last_refresh = self.cache.get_last_refresh(cache_key)
+            if last_refresh and (now - last_refresh) < refresh_interval:
+                continue
+            self.logger.debug(
+                f"Auto-refreshing {playlist['path']} with ID {playlist['id']}"
+            )
+            self.fetch_playlist_content(playlist["id"], playlist["path"], limit=100)
+            self.cache.set_last_refresh(cache_key, now)
 
     def get_playlist_info(self, source: str, data: Dict) -> Dict[str, str]:
         """Standardize playlist metadata for playlists, liked songs, and albums.
@@ -1267,3 +1265,9 @@ class ContentFetcher:
             )
             self.fetch_playlist_content(playlist["id"], playlist["path"], limit=100)
         self.logger.info("All content caches refreshed successfully")
+
+    def _run_auto_refresh(self):
+        """Run the auto-refresh loop every 10 minutes."""
+        while True:
+            self._auto_refresh_cache(refresh_interval=600)
+            time.sleep(600)  # Sleep for 10 minutes
