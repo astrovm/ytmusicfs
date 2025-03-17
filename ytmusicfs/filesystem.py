@@ -150,9 +150,7 @@ class YouTubeMusicFS(Operations):
             "/playlists", lambda: [".", ".."] + self.fetcher.readdir_playlists()
         )
         self.router.register(
-            "/liked_songs",
-            lambda: [".", ".."]
-            + self.fetcher.fetch_playlist_content("LM", "/liked_songs"),
+            "/liked_songs", lambda: [".", ".."] + self.fetcher.readdir_liked_songs()
         )
         self.router.register(
             "/artists", lambda: [".", ".."] + self.fetcher.readdir_artists()
@@ -278,11 +276,7 @@ class YouTubeMusicFS(Operations):
 
         # Start loading each data type
         futures.append(self.thread_pool.submit(self.fetcher.readdir_playlists))
-        futures.append(
-            self.thread_pool.submit(
-                lambda: self.fetcher.fetch_playlist_content("LM", "/liked_songs")
-            )
-        )
+        futures.append(self.thread_pool.submit(self.fetcher.readdir_liked_songs))
         futures.append(self.thread_pool.submit(self.fetcher.readdir_artists))
         futures.append(self.thread_pool.submit(self.fetcher.readdir_albums))
         futures.append(self.thread_pool.submit(self.fetcher.readdir_search_categories))
