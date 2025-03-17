@@ -29,7 +29,6 @@ class ContentFetcher:
         processor: TrackProcessor,
         cache: CacheManager,
         logger: logging.Logger,
-        browser: str = None,
     ):
         """Initialize the ContentFetcher.
 
@@ -38,13 +37,12 @@ class ContentFetcher:
             processor: Track processor for handling track data
             cache: Cache manager for storing fetched data
             logger: Logger instance
-            browser: Browser to use for cookies (optional)
         """
         self.client = client
         self.processor = processor
         self.cache = cache
         self.logger = logger
-        self.browser = browser
+        self.browser = None
         # Initialize playlist registry with liked songs and fetch others
         self._initialize_playlist_registry()
         # Start auto-refresh in a background thread

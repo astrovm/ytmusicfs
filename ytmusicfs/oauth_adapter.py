@@ -19,8 +19,6 @@ class YTMusicOAuthAdapter:
         client_id: Optional[str] = None,
         client_secret: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
-        browser: Optional[str] = None,
-        credentials_file: Optional[str] = None,
     ):
         """
         Initialize the YTMusic OAuth adapter.
@@ -30,11 +28,9 @@ class YTMusicOAuthAdapter:
             client_id: OAuth client ID from Google Cloud Console
             client_secret: OAuth client secret from Google Cloud Console
             logger: Optional logger instance
-            browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
-            credentials_file: Path to the credentials file (default: ConfigManager default)
         """
         self.logger = logger or logging.getLogger(__name__)
-        self.browser = browser
+        self.browser = None
         self.ytmusic = None
 
         # Validate inputs
@@ -42,9 +38,7 @@ class YTMusicOAuthAdapter:
             raise FileNotFoundError(f"Auth file not found: {auth_file}")
 
         # Initialize config manager
-        self.config = ConfigManager(
-            auth_file=auth_file, credentials_file=credentials_file, logger=self.logger
-        )
+        self.config = ConfigManager(auth_file=auth_file, logger=self.logger)
 
         # Use client_id/secret if provided, otherwise use ones from config
         self.client_id = client_id

@@ -21,7 +21,7 @@ class CacheManager:
         self,
         cache_dir: Optional[str] = None,
         cache_timeout: int = 2592000,
-        maxsize: int = 1000,  # Reduced from 10000
+        maxsize: int = 1000,
         logger: Optional[logging.Logger] = None,
     ):
         """Initialize the cache manager with simplified caching strategy.
@@ -730,6 +730,28 @@ class CacheManager:
 
         if path in self.path_types:
             del self.path_types[path]
+
+    def get_last_refresh(self, key: str) -> Optional[float]:
+        """Get the last refresh time for a key.
+
+        Args:
+            key: The key to get the last refresh time for
+
+        Returns:
+            The last refresh time as a timestamp, or None if not found
+        """
+        refresh_key = f"refresh_time:{key}"
+        return self.get(refresh_key)
+
+    def set_last_refresh(self, key: str, timestamp: float) -> None:
+        """Set the last refresh time for a key.
+
+        Args:
+            key: The key to set the last refresh time for
+            timestamp: The timestamp to set
+        """
+        refresh_key = f"refresh_time:{key}"
+        self.set(refresh_key, timestamp)
 
     def close(self) -> None:
         """Close the cache and release resources."""

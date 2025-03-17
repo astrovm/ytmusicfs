@@ -20,7 +20,6 @@ class ConfigManager:
         auth_file: Optional[str] = None,
         credentials_file: Optional[str] = None,
         cache_dir: Optional[str] = None,
-        cache_timeout: Optional[int] = None,
         logger: Optional[logging.Logger] = None,
     ):
         """Initialize with optional overrides for defaults."""
@@ -33,9 +32,7 @@ class ConfigManager:
             Path(credentials_file) if credentials_file else self.DEFAULT_CRED_FILE
         )
         self.cache_dir = Path(cache_dir) if cache_dir else self.DEFAULT_CACHE_DIR
-        self.cache_timeout = (
-            cache_timeout if cache_timeout is not None else self.DEFAULT_CACHE_TIMEOUT
-        )
+        self.cache_timeout = self.DEFAULT_CACHE_TIMEOUT
 
         self.client_id: Optional[str] = None
         self.client_secret: Optional[str] = None

@@ -30,14 +30,6 @@ class YouTubeMusicFS(Operations):
         client_id: str = None,
         client_secret: str = None,
         cache_dir: Optional[str] = None,
-        cache_timeout: int = 2592000,
-        max_workers: int = 8,
-        browser: Optional[str] = None,
-        cache_maxsize: int = 1000,
-        preload_cache: bool = True,
-        request_cooldown: int = 1000,
-        logger: Optional[logging.Logger] = None,
-        credentials_file: Optional[str] = None,
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
@@ -46,26 +38,16 @@ class YouTubeMusicFS(Operations):
             client_id: OAuth client ID (required for OAuth authentication)
             client_secret: OAuth client secret (required for OAuth authentication)
             cache_dir: Directory for persistent cache (optional)
-            cache_timeout: Time in seconds before cached data expires (default: 30 days)
-            max_workers: Maximum number of worker threads (default: 8)
-            browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
-            cache_maxsize: Maximum number of items to keep in memory cache (default: 1000)
-            preload_cache: Whether to preload cache data at startup (default: True)
-            request_cooldown: Time in milliseconds between allowed repeated requests to the same path (default: 1000)
-            logger: Logger instance to use (default: creates a new logger)
-            credentials_file: Path to the client credentials file (default: None)
         """
         # Get or create the logger
-        self.logger = logger or logging.getLogger("YTMusicFS")
+        self.logger = logging.getLogger("YTMusicFS")
 
         # Initialize the OAuth adapter first
         oauth_adapter = YTMusicOAuthAdapter(
             auth_file=auth_file,
             client_id=client_id,
             client_secret=client_secret,
-            browser=browser,
             logger=self.logger,
-            credentials_file=credentials_file,
         )
 
         # Initialize the client component with the OAuth adapter
@@ -74,11 +56,9 @@ class YouTubeMusicFS(Operations):
             logger=self.logger,
         )
 
-        # Initialize the cache component with simplified parameters
+        # Initialize the cache component
         self.cache = CacheManager(
             cache_dir=cache_dir,
-            cache_timeout=cache_timeout,
-            maxsize=cache_maxsize,
             logger=self.logger,
         )
 
@@ -91,7 +71,6 @@ class YouTubeMusicFS(Operations):
             processor=self.processor,
             cache=self.cache,
             logger=self.logger,
-            browser=browser,
         )
 
         # Set the callback for caching directory listings with attributes
@@ -110,8 +89,7 @@ class YouTubeMusicFS(Operations):
         self.auth_file = auth_file
         self.client_id = client_id
         self.client_secret = client_secret
-        self.browser = browser
-        self.request_cooldown = request_cooldown / 1000.0  # Convert to seconds
+        self.request_cooldown = 1.0  # Default to 1 second cooldown
 
         # Debounce mechanism for repeated requests
         self.last_access_time = {}  # {operation_path: last_access_time}
@@ -121,8 +99,8 @@ class YouTubeMusicFS(Operations):
         self.last_access_results = {}  # {operation_path: cached_result}
 
         # Thread-related objects
-        self.thread_pool = ThreadPoolExecutor(max_workers=max_workers)
-        self.logger.info(f"Thread pool initialized with {max_workers} workers")
+        self.thread_pool = ThreadPoolExecutor(max_workers=8)
+        self.logger.info("Thread pool initialized with 8 workers")
 
         # Initialize thread-local storage for per-operation caching
         self._thread_local = threading.local()
@@ -130,7 +108,6 @@ class YouTubeMusicFS(Operations):
         # Initialize the file handler component
         self.file_handler = FileHandler(
             cache_dir=self.cache.cache_dir,
-            browser=browser,
             cache=self.cache,
             logger=self.logger,
             update_file_size_callback=self._update_file_size,
@@ -189,20 +166,17 @@ class YouTubeMusicFS(Operations):
         self.cache.mark_valid("/liked_songs", is_directory=True)
         self.cache.mark_valid("/albums", is_directory=True)
 
-        # Data for managing open files
-        self.open_files = {}
-        self.next_fh = 1
-        self.fh_lock = threading.Lock()
-
         # Flag to track initialization state
         self.initialized = False
 
-        # Pre-warm the cache if requested
-        if preload_cache:
-            self._preload_cache()
+        # Pre-warm the cache
+        self._preload_cache()
 
         self.initialized = True
         self.logger.info("YTMusicFS initialized successfully")
+        self.logger.debug(
+            f"Using auth_file: {auth_file}, cache_dir: {self.cache.cache_dir}"
+        )
 
     def _preload_cache(self) -> None:
         """Preload common paths and data into the cache."""
@@ -812,12 +786,9 @@ class YouTubeMusicFS(Operations):
                 self.logger.error(f"Error extracting video ID for {path}: {e}")
                 raise FuseOSError(errno.ENOENT)
 
-            # Allocate a file handle
-            fh = self._allocate_fh()
-            self.open_files[fh] = {"path": path, "video_id": video_id, "offset": 0}
+            # Delegate to file handler
+            return self.file_handler.open(path, video_id, self.thread_pool)
 
-            # Get audio stream URL (deferred to read operation)
-            return fh
         except Exception as e:
             if isinstance(e, FuseOSError):
                 raise
@@ -840,69 +811,8 @@ class YouTubeMusicFS(Operations):
         try:
             self.logger.debug(f"read: {path} (size={size}, offset={offset}, fh={fh})")
 
-            # Check if file handle is valid
-            if fh not in self.open_files:
-                self.logger.error(f"Invalid file handle: {fh}")
-                raise FuseOSError(errno.EBADF)
-
-            file_info = self.open_files[fh]
-            video_id = file_info["video_id"]
-
-            # If offset doesn't match stored offset, we need to seek
-            if offset != file_info["offset"]:
-                self.logger.debug(f"Seeking to offset {offset} for {path}")
-                file_info["offset"] = offset
-
-            # Check if we have cached audio data
-            stream_cache_key = f"stream:{video_id}"
-            stream_data = self.cache.get(stream_cache_key)
-
-            if stream_data is None:
-                # Get audio URL and fetch data
-                self.logger.debug(f"Fetching audio stream for {video_id}")
-                try:
-                    # Get streaming URL from YouTube Music API
-                    audio_url = self.client.get_stream_url(video_id)
-                    if not audio_url:
-                        self.logger.error(f"Failed to get streaming URL for {video_id}")
-                        raise FuseOSError(errno.EIO)
-
-                    # Download audio data
-                    self.logger.debug(f"Downloading audio from {audio_url}")
-                    response = requests.get(audio_url, stream=True)
-                    if response.status_code != 200:
-                        self.logger.error(
-                            f"Failed to download audio: HTTP {response.status_code}"
-                        )
-                        raise FuseOSError(errno.EIO)
-
-                    # Read all data into memory
-                    stream_data = response.content
-
-                    # Cache the stream data
-                    self.cache.set(
-                        stream_cache_key, stream_data, timeout=3600
-                    )  # Cache for 1 hour
-
-                except Exception as e:
-                    self.logger.error(f"Error fetching audio stream: {e}")
-                    raise FuseOSError(errno.EIO)
-
-            # Calculate the portion of data to return
-            data_length = len(stream_data)
-            if offset >= data_length:
-                # Requested offset is beyond the end of the file
-                return b""
-
-            # Adjust size if it would read beyond the end of the file
-            if offset + size > data_length:
-                size = data_length - offset
-
-            # Update file offset for next read
-            file_info["offset"] = offset + size
-
-            # Return the requested portion of data
-            return stream_data[offset : offset + size]
+            # Delegate to file handler
+            return self.file_handler.read(path, size, offset, fh)
 
         except Exception as e:
             if isinstance(e, FuseOSError):
@@ -924,11 +834,9 @@ class YouTubeMusicFS(Operations):
         try:
             self.logger.debug(f"release: {path} (fh={fh})")
 
-            # Remove file handle from open files
-            if fh in self.open_files:
-                del self.open_files[fh]
+            # Delegate to file handler
+            return self.file_handler.release(path, fh)
 
-            return 0
         except Exception as e:
             self.logger.error(f"Error releasing {path}: {e}")
             self.logger.error(traceback.format_exc())
@@ -1020,17 +928,6 @@ class YouTubeMusicFS(Operations):
             # Clean up thread-local cache after every operation to prevent memory leaks
             self._clear_thread_local_cache()
 
-    def _allocate_fh(self) -> int:
-        """Allocate a new file handle.
-
-        Returns:
-            A unique file handle number
-        """
-        with self.fh_lock:
-            fh = self.next_fh
-            self.next_fh += 1
-            return fh
-
     def _is_valid_path(self, path: str) -> bool:
         """Check if a path is valid.
 
@@ -1055,9 +952,6 @@ class YouTubeMusicFS(Operations):
         """
         self.logger.info("Destroying YTMusicFS instance")
 
-        # Clear open files
-        self.open_files.clear()
-
         # Shutdown thread pool
         self.thread_pool.shutdown(wait=True)
 
@@ -1072,17 +966,8 @@ def mount_ytmusicfs(
     auth_file: str,
     client_id: str,
     client_secret: str,
-    foreground: bool = False,
-    debug: bool = False,
     cache_dir: Optional[str] = None,
-    cache_timeout: int = 2592000,
-    max_workers: int = 8,
-    browser: Optional[str] = None,
-    credentials_file: Optional[str] = None,
-    cache_maxsize: int = 10000,
-    preload_cache: bool = True,
-    request_cooldown: int = 1000,
-    logger: Optional[logging.Logger] = None,
+    foreground: bool = False,
 ) -> None:
     """Mount the YouTube Music filesystem.
 
@@ -1091,17 +976,8 @@ def mount_ytmusicfs(
         auth_file: Path to the OAuth token file
         client_id: OAuth client ID
         client_secret: OAuth client secret
+        cache_dir: Directory to store cache files (default: None)
         foreground: Run in the foreground (for debugging)
-        debug: Enable debug logging
-        cache_dir: Directory to store cache files (default: ~/.cache/ytmusicfs)
-        cache_timeout: Cache timeout in seconds (default: 2592000)
-        max_workers: Maximum number of worker threads for parallel operations
-        browser: Browser to use for cookies
-        credentials_file: Path to the client credentials file (default: None)
-        cache_maxsize: Maximum number of items to keep in memory cache (default: 10000)
-        preload_cache: Whether to preload cache data at startup (default: True)
-        request_cooldown: Time in milliseconds between allowed repeated requests to the same path (default: 1000)
-        logger: Logger instance to use (default: None, creates a new logger)
     """
     # Set fuse logger to WARNING level to suppress debug messages about unsupported operations
     logging.getLogger("fuse").setLevel(logging.WARNING)
@@ -1120,14 +996,6 @@ def mount_ytmusicfs(
             client_id=client_id,
             client_secret=client_secret,
             cache_dir=cache_dir,
-            cache_timeout=cache_timeout,
-            max_workers=max_workers,
-            browser=browser,
-            cache_maxsize=cache_maxsize,
-            preload_cache=preload_cache,
-            request_cooldown=request_cooldown,
-            logger=logger,
-            credentials_file=credentials_file,
         ),
         mount_point,
         **fuse_options,

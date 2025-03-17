@@ -52,9 +52,7 @@ class MountCommandHandler:
         self.logger = logger
         self.config = ConfigManager(
             auth_file=args.auth_file,
-            credentials_file=args.credentials_file,
             cache_dir=args.cache_dir,
-            cache_timeout=args.cache_timeout,
             logger=logger,
         )
 
@@ -85,17 +83,8 @@ class MountCommandHandler:
                 auth_file=str(self.config.auth_file),
                 client_id=client_id,
                 client_secret=client_secret,
-                foreground=self.args.foreground,
-                debug=self.args.debug,
                 cache_dir=str(self.config.cache_dir),
-                cache_timeout=self.config.cache_timeout,
-                browser=self.args.browser,
-                credentials_file=(
-                    str(self.config.credentials_file)
-                    if self.config.credentials_file
-                    else None
-                ),
-                logger=self.logger,
+                foreground=self.args.foreground,
             )
             return 0
         except Exception as e:
@@ -137,19 +126,11 @@ def main() -> int:
     mount_parser.add_argument("--client-secret", "-s", help="OAuth client secret")
     mount_parser.add_argument("--cache-dir", "-c", help="Cache directory")
     mount_parser.add_argument(
-        "--cache-timeout",
-        "-t",
-        type=int,
-        default=ConfigManager.DEFAULT_CACHE_TIMEOUT,
-        help="Cache timeout in seconds",
-    )
-    mount_parser.add_argument(
         "--foreground", "-f", action="store_true", help="Run in foreground"
     )
     mount_parser.add_argument(
         "--debug", "-d", action="store_true", help="Enable debug logging"
     )
-    mount_parser.add_argument("--browser", "-b", help="Browser for cookies")
     mount_parser.set_defaults(
         func=lambda args: MountCommandHandler(args, setup_logging(args)).execute()
     )

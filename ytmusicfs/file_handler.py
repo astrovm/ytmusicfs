@@ -18,19 +18,19 @@ class FileHandler:
     def __init__(
         self,
         cache_dir: Path,
-        browser: Optional[str],
         cache: Any,  # CacheManager
         logger: logging.Logger,
         update_file_size_callback: Callable[[str, int], None],
+        browser: Optional[str] = None,
     ):
         """Initialize the FileHandler.
 
         Args:
             cache_dir: Directory for persistent cache
-            browser: Browser to use for cookies (e.g., 'chrome', 'firefox')
             cache: CacheManager instance for caching
             logger: Logger instance to use
             update_file_size_callback: Callback to update file size in filesystem cache
+            browser: Browser to use for cookies (e.g., 'chrome', 'firefox')
         """
         self.cache_dir = cache_dir
         self.browser = browser
@@ -59,9 +59,6 @@ class FileHandler:
             File handle
         """
         self.logger.debug(f"Opening {path} with video_id {video_id}")
-        if not video_id:
-            self.logger.error(f"No videoId provided for {path}")
-            raise OSError(errno.EINVAL, "Invalid video ID")
 
         cache_path = self.cache_dir / "audio" / f"{video_id}.m4a"
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,7 +69,7 @@ class FileHandler:
             self.open_files[fh] = {
                 "cache_path": str(cache_path),
                 "video_id": video_id,
-                "stream_url": None,
+                "stream_url": "cached" if self._check_cached_audio(video_id) else None,
                 "status": "ready",
                 "error": None,
                 "path": path,
@@ -81,17 +78,6 @@ class FileHandler:
             self.open_files[fh]["initialized_event"].set()
             self.path_to_fh[path] = fh
 
-        if self._check_cached_audio(video_id):
-            self.logger.debug(f"Using cached audio for {video_id}")
-            # Mark stream_url as "cached" to avoid unnecessary fetch
-            with self.file_handle_lock:
-                file_info = self.open_files[fh]
-                file_info["stream_url"] = (
-                    "cached"  # Special value to indicate file is fully cached
-                )
-            return fh
-
-        self.logger.debug(f"Stream URL will be fetched on-demand for {video_id}")
         return fh
 
     def _extract_stream_url(self, video_id: str, browser: str, queue):
