@@ -85,6 +85,7 @@ class MountCommandHandler:
                 client_secret=client_secret,
                 cache_dir=str(self.config.cache_dir),
                 foreground=self.args.foreground,
+                browser=self.args.browser,
             )
             return 0
         except Exception as e:
@@ -130,6 +131,11 @@ def main() -> int:
     )
     mount_parser.add_argument(
         "--debug", "-d", action="store_true", help="Enable debug logging"
+    )
+    mount_parser.add_argument(
+        "--browser",
+        "-b",
+        help="Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')",
     )
     mount_parser.set_defaults(
         func=lambda args: MountCommandHandler(args, setup_logging(args)).execute()

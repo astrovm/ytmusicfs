@@ -30,6 +30,7 @@ class YouTubeMusicFS(Operations):
         client_id: str = None,
         client_secret: str = None,
         cache_dir: Optional[str] = None,
+        browser: Optional[str] = None,
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
@@ -38,6 +39,7 @@ class YouTubeMusicFS(Operations):
             client_id: OAuth client ID (required for OAuth authentication)
             client_secret: OAuth client secret (required for OAuth authentication)
             cache_dir: Directory for persistent cache (optional)
+            browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
         """
         # Get or create the logger
         self.logger = logging.getLogger("YTMusicFS")
@@ -48,6 +50,7 @@ class YouTubeMusicFS(Operations):
             client_id=client_id,
             client_secret=client_secret,
             logger=self.logger,
+            browser=browser,
         )
 
         # Initialize the client component with the OAuth adapter
@@ -71,6 +74,7 @@ class YouTubeMusicFS(Operations):
             processor=self.processor,
             cache=self.cache,
             logger=self.logger,
+            browser=browser,
         )
 
         # Set the callback for caching directory listings with attributes
@@ -111,6 +115,7 @@ class YouTubeMusicFS(Operations):
             cache=self.cache,
             logger=self.logger,
             update_file_size_callback=self._update_file_size,
+            browser=self.browser,
         )
 
         # Register exact path handlers
@@ -177,6 +182,9 @@ class YouTubeMusicFS(Operations):
         self.logger.debug(
             f"Using auth_file: {auth_file}, cache_dir: {self.cache.cache_dir}"
         )
+
+        # Store the browser parameter
+        self.browser = browser
 
     def _preload_cache(self) -> None:
         """Preload common paths and data into the cache."""
@@ -968,6 +976,7 @@ def mount_ytmusicfs(
     client_secret: str,
     cache_dir: Optional[str] = None,
     foreground: bool = False,
+    browser: Optional[str] = None,
 ) -> None:
     """Mount the YouTube Music filesystem.
 
@@ -978,6 +987,7 @@ def mount_ytmusicfs(
         client_secret: OAuth client secret
         cache_dir: Directory to store cache files (default: None)
         foreground: Run in the foreground (for debugging)
+        browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
     """
     # Set fuse logger to WARNING level to suppress debug messages about unsupported operations
     logging.getLogger("fuse").setLevel(logging.WARNING)
@@ -996,6 +1006,7 @@ def mount_ytmusicfs(
             client_id=client_id,
             client_secret=client_secret,
             cache_dir=cache_dir,
+            browser=browser,
         ),
         mount_point,
         **fuse_options,

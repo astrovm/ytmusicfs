@@ -19,18 +19,20 @@ class YTMusicOAuthAdapter:
         client_id: Optional[str] = None,
         client_secret: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
+        browser: Optional[str] = None,
     ):
         """
         Initialize the YTMusic OAuth adapter.
 
         Args:
-            auth_file: Path to the OAuth token file created by setup_oauth()
+            auth_file: Path to the auth JSON file
             client_id: OAuth client ID from Google Cloud Console
             client_secret: OAuth client secret from Google Cloud Console
             logger: Optional logger instance
+            browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
         """
         self.logger = logger or logging.getLogger(__name__)
-        self.browser = None
+        self.browser = browser
         self.ytmusic = None
 
         # Validate inputs
