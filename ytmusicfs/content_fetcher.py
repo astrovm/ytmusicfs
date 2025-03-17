@@ -84,58 +84,6 @@ class ContentFetcher:
             f"Initialized playlist registry with {len(self.PLAYLIST_REGISTRY)} entries"
         )
 
-    def fetch_and_cache(
-        self,
-        path: str,
-        fetch_func: Callable,
-        limit: int = 10000,
-        process_func: Optional[Callable] = None,
-        auto_refresh: bool = True,
-    ):
-        """Centralized helper to fetch and cache data with consistent logic.
-
-        Args:
-            path: The cache path to use
-            fetch_func: Function to call to fetch the data if not cached
-            limit: Limit parameter to pass to fetch_func
-            process_func: Optional function to process data after fetching
-            auto_refresh: Whether to enable auto-refresh for this cache entry
-
-        Returns:
-            The cached or fetched data, optionally processed
-        """
-        # Handle cache auto-refreshing if enabled
-        if auto_refresh:
-            self._auto_refresh_cache()
-
-        # Check if we have cached data
-        data = self.cache.get(path)
-        if not data:
-            # Fetch data outside of any locks
-            self.logger.debug(f"Fetching data from API for {path}")
-            data = fetch_func(limit=limit)
-            self.cache.set(path, data)
-
-        # Process data if a processing function is provided
-        if process_func and data:
-            return process_func(data)
-
-        return data
-
-    def _auto_refresh_cache(self, refresh_interval: int = 600) -> None:
-        """Auto-refresh all playlist caches every 10 minutes."""
-        now = time.time()
-        for playlist in self.PLAYLIST_REGISTRY:
-            cache_key = f"{playlist['path']}_processed"
-            last_refresh = self.cache.get_last_refresh(cache_key)
-            if last_refresh and (now - last_refresh) < refresh_interval:
-                continue
-            self.logger.debug(
-                f"Auto-refreshing {playlist['path']} with ID {playlist['id']}"
-            )
-            self.fetch_playlist_content(playlist["id"], playlist["path"], limit=100)
-            self.cache.set_last_refresh(cache_key, now)
-
     def get_playlist_info(self, source: str, data: Dict) -> Dict[str, str]:
         """Standardize playlist metadata for playlists, liked songs, and albums.
 
@@ -305,46 +253,42 @@ class ContentFetcher:
             )
 
     def readdir_artists(self) -> List[str]:
-        """Handle listing artists.
+        """List all artists from the user's library."""
+        self.logger.info("Fetching artists for /artists directory")
 
-        Returns:
-            List of artist names
-        """
+        # Check if we have cached data
+        cached_artists = self.cache.get("/artists")
+        if cached_artists:
+            # Process the cached data
+            return process_artists(cached_artists)
 
-        # Define a processing function for the artists data
+        # Fetch data if not cached
+        self.logger.debug("Fetching artists data from API")
+        artists = self.client.get_library_artists(limit=1000)
+        self.cache.set("/artists", artists)
+
+        # Process the artists data
         def process_artists(artists):
-            sanitized_names = []
             processed_artists = []
-
-            # More robust handling with error checking
+            sanitized_names = []
             for artist in artists:
-                # Skip invalid entries
-                if not isinstance(artist, dict):
-                    self.logger.warning(f"Skipping invalid artist entry: {artist}")
-                    continue
-
-                # Use .get() with default value to safely handle missing 'artist' keys
-                name = artist.get("artist", "Unknown Artist")
-
-                # YouTube Music uses browseId for artists, not artistId
-                browse_id = artist.get("browseId")
-
-                # Skip artists without browseId
-                if not browse_id:
-                    self.logger.warning(f"Artist {name} has no browseId, skipping")
-                    continue
-
-                self.logger.debug(f"Processing artist - Name: {name}, ID: {browse_id}")
-                sanitized_name = self.processor.sanitize_filename(name)
-
+                sanitized_name = self.processor.sanitize_filename(artist["artist"])
                 sanitized_names.append(sanitized_name)
-
-                # Add to processed artists list for directory caching
                 processed_artists.append(
                     {
                         "filename": sanitized_name,
-                        "browseId": browse_id,  # Store browseId instead of artistId
-                        "is_directory": True,  # Artists are always directories
+                        "is_directory": True,
+                        "browseId": artist.get("browseId"),
+                    }
+                )
+                # Register the artist in the registry
+                self.PLAYLIST_REGISTRY.append(
+                    {
+                        "name": sanitized_name,
+                        "id": artist.get("browseId", ""),
+                        "type": "artist",
+                        "path": f"/artists/{sanitized_name}",
+                        "entity": artist,
                     }
                 )
 
@@ -359,13 +303,7 @@ class ContentFetcher:
 
             return sanitized_names
 
-        # Use the centralized helper to fetch and process artists
-        return self.fetch_and_cache(
-            path="/artists",
-            fetch_func=self.client.get_library_artists,
-            limit=1000,
-            process_func=process_artists,
-        )
+        return process_artists(artists)
 
     def _log_object_structure(self, obj, indent=0, max_depth=3, current_depth=0):
         """Helper method to log the structure of an object with indentation.
@@ -418,6 +356,20 @@ class ContentFetcher:
                 self.logger.info("  " * indent + "[] (empty list)")
         else:
             self.logger.info("  " * indent + str(obj))
+
+    def _auto_refresh_cache(self, refresh_interval: int = 600) -> None:
+        """Auto-refresh all playlist caches every 10 minutes."""
+        now = time.time()
+        for playlist in self.PLAYLIST_REGISTRY:
+            cache_key = f"{playlist['path']}_processed"
+            last_refresh = self.cache.get_last_refresh(cache_key)
+            if last_refresh and (now - last_refresh) < refresh_interval:
+                continue
+            self.logger.debug(
+                f"Auto-refreshing {playlist['path']} with ID {playlist['id']}"
+            )
+            self.fetch_playlist_content(playlist["id"], playlist["path"], limit=100)
+            self.cache.set_last_refresh(cache_key, now)
 
     def readdir_albums(self) -> List[str]:
         """List all albums from the registry."""
