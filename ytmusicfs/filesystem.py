@@ -484,15 +484,11 @@ class YouTubeMusicFS(Operations):
         # Clear thread-local cache at the beginning of a new directory operation
         self._clear_thread_local_cache()
 
-        # First check if this path is already known as a directory
-        if not entry_type == "directory":
-            # Only check for non-m4a files if it's not a known directory
-            if "." in os.path.basename(path) and not path.lower().endswith(".m4a"):
-                self.logger.debug(
-                    f"Rejecting non-m4a file extension in readdir: {path}"
-                )
-                # Just return empty directory for these special files
-                return [".", ".."]
+        # Check if this path is a file (not a directory)
+        if entry_type == "file":
+            self.logger.debug(f"Path is a file, not a directory: {path}")
+            # Return empty directory for file paths
+            return [".", ".."]
 
         # Check if this request is too soon after the last one
         operation_key = f"readdir:{path}"
@@ -576,10 +572,10 @@ class YouTubeMusicFS(Operations):
             return result
 
     def _get_video_id(self, path: str) -> str:
-        """Helper to extract videoId from a path.
+        """Get the video ID for a file.
 
         Args:
-            path: The file path
+            path: The path to get the video ID for
 
         Returns:
             Video ID for the file
@@ -587,11 +583,10 @@ class YouTubeMusicFS(Operations):
         Raises:
             OSError: If the video ID could not be found
         """
-        # Check if path is a music file
-        if not path.lower().endswith(".m4a"):
-            self.logger.warning(
-                f"Attempting to get video ID for non-music file: {path}"
-            )
+        # Check if path is a file based on entry_type
+        entry_type = self.cache.get_entry_type(path)
+        if entry_type != "file":
+            self.logger.warning(f"Attempting to get video ID for non-file: {path}")
             raise OSError(errno.EINVAL, "Not a music file")
 
         # Create a thread-local cache for video IDs if it doesn't exist
@@ -786,10 +781,11 @@ class YouTubeMusicFS(Operations):
             self._cache_result(operation_key, attr)
             return attr.copy()
 
-        # Case 3: File extension check (only allow .m4a files)
+        # Case 3: File validation check
         basename = os.path.basename(path)
-        if "." in basename and not path.lower().endswith(".m4a"):
-            self.logger.debug(f"Rejecting non-m4a file extension: {path}")
+        # Check if we know it's a file based on entry_type
+        if entry_type != "file":
+            self.logger.debug(f"Rejecting path not known to be a file: {path}")
             raise OSError(errno.ENOENT, "No such file or directory")
 
         # Case 4: Try to get file attributes from cached directory listings
