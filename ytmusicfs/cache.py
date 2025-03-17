@@ -11,6 +11,7 @@ import re
 import sqlite3
 import threading
 import time
+import stat
 
 
 class CacheManager:
@@ -137,12 +138,17 @@ class CacheManager:
                     f"Failed to load valid paths: {e.__class__.__name__}: {e}"
                 )
 
-    def add_valid_path(self, path: str, is_directory: bool = None) -> None:
-        """Add a path to the valid paths set and persist it.
+    def mark_valid(
+        self, path: str, is_directory: bool = None, entry_metadata: dict = None
+    ) -> None:
+        """Mark a path as valid with its type.
+
+        Replaces add_valid_path, add_valid_dir, and add_valid_file with a unified API.
 
         Args:
             path: The path to mark as valid
-            is_directory: If specified, whether this path represents a directory
+            is_directory: Whether this path represents a directory
+            entry_metadata: Optional additional metadata to store with the entry
         """
         # Add to in-memory set with minimal locking
         add_to_cache = False
@@ -151,70 +157,261 @@ class CacheManager:
                 self.valid_paths.add(path)
                 add_to_cache = True
 
+            # Update path_types dictionary
+            if not hasattr(self, "path_types"):
+                self.path_types = {}
+
+            if is_directory is not None:
+                self.path_types[path] = "directory" if is_directory else "file"
+
         # Only persist to database if needed
         if add_to_cache:
             # Use appropriate key prefix based on directory type
-            key_prefix = "valid_dir:" if is_directory else "exact_path:"
-            self.set(f"{key_prefix}{path}", True, is_directory=is_directory)
+            if is_directory is not None:
+                key_prefix = "valid_dir:" if is_directory else "exact_path:"
+                self.set(f"{key_prefix}{path}", True, is_directory=is_directory)
+            else:
+                # If no type is specified, check if we can determine it from path_types
+                if hasattr(self, "path_types") and path in self.path_types:
+                    is_directory = self.path_types[path] == "directory"
+                    key_prefix = "valid_dir:" if is_directory else "exact_path:"
+                    self.set(f"{key_prefix}{path}", True, is_directory=is_directory)
+                else:
+                    # Default to using exact_path if we don't know
+                    self.set(f"exact_path:{path}", True)
 
-    def remove_valid_path(self, path: str) -> None:
-        """Remove a path from the valid paths set.
+        # If this is a directory, also mark parent directories as valid
+        if is_directory:
+            parts = path.split("/")
+            for i in range(1, len(parts)):
+                parent = "/".join(parts[:i]) or "/"
+                # Only mark as directory, don't add metadata
+                if parent != path:  # Avoid recursion
+                    self.mark_valid(parent, is_directory=True)
+
+        # Store entry metadata if provided
+        if entry_metadata and isinstance(entry_metadata, dict):
+            metadata_cache_key = f"{path}_metadata"
+            existing_metadata = self.get(metadata_cache_key) or {}
+            existing_metadata.update(entry_metadata)
+            self.set(metadata_cache_key, existing_metadata)
+
+    def is_valid_path(self, path: str, context: str = None) -> bool:
+        """Enhanced path validation that consolidates all validation logic.
 
         Args:
-            path: The path to remove from valid paths
+            path: The path to validate
+            context: Optional operation context (e.g., 'mkdir', 'readdir')
+
+        Returns:
+            Boolean indicating if the path is valid
         """
-        # Remove from in-memory set
+        # Special case for operation context
+        if context == "mkdir" or (context and "mkdir" in context):
+            self.logger.debug(f"Allowing path as valid due to mkdir context: {path}")
+            return True
+
+        # Static paths that are always valid
+        if path == "/" or path in ["/playlists", "/liked_songs", "/albums"]:
+            return True
+
+        # Check entry type in the cache - most reliable method
+        entry_type = self.get_entry_type(path)
+        if entry_type:
+            self.logger.debug(f"Found entry_type '{entry_type}' for {path}")
+            return True
+
+        # Check in-memory valid paths set (this includes paths we've marked as valid)
         with self.lock:
             if path in self.valid_paths:
-                self.valid_paths.remove(path)
+                return True
 
-        # Also remove from database
-        self.delete(f"valid_dir:{path}")
-        self.delete(f"exact_path:{path}")
+        # Check if parent directory is valid and contains this entry
+        parent_dir = os.path.dirname(path)
+        filename = os.path.basename(path)
 
-    def is_valid_path(self, path: str) -> bool:
-        """Check if a path is in the valid paths set.
+        if self.is_valid_path(parent_dir):  # Recursive check for parent
+            # Try to get directory listing with attributes
+            dir_listing = self.get_directory_listing_with_attrs(parent_dir)
+            if dir_listing and filename in dir_listing:
+                # Mark this path as valid for future lookups
+                is_dir = (
+                    dir_listing[filename].get("st_mode", 0) & stat.S_IFDIR
+                    == stat.S_IFDIR
+                )
+                self.mark_valid(path, is_directory=is_dir)
+                return True
+
+            # Also check valid_files key for backward compatibility
+            valid_files = self.get(f"valid_files:{parent_dir}")
+            if valid_files and filename in valid_files:
+                # Mark as valid file (since it's in valid_files)
+                self.mark_valid(path, is_directory=False)
+                return True
+
+        # Check special prefixed keys in database
+        for prefix in ["valid_dir:", "exact_path:"]:
+            key = self.path_to_key(f"{prefix}{path}")
+            with self.lock:
+                try:
+                    self.cursor.execute(
+                        "SELECT entry FROM cache_entries WHERE key = ?", (key,)
+                    )
+                    row = self.cursor.fetchone()
+                    if row:
+                        # Entry exists, mark as valid for future lookups
+                        is_dir = prefix == "valid_dir:"
+                        self.mark_valid(path, is_directory=is_dir)
+                        return True
+                except sqlite3.Error as e:
+                    self.logger.warning(
+                        f"Error checking database for {prefix}{path}: {e.__class__.__name__}: {e}"
+                    )
+
+        return False
+
+    def get_entry_type(self, path: str) -> Optional[str]:
+        """Retrieve the entry type (file or directory) for a path.
 
         Args:
             path: The path to check
 
         Returns:
-            True if the path is valid, False otherwise
+            'file', 'directory', or None if the path is not in the cache
         """
-        # Fast path for common static paths - avoid cache lookup
-        if path == "/":
-            return True
+        # Special static paths
+        if path == "/" or path in ["/playlists", "/liked_songs", "/albums"]:
+            return "directory"
 
-        # Common top-level paths that are always valid
-        if path in ["/playlists", "/liked_songs", "/albums"]:
-            return True
+        # Check in-memory path_types first for speed
+        if hasattr(self, "path_types") and path in self.path_types:
+            return self.path_types[path]
 
-        # Check in the precomputed valid paths set with minimal lock time
+        # Check database for the path directly
+        key = self.path_to_key(path)
         with self.lock:
-            return path in self.valid_paths
+            try:
+                self.cursor.execute(
+                    "SELECT entry_type FROM cache_entries WHERE key = ?", (key,)
+                )
+                row = self.cursor.fetchone()
+
+                if row and row[0]:
+                    # Cache in memory for future lookups
+                    if not hasattr(self, "path_types"):
+                        self.path_types = {}
+                    self.path_types[path] = row[0]
+                    return row[0]
+
+                # Also check with different prefixes if not found directly
+                for prefix in ["valid_dir:", "exact_path:"]:
+                    prefixed_key = self.path_to_key(f"{prefix}{path}")
+                    self.cursor.execute(
+                        "SELECT entry_type FROM cache_entries WHERE key = ?",
+                        (prefixed_key,),
+                    )
+                    row = self.cursor.fetchone()
+                    if row and row[0]:
+                        # Cache in memory for future lookups
+                        if not hasattr(self, "path_types"):
+                            self.path_types = {}
+                        self.path_types[path] = row[0]
+                        return row[0]
+                    elif (
+                        prefix == "valid_dir:"
+                        and prefixed_key
+                        and self.get(prefixed_key) is not None
+                    ):
+                        # If the key exists with valid_dir prefix but no explicit type, it's a directory
+                        if not hasattr(self, "path_types"):
+                            self.path_types = {}
+                        self.path_types[path] = "directory"
+                        return "directory"
+                    elif (
+                        prefix == "exact_path:"
+                        and prefixed_key
+                        and self.get(prefixed_key) is not None
+                    ):
+                        # If the key exists with exact_path prefix but no explicit type, it's a file
+                        if not hasattr(self, "path_types"):
+                            self.path_types = {}
+                        self.path_types[path] = "file"
+                        return "file"
+
+                # Try to infer from directory listings
+                parent_dir = os.path.dirname(path)
+                filename = os.path.basename(path)
+                dir_listing = self.get_directory_listing_with_attrs(parent_dir)
+                if dir_listing and filename in dir_listing:
+                    attr = dir_listing[filename]
+                    is_dir = attr.get("st_mode", 0) & stat.S_IFDIR == stat.S_IFDIR
+                    entry_type = "directory" if is_dir else "file"
+                    # Cache in memory for future lookups
+                    if not hasattr(self, "path_types"):
+                        self.path_types = {}
+                    self.path_types[path] = entry_type
+                    return entry_type
+
+                return None
+            except sqlite3.Error as e:
+                self.logger.warning(
+                    f"Failed to get entry type for {path}: {e.__class__.__name__}: {e}"
+                )
+                return None
+
+    def child_exists_in_dir(self, parent_dir: str, child_filename: str) -> bool:
+        """Check if a child exists in a parent directory.
+
+        Args:
+            parent_dir: The parent directory path
+            child_filename: The filename to check for
+
+        Returns:
+            True if the child exists in the parent directory, False otherwise
+        """
+        # Try to get directory listing with attributes
+        dir_listing = self.get_directory_listing_with_attrs(parent_dir)
+        if dir_listing and child_filename in dir_listing:
+            return True
+
+        # Also check valid_files key for backward compatibility
+        valid_files = self.get(f"valid_files:{parent_dir}")
+        if valid_files and child_filename in valid_files:
+            return True
+
+        return False
+
+    # Keep the old methods for backward compatibility but have them use mark_valid
+    def add_valid_path(self, path: str, is_directory: bool = None) -> None:
+        """Add a path to the valid paths set and persist it.
+
+        This is kept for backward compatibility. Use mark_valid instead.
+
+        Args:
+            path: The path to mark as valid
+            is_directory: If specified, whether this path represents a directory
+        """
+        self.mark_valid(path, is_directory=is_directory)
 
     def add_valid_dir(self, dir_path: str) -> None:
         """Add a directory to valid paths and mark it in the cache.
 
-        This is a convenience method that updates both the in-memory set
-        and the cached valid_dir marker.
+        This is kept for backward compatibility. Use mark_valid instead.
 
         Args:
             dir_path: The directory path to mark as valid
         """
-        self.add_valid_path(dir_path, is_directory=True)
+        self.mark_valid(dir_path, is_directory=True)
 
     def add_valid_file(self, file_path: str) -> None:
         """Add a file to valid paths and mark it in the cache.
 
-        This is a convenience method that updates both the in-memory set
-        and the cached exact_path marker.
+        This is kept for backward compatibility. Use mark_valid instead.
 
         Args:
             file_path: The file path to mark as valid
         """
-        self.add_valid_path(file_path, is_directory=False)
-        self.set(f"exact_path:{file_path}", True, is_directory=False)
+        self.mark_valid(file_path, is_directory=False)
 
     def path_to_key(self, path: str) -> str:
         """Convert a filesystem path to a cache key.
@@ -873,44 +1070,6 @@ class CacheManager:
                     f"Failed to write batch durations to cache: {e.__class__.__name__}: {e}"
                 )
 
-    def get_entry_type(self, path: str) -> Optional[str]:
-        """Retrieve the entry type (file or directory) for a path.
-
-        Args:
-            path: The path to check
-
-        Returns:
-            'file', 'directory', or None if the path is not in the cache
-        """
-        key = self.path_to_key(path)
-        with self.lock:
-            try:
-                self.cursor.execute(
-                    "SELECT entry_type FROM cache_entries WHERE key = ?", (key,)
-                )
-                row = self.cursor.fetchone()
-
-                if row and row[0]:
-                    return row[0]
-
-                # Also check with different prefixes if not found directly
-                for prefix in ["valid_dir:", "exact_path:"]:
-                    prefixed_key = self.path_to_key(f"{prefix}{path}")
-                    self.cursor.execute(
-                        "SELECT entry_type FROM cache_entries WHERE key = ?",
-                        (prefixed_key,),
-                    )
-                    row = self.cursor.fetchone()
-                    if row and row[0]:
-                        return row[0]
-
-                return None
-            except sqlite3.Error as e:
-                self.logger.warning(
-                    f"Failed to get entry type for {path}: {e.__class__.__name__}: {e}"
-                )
-                return None
-
     def is_directory(self, path: str) -> Optional[bool]:
         """Check if a path is a directory (faster in-memory check).
 
@@ -962,3 +1121,23 @@ class CacheManager:
         current_time = time.time()
         age = current_time - last_refresh
         return age > max_age
+
+    def remove_valid_path(self, path: str) -> None:
+        """Remove a path from the valid paths set.
+
+        Args:
+            path: The path to remove from valid paths
+        """
+        # Remove from in-memory set
+        with self.lock:
+            if path in self.valid_paths:
+                self.valid_paths.remove(path)
+
+            # Also remove from path_types dictionary if present
+            if hasattr(self, "path_types") and path in self.path_types:
+                del self.path_types[path]
+
+        # Also remove from database
+        self.delete(f"valid_dir:{path}")
+        self.delete(f"exact_path:{path}")
+        self.delete(f"valid:{path}")

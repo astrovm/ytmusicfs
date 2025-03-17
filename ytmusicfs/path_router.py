@@ -16,6 +16,9 @@ class PathRouter:
         # Content fetcher will be set later by the filesystem
         self.fetcher = None
 
+        # Cache manager will be set later by the filesystem
+        self.cache = None
+
     def set_fetcher(self, fetcher):
         """Set the content fetcher instance used by handlers.
 
@@ -23,6 +26,17 @@ class PathRouter:
             fetcher: ContentFetcher instance
         """
         self.fetcher = fetcher
+        # Also get a reference to the cache manager from the fetcher
+        if hasattr(fetcher, "cache"):
+            self.cache = fetcher.cache
+
+    def set_cache(self, cache):
+        """Set the cache manager instance directly.
+
+        Args:
+            cache: CacheManager instance
+        """
+        self.cache = cache
 
     def register(self, path: str, handler: Callable) -> None:
         """Register a handler for an exact path match.
@@ -33,6 +47,10 @@ class PathRouter:
         """
         self.handlers[path] = handler
 
+        # Pre-validate this path as a directory in the cache if available
+        if self.cache:
+            self.cache.mark_valid(path, is_directory=True)
+
     def register_subpath(self, prefix: str, handler: Callable) -> None:
         """Register a handler for a path prefix match.
 
@@ -41,6 +59,10 @@ class PathRouter:
             handler: The handler function to call with the full path
         """
         self.subpath_handlers.append((prefix, handler))
+
+        # Pre-validate this path as a directory in the cache if available
+        if self.cache:
+            self.cache.mark_valid(prefix, is_directory=True)
 
     def register_dynamic(self, pattern: str, handler: Callable) -> None:
         """Register a handler for a path pattern with wildcards.
@@ -54,6 +76,12 @@ class PathRouter:
             handler: The handler function to call with the full path
         """
         self.pattern_handlers.append((pattern, handler))
+
+        # If the pattern has a fixed prefix before any wildcard, pre-validate that
+        if self.cache:
+            prefix = pattern.split("*")[0].rstrip("/")
+            if prefix:
+                self.cache.mark_valid(prefix, is_directory=True)
 
     def _match_wildcard_pattern(self, pattern: str, path: str) -> tuple[bool, list]:
         """Check if a path matches a wildcard pattern and extract wildcard values.
@@ -80,6 +108,36 @@ class PathRouter:
             return True, list(match.groups())
         return False, []
 
+    def validate_path(self, path: str) -> bool:
+        """Check if a path is potentially valid based on registered handlers.
+
+        Args:
+            path: The path to validate
+
+        Returns:
+            Boolean indicating if the path might be valid
+        """
+        # Check if path is registered directly
+        if path in self.handlers:
+            return True
+
+        # Check prefix matches
+        for prefix, _ in self.subpath_handlers:
+            if path.startswith(prefix):
+                return True
+
+        # Check pattern matches
+        for pattern, _ in self.pattern_handlers:
+            match_success, _ = self._match_wildcard_pattern(pattern, path)
+            if match_success:
+                return True
+
+        # Use the cache if available
+        if self.cache:
+            return self.cache.is_valid_path(path)
+
+        return False
+
     def route(self, path: str) -> List[str]:
         """Route a path to the appropriate handler.
 
@@ -89,23 +147,60 @@ class PathRouter:
         Returns:
             List of directory entries from the handler
         """
+        result = None
+
         # First try exact matches
         if path in self.handlers:
-            return self.handlers[path]()
+            result = self.handlers[path]()
+            # Mark this path as valid in the cache
+            if (
+                self.cache and path != "/" and len(result) > 2
+            ):  # More than just "." and ".."
+                self.cache.mark_valid(path, is_directory=True)
 
         # Then try prefix matches
-        for prefix, handler in self.subpath_handlers:
-            if path.startswith(prefix):
-                return handler(path)
+        elif not result:
+            for prefix, handler in self.subpath_handlers:
+                if path.startswith(prefix):
+                    result = handler(path)
+                    # Mark this path as valid in the cache
+                    if (
+                        self.cache and path != "/" and len(result) > 2
+                    ):  # More than just "." and ".."
+                        self.cache.mark_valid(path, is_directory=True)
+                    break
 
         # Finally try pattern matches
-        for pattern, handler in self.pattern_handlers:
-            match_success, captured_values = self._match_wildcard_pattern(pattern, path)
-            if match_success:
-                # Pass both the full path and the captured values
-                if captured_values:
-                    return handler(path, *captured_values)
-                else:
-                    return handler(path)
+        if not result:
+            for pattern, handler in self.pattern_handlers:
+                match_success, captured_values = self._match_wildcard_pattern(
+                    pattern, path
+                )
+                if match_success:
+                    # Mark this path as valid in the cache
+                    if self.cache:
+                        self.cache.mark_valid(path, is_directory=True)
 
-        return [".", ".."]
+                    # Pass both the full path and the captured values
+                    if captured_values:
+                        result = handler(path, *captured_values)
+                    else:
+                        result = handler(path)
+                    break
+
+        # Default to empty dir if no handler matched
+        if not result:
+            result = [".", ".."]
+
+        # Process results to mark individual entries as valid
+        if (
+            self.cache and path != "/" and len(result) > 2
+        ):  # More than just "." and ".."
+            # Mark each file as valid in the parent directory
+            for entry in result:
+                if entry not in [".", ".."]:
+                    entry_path = f"{path}/{entry}"
+                    # We don't know if it's a directory yet, so don't specify is_directory
+                    self.cache.mark_valid(entry_path)
+
+        return result

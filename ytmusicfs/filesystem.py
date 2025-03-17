@@ -103,6 +103,9 @@ class YouTubeMusicFS(Operations):
         # Set the content fetcher in the router
         self.router.set_fetcher(self.fetcher)
 
+        # Also explicitly set the cache manager
+        self.router.set_cache(self.cache)
+
         # Store parameters for future reference
         self.auth_file = auth_file
         self.client_id = client_id
@@ -180,6 +183,12 @@ class YouTubeMusicFS(Operations):
             ),
         )
 
+        # Initialize path validation with common static paths
+        self.cache.mark_valid("/", is_directory=True)
+        self.cache.mark_valid("/playlists", is_directory=True)
+        self.cache.mark_valid("/liked_songs", is_directory=True)
+        self.cache.mark_valid("/albums", is_directory=True)
+
         # Preload cache if requested
         if preload_cache:
             self.preload_cache()
@@ -233,63 +242,8 @@ class YouTubeMusicFS(Operations):
         context = inspect.currentframe().f_back.f_code.co_name
         self.logger.debug(f"_is_valid_path called from {context} for {path}")
 
-        # For mkdir operations, always return true to let mkdir's own validation handle it
-        if context == "mkdir" or "mkdir" in context:
-            self.logger.debug(f"Allowing path as valid due to mkdir context: {path}")
-            return True
-
-        # Root and main category directories are always valid - no need to cache these
-        if path == "/" or path in [
-            "/playlists",
-            "/liked_songs",
-            "/albums",
-        ]:
-            return True
-
-        # Check cache for entry type first - this is the most reliable way
-        # to determine if a path is a file or directory
-        entry_type = (
-            self.cache.get_entry_type(path)
-            or self.cache.get_entry_type(f"valid_dir:{path}")
-            or self.cache.get_entry_type(f"exact_path:{path}")
-        )
-
-        if entry_type:
-            self.logger.debug(f"Found entry_type '{entry_type}' for {path}")
-            return True
-
-        # Check if the parent directory is valid and contains this entry
-        parent_dir = os.path.dirname(path)
-        filename = os.path.basename(path)
-
-        if self.cache.is_valid_path(parent_dir):
-            dir_listing = self.cache.get_directory_listing_with_attrs(parent_dir)
-            if dir_listing and filename in dir_listing:
-                return True
-
-        # Initialize thread-local validation cache if needed
-        if not hasattr(self._thread_local, "validated_dirs"):
-            self._thread_local.validated_dirs = set()
-
-        # Check if this path's parent directory has already been validated in this operation
-        if parent_dir in self._thread_local.validated_dirs:
-            # If parent is validated and we have the directory listing cached,
-            # we can directly check if the file exists in the listing
-            if (
-                hasattr(self._thread_local, "temp_dir_listings")
-                and parent_dir in self._thread_local.temp_dir_listings
-            ):
-                filename = os.path.basename(path)
-                dir_listing = self._thread_local.temp_dir_listings[parent_dir]
-
-                # For files, check the cached listing
-                if dir_listing and filename in dir_listing:
-                    return True
-
-                # File not found in valid parent directory
-                return False
-
-        return self.cache.is_valid_path(path)
+        # Use the enhanced validation in the cache manager
+        return self.cache.is_valid_path(path, context=context)
 
     def _cache_valid_path(self, path: str) -> None:
         """Cache a valid path to help with quick validation.
@@ -297,34 +251,29 @@ class YouTubeMusicFS(Operations):
         Args:
             path: The valid path to cache
         """
+        # Use the enhanced mark_valid method in the cache manager
+        self.cache.mark_valid(path, is_directory=False)
+
+        # Handle special filename pattern for base names if needed
         dir_path = os.path.dirname(path)
         filename = os.path.basename(path)
-
-        # Mark this exact path as valid using the optimized method
-        self.cache.add_valid_file(path)
-
-        # Add to directory's valid files list
-        valid_files_cached = self.cache.get(f"valid_files:{dir_path}")
-        valid_files = set(valid_files_cached) if valid_files_cached else set()
-        valid_files.add(filename)
-        # Convert set to list for JSON serialization
-        self.cache.set(f"valid_files:{dir_path}", list(valid_files))
 
         match = re.search(r"(.*?)\s*\((\d+)\)(\.[^.]+)?$", filename)
         if match:
             base_name, _, _ = match.groups()
-            # Cache the specific valid path
+            # Store the base name in metadata
+            self.cache.set_metadata(path, "base_name", base_name)
+            # Also store in the old format for backward compatibility
             cache_key = f"valid_path:{dir_path}/{base_name}"
             self.cache.set(cache_key, path)
 
-            # Also add this base name to our set of valid base names for this directory
+            # Add this base name to valid base names for this directory (for backward compatibility)
             valid_base_names_key = f"valid_base_names:{dir_path}"
             valid_base_names_cached = self.cache.get(valid_base_names_key)
             valid_base_names = (
                 set(valid_base_names_cached) if valid_base_names_cached else set()
             )
             valid_base_names.add(base_name)
-            # Convert set to list for JSON serialization
             self.cache.set(valid_base_names_key, list(valid_base_names))
 
             self.logger.debug(f"Cached valid path: {path} with key {cache_key}")
@@ -335,16 +284,9 @@ class YouTubeMusicFS(Operations):
         Args:
             dir_path: The directory path to cache as valid
         """
-        # Mark the directory as valid using the optimized method
-        self.cache.add_valid_dir(dir_path)
+        # Use the enhanced mark_valid method in the cache manager
+        self.cache.mark_valid(dir_path, is_directory=True)
 
-        # Also mark parent directories as valid
-        parts = dir_path.split("/")
-        for i in range(1, len(parts)):
-            parent = "/".join(parts[:i]) or "/"
-            self.cache.add_valid_dir(parent)
-
-    # Helper method to cache all valid filenames in a directory
     def _cache_valid_filenames(self, dir_path: str, filenames: List[str]) -> None:
         """Cache all valid filenames in a directory for efficient path validation.
 
@@ -352,11 +294,18 @@ class YouTubeMusicFS(Operations):
             dir_path: Directory path
             filenames: List of valid filenames in this directory
         """
-        # Mark this directory as valid
-        self._cache_valid_dir(dir_path)
+        # Mark the directory as valid
+        self.cache.mark_valid(dir_path, is_directory=True)
 
         # Store the complete list of valid files - already a list, so no conversion needed
         self.cache.set(f"valid_files:{dir_path}", filenames)
+
+        # Mark each filename as valid in the parent directory
+        for filename in filenames:
+            if filename not in [".", ".."]:
+                file_path = f"{dir_path}/{filename}"
+                # We don't know if it's a directory, so let mark_valid infer it
+                self.cache.mark_valid(file_path)
 
     def _cache_directory_listing_with_attrs(
         self, dir_path: str, processed_tracks: List[Dict[str, Any]]
@@ -517,33 +466,39 @@ class YouTubeMusicFS(Operations):
 
         # Use the router to handle the path
         try:
-            # Check if path is valid (simplified validation)
-            if not self._is_valid_path(path):
-                self.logger.debug(f"Rejecting invalid path in readdir: {path}")
-                result = [".", ".."]
-                with self.last_access_lock:
-                    self.last_access_results[operation_key] = result
-                return result
+            # Use the router's validate_path method first for a quick check
+            if not self.router.validate_path(path):
+                # If router doesn't know about it, use our full validation
+                if not self._is_valid_path(path):
+                    self.logger.debug(f"Rejecting invalid path in readdir: {path}")
+                    result = [".", ".."]
+                    with self.last_access_lock:
+                        self.last_access_results[operation_key] = result
+                    return result
 
             # Delegate directory listing to the router
             result = self.router.route(path)
 
             # Mark this as a valid directory and cache all valid filenames for future validation
             if path != "/" and len(result) > 2:  # More than just "." and ".."
-                # Pre-fetch the directory listing with attributes and store in thread-local cache
+                # Mark the directory as valid in the cache
+                self.cache.mark_valid(path, is_directory=True)
+
+                # Pre-fetch the directory listing with attributes
                 dir_listing = self.cache.get_directory_listing_with_attrs(path)
+
+                # Store in thread-local cache for subsequent getattr calls
                 if dir_listing:
-                    # Store in thread-local cache for subsequent getattr calls
                     if not hasattr(self._thread_local, "temp_dir_listings"):
                         self._thread_local.temp_dir_listings = {}
                     self._thread_local.temp_dir_listings[path] = dir_listing
 
-                    # Mark this directory as validated
+                    # Mark this directory as validated in thread-local
                     if not hasattr(self._thread_local, "validated_dirs"):
                         self._thread_local.validated_dirs = set()
                     self._thread_local.validated_dirs.add(path)
 
-                    # Pre-validate all files in this directory
+                    # Pre-validate all files in this directory in thread-local
                     if not hasattr(self._thread_local, "validated_paths"):
                         self._thread_local.validated_paths = {}
 
@@ -552,11 +507,28 @@ class YouTubeMusicFS(Operations):
                             file_path = f"{path}/{filename}"
                             self._thread_local.validated_paths[file_path] = True
 
-                # Continue with normal caching
-                self._cache_valid_filenames(
-                    path, [entry for entry in result if entry not in [".", ".."]]
-                )
-                self._cache_valid_dir(path)
+                            # Determine if this entry is a directory based on attributes
+                            is_dir = False
+                            if filename in dir_listing:
+                                is_dir = (
+                                    dir_listing[filename].get("st_mode", 0)
+                                    & stat.S_IFDIR
+                                    == stat.S_IFDIR
+                                )
+
+                            # Mark as valid in the cache manager
+                            self.cache.mark_valid(file_path, is_directory=is_dir)
+
+                # Cache valid filenames even if no directory listing available
+                filenames = [entry for entry in result if entry not in [".", ".."]]
+                self.cache.set(f"valid_files:{path}", filenames)
+
+                # Mark each file as valid (we might not know if it's a directory so let mark_valid infer it)
+                for filename in filenames:
+                    file_path = f"{path}/{filename}"
+                    # If we don't have dir_listing, we use None for is_directory to let mark_valid infer it
+                    if not dir_listing:
+                        self.cache.mark_valid(file_path)
 
             # Cache this result for the cooldown period
             with self.last_access_lock:
@@ -766,6 +738,9 @@ class YouTubeMusicFS(Operations):
             "st_gid": os.getgid(),
         }
 
+        # Get the entry type directly from the cache manager
+        entry_type = self.cache.get_entry_type(path)
+
         # Case 1: Root or top-level directories
         if path == "/" or path in ["/playlists", "/liked_songs", "/albums"]:
             attr["st_mode"] = stat.S_IFDIR | 0o755
@@ -773,39 +748,47 @@ class YouTubeMusicFS(Operations):
             self._cache_result(operation_key, attr)
             return attr.copy()
 
-        # Case 2: Check if path is already known to be a directory
-        entry_type = self.cache.get_entry_type(path)
+        # Case 2: Known directories from entry_type
         if entry_type == "directory":
             attr["st_mode"] = stat.S_IFDIR | 0o755
             attr["st_size"] = 0
             self._cache_result(operation_key, attr)
             return attr.copy()
 
-        # Case 3: File validation check
-        basename = os.path.basename(path)
-        # Check if we know it's a file based on entry_type
-        if entry_type != "file":
-            self.logger.debug(f"Rejecting path not known to be a file: {path}")
-            raise OSError(errno.ENOENT, "No such file or directory")
+        # Case 3: Known files from entry_type
+        if entry_type == "file":
+            # Try to get file attributes from cached directory listings
+            parent_dir = os.path.dirname(path)
+            filename = os.path.basename(path)
 
-        # Case 4: Try to get file attributes from cached directory listings
-        parent_dir = os.path.dirname(path)
-        filename = basename
+            # First check the thread-local directory cache
+            if (
+                hasattr(self._thread_local, "temp_dir_listings")
+                and parent_dir in self._thread_local.temp_dir_listings
+            ):
+                dir_listing = self._thread_local.temp_dir_listings[parent_dir]
+                if filename in dir_listing:
+                    cached_attrs = dir_listing[filename].copy()
+                    cached_attrs["st_atime"] = now
+                    cached_attrs["st_ctime"] = now
+                    cached_attrs["st_mtime"] = now
 
-        # First check the thread-local directory cache
-        if (
-            hasattr(self._thread_local, "temp_dir_listings")
-            and parent_dir in self._thread_local.temp_dir_listings
-        ):
+                    # Update file size if we have a more precise value
+                    file_size_cache_key = f"filesize:{path}"
+                    cached_size = self.cache.get(file_size_cache_key)
+                    if cached_size is not None:
+                        cached_attrs["st_size"] = cached_size
 
-            dir_listing = self._thread_local.temp_dir_listings[parent_dir]
-            if filename in dir_listing:
-                cached_attrs = dir_listing[filename].copy()
+                    self._cache_result(operation_key, cached_attrs)
+                    return cached_attrs
+
+            # Then check the persistent cache
+            cached_attrs = self.cache.get_file_attrs_from_parent_dir(path)
+            if cached_attrs:
                 cached_attrs["st_atime"] = now
                 cached_attrs["st_ctime"] = now
                 cached_attrs["st_mtime"] = now
 
-                # Update file size if we have a more precise value
                 file_size_cache_key = f"filesize:{path}"
                 cached_size = self.cache.get(file_size_cache_key)
                 if cached_size is not None:
@@ -814,46 +797,69 @@ class YouTubeMusicFS(Operations):
                 self._cache_result(operation_key, cached_attrs)
                 return cached_attrs
 
-        # Then check the persistent cache
-        cached_attrs = self.cache.get_file_attrs_from_parent_dir(path)
-        if cached_attrs:
-            cached_attrs["st_atime"] = now
-            cached_attrs["st_ctime"] = now
-            cached_attrs["st_mtime"] = now
+            # Case 4: For files we know exist but don't have attributes for,
+            # get video ID and estimate file size
+            try:
+                video_id = self._get_video_id(path)
+                duration = self.cache.get_duration(video_id)
 
-            file_size_cache_key = f"filesize:{path}"
-            cached_size = self.cache.get(file_size_cache_key)
-            if cached_size is not None:
-                cached_attrs["st_size"] = cached_size
+                # Estimate file size based on duration (128kbps = 16KB/sec)
+                if duration is not None:
+                    attr["st_size"] = duration * 16 * 1024
+                else:
+                    attr["st_size"] = 4096  # Default size
 
-            self._cache_result(operation_key, cached_attrs)
-            return cached_attrs
+                attr["st_mode"] = stat.S_IFREG | 0o644
+                attr["st_nlink"] = 1
 
-        # Case 5: If path is not found in caches, validate it
+                self._cache_result(operation_key, attr)
+                return attr.copy()
+
+            except Exception as e:
+                self.logger.error(f"Error getting file attributes for {path}: {e}")
+                raise OSError(errno.ENOENT, "No such file or directory")
+
+        # Case 5: Path not found in cache but might be valid
+        # Check with the fuller validation
         if not self._is_valid_path(path):
             self.logger.debug(f"Invalid path in getattr: {path}")
             raise OSError(errno.ENOENT, "No such file or directory")
 
-        # Case 6: For valid files, get video ID and estimate file size
+        # Case 6: Path is valid but we don't know if it's a file or directory
+        # Try getting the video ID to determine if it's a file
         try:
             video_id = self._get_video_id(path)
-            duration = self.cache.get_duration(video_id)
+            if video_id:
+                # It's a file, mark it as such
+                self.cache.mark_valid(path, is_directory=False)
 
-            # Estimate file size based on duration (128kbps = 16KB/sec)
-            if duration is not None:
-                attr["st_size"] = duration * 16 * 1024
-            else:
-                attr["st_size"] = 4096  # Default size
+                duration = self.cache.get_duration(video_id)
+                # Estimate file size based on duration (128kbps = 16KB/sec)
+                if duration is not None:
+                    attr["st_size"] = duration * 16 * 1024
+                else:
+                    attr["st_size"] = 4096  # Default size
 
-            attr["st_mode"] = stat.S_IFREG | 0o644
-            attr["st_nlink"] = 1
+                attr["st_mode"] = stat.S_IFREG | 0o644
+                attr["st_nlink"] = 1
 
+                self._cache_result(operation_key, attr)
+                return attr.copy()
+        except:
+            # If we can't get a video ID, assume it's a directory
+            self.cache.mark_valid(path, is_directory=True)
+            attr["st_mode"] = stat.S_IFDIR | 0o755
+            attr["st_size"] = 0
             self._cache_result(operation_key, attr)
             return attr.copy()
 
-        except Exception as e:
-            self.logger.error(f"Error getting file attributes for {path}: {e}")
-            raise OSError(errno.ENOENT, "No such file or directory")
+        # If all else fails, default to directory
+        self.logger.debug(f"Defaulting to directory for {path}")
+        self.cache.mark_valid(path, is_directory=True)
+        attr["st_mode"] = stat.S_IFDIR | 0o755
+        attr["st_size"] = 0
+        self._cache_result(operation_key, attr)
+        return attr.copy()
 
     def _cache_result(self, key: str, value: Dict[str, Any]) -> None:
         """Helper method to cache operation results.
@@ -877,17 +883,30 @@ class YouTubeMusicFS(Operations):
         """
         self.logger.debug(f"open: {path} with flags {flags}")
 
-        # Skip validation if we know the path is valid from thread-local cache
-        valid_from_cache = False
-        if (
-            hasattr(self._thread_local, "validated_paths")
-            and path in self._thread_local.validated_paths
-        ):
-            valid_from_cache = self._thread_local.validated_paths[path]
+        # Check if this is a valid file path
+        entry_type = self.cache.get_entry_type(path)
 
-        if not valid_from_cache and not self._is_valid_path(path):
-            self.logger.warning(f"Rejecting invalid path in open: {path}")
-            raise OSError(errno.ENOENT, "No such file or directory")
+        # If it's a directory, we can't open it as a file
+        if entry_type == "directory":
+            self.logger.warning(f"Attempting to open directory as file: {path}")
+            raise OSError(errno.EISDIR, "Is a directory")
+
+        # If it's not known to be a file, use our validation
+        if entry_type != "file":
+            # Skip validation if we know the path is valid from thread-local cache
+            valid_from_cache = False
+            if (
+                hasattr(self._thread_local, "validated_paths")
+                and path in self._thread_local.validated_paths
+            ):
+                valid_from_cache = self._thread_local.validated_paths[path]
+
+            if not valid_from_cache and not self._is_valid_path(path):
+                self.logger.warning(f"Rejecting invalid path in open: {path}")
+                raise OSError(errno.ENOENT, "No such file or directory")
+
+            # Mark it as a file in the cache since we're opening it
+            self.cache.mark_valid(path, is_directory=False)
 
         try:
             # Get video ID
