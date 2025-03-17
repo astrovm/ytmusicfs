@@ -551,9 +551,15 @@ class YouTubeMusicFS(Operations):
         listing_with_attrs = {}
         valid_filenames = set()
 
+        # Collect durations for batch processing
+        durations_batch = {}
+
         for track in processed_tracks:
             filename = track.get("filename")
             if not filename:
+                self.logger.warning(
+                    f"Track missing filename in processed_tracks: {track}"
+                )
                 continue
 
             valid_filenames.add(filename)
@@ -604,11 +610,18 @@ class YouTubeMusicFS(Operations):
             file_path = f"{dir_path}/{filename}"
             self.cache.add_valid_path(file_path, is_directory=is_directory)
 
-            # If it's a file, handle video ID to duration mapping if available
+            # If it's a file, collect video ID to duration mapping if available
             if not is_directory:
                 video_id = track.get("videoId")
                 if video_id and track.get("duration_seconds"):
-                    self.cache.set_duration(video_id, track.get("duration_seconds"))
+                    durations_batch[video_id] = track.get("duration_seconds")
+
+        # Batch update all durations at once
+        if durations_batch:
+            self.logger.debug(
+                f"Batch updating {len(durations_batch)} track durations from directory listing"
+            )
+            self.cache.set_durations_batch(durations_batch)
 
         # Cache the directory listing with attributes
         self.cache.set_directory_listing_with_attrs(dir_path, listing_with_attrs)

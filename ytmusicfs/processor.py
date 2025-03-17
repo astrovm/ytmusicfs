@@ -176,15 +176,15 @@ class TrackProcessor:
         # Handle duration
         duration_seconds = None
         duration_formatted = "0:00"
+        is_new_duration = (
+            False  # Flag to indicate if this is a newly discovered duration
+        )
 
         # First priority: Use track's provided duration_seconds if available (from yt-dlp)
         if "duration_seconds" in track and track["duration_seconds"] is not None:
             duration_seconds = track["duration_seconds"]
             duration_formatted = self._format_duration(duration_seconds)
-
-            # Cache the duration if we have a video ID and cache manager
-            if video_id and self.cache_manager:
-                self.cache_manager.set_duration(video_id, duration_seconds)
+            is_new_duration = True  # Mark as new duration to be included in batch
         # Second priority: Check cache for duration
         elif video_id and self.cache_manager:
             cached_duration = self.cache_manager.get_duration(video_id)
@@ -197,13 +197,8 @@ class TrackProcessor:
         # Third priority: Parse from track data if not in cache
         else:
             duration_seconds, duration_formatted = self.parse_duration(track)
-
-            # If we successfully parsed a duration and have a video ID, cache it for future use
-            if duration_seconds is not None and video_id and self.cache_manager:
-                self.logger.debug(
-                    f"Caching parsed duration for {video_id}: {duration_seconds}s"
-                )
-                self.cache_manager.set_duration(video_id, duration_seconds)
+            if duration_seconds is not None:
+                is_new_duration = True  # Mark as new duration to be included in batch
 
         # Handle artist information
         # yt-dlp flat extraction provides only uploader, not detailed artist info
@@ -242,6 +237,7 @@ class TrackProcessor:
             "year": year,
             "genre": track.get("genre", "Unknown Genre"),
             "videoId": video_id,  # Include the video ID in the track info for reference
+            "is_new_duration": is_new_duration,  # Flag for batch processing
         }
 
     def process_tracks(
@@ -257,10 +253,24 @@ class TrackProcessor:
             List of processed track dictionaries with metadata and filenames.
         """
         processed = []
+        # Collect durations for batch processing
+        durations_batch = {}
 
         for track in tracks:
-            # Extract track info (will prioritize cached durations)
+            # Extract track info
             track_info = self.extract_track_info(track)
+
+            # Collect newly discovered durations for batch processing
+            if (
+                track_info.get("is_new_duration")
+                and track_info.get("videoId")
+                and track_info.get("duration_seconds") is not None
+            ):
+                durations_batch[track_info["videoId"]] = track_info["duration_seconds"]
+
+            # Remove the temporary flag
+            if "is_new_duration" in track_info:
+                del track_info["is_new_duration"]
 
             # Generate filename
             filename = self.sanitize_filename(
@@ -272,5 +282,10 @@ class TrackProcessor:
                 processed_track.update(track_info)
                 processed_track["filename"] = filename
                 processed.append(processed_track)
+
+        # Batch update all durations at once
+        if durations_batch and self.cache_manager:
+            self.logger.debug(f"Batch updating {len(durations_batch)} track durations")
+            self.cache_manager.set_durations_batch(durations_batch)
 
         return processed

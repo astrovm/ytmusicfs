@@ -219,6 +219,9 @@ class ContentFetcher:
                 self.logger.info(f"Fetched {len(tracks)} tracks for {playlist_id}")
 
                 processed_tracks = []
+                # Collect all durations in a batch
+                durations_batch = {}
+
                 for entry in tracks:
                     if not entry:
                         continue
@@ -230,8 +233,9 @@ class ContentFetcher:
                         else None
                     )
 
+                    # Collect durations for batch processing
                     if video_id and duration_seconds is not None:
-                        self.cache.set_duration(video_id, duration_seconds)
+                        durations_batch[video_id] = duration_seconds
 
                     track_info = {
                         "title": entry.get("title", "Unknown Title"),
@@ -250,6 +254,10 @@ class ContentFetcher:
                     processed_track["filename"] = filename
                     processed_track["is_directory"] = False
                     processed_tracks.append(processed_track)
+
+                # Cache all durations in a single batch operation
+                if durations_batch:
+                    self.cache.set_durations_batch(durations_batch)
 
                 self.cache.set(cache_key, processed_tracks)
                 self._cache_directory_listing_with_attrs(path, processed_tracks)

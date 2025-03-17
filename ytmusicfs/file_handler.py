@@ -265,7 +265,8 @@ class FileHandler:
                 if "duration" in result and self.cache:
                     duration = result["duration"]
                     self.logger.debug(f"Got duration for {video_id}: {duration}s")
-                    self.cache.set_duration(video_id, duration)
+                    # Use batch operation even for single duration
+                    self.cache.set_durations_batch({video_id: duration})
 
                 # Always start download in background
                 self.downloader.download_file(video_id, stream_url, path)

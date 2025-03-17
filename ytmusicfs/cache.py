@@ -867,9 +867,45 @@ class CacheManager:
         Args:
             durations: Dictionary mapping video IDs to durations in seconds
         """
+        if not durations:
+            return
+
+        # Update memory cache outside of lock preparation
+        memory_updates = {}
         for video_id, duration in durations.items():
-            self.set_duration(video_id, duration)
-        self.logger.info(f"Cached {len(durations)} durations in batch")
+            cache_key = f"duration:{video_id}"
+            memory_updates[cache_key] = {"data": duration, "time": time.time()}
+
+        # Update memory cache with minimal lock time
+        with self.lock:
+            for key, value in memory_updates.items():
+                self.cache[key] = value
+
+        # Prepare SQLite operation batch outside of lock
+        values = []
+        for video_id, duration in durations.items():
+            key = self.path_to_key(f"duration:{video_id}")
+            entry_str = json.dumps({"data": duration, "time": time.time()})
+            values.append((key, entry_str))
+
+        # Execute a single batch operation with the database
+        with self.lock:
+            try:
+                self.cursor.executemany(
+                    """
+                    INSERT OR REPLACE INTO cache_entries (key, entry)
+                    VALUES (?, ?)
+                    """,
+                    values,
+                )
+                self.conn.commit()
+                self.logger.info(
+                    f"Cached {len(durations)} durations in a single batch operation"
+                )
+            except sqlite3.Error as e:
+                self.logger.warning(
+                    f"Failed to write batch durations to cache: {e.__class__.__name__}: {e}"
+                )
 
     def get_entry_type(self, path: str) -> Optional[str]:
         """Retrieve the entry type (file or directory) for a path.
