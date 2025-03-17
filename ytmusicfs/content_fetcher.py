@@ -261,30 +261,20 @@ class ContentFetcher:
             return []
 
     def readdir_playlists(self) -> List[str]:
-        """List all user playlists from YouTube Music API.
-
-        Returns:
-            List of playlist names
-        """
+        """List all user playlists from the registry."""
         self.logger.info("Fetching playlists for /playlists directory")
-        playlists = self.fetch_and_cache(
-            path="/playlists",
-            fetch_func=self.client.get_library_playlists,
-            limit=1000,
-            process_func=lambda data: [
-                self.get_playlist_info("playlists", p) for p in data
-            ],
-            auto_refresh=True,
-        )
-        if not playlists:
-            return []
-
-        processed_entries = [
-            {"filename": p["name"], "id": p["id"], "is_directory": True}
-            for p in playlists
+        playlist_entries = [
+            p for p in self.PLAYLIST_REGISTRY if p["type"] == "playlist"
         ]
+        processed_entries = []
+        for p in playlist_entries:
+            # Fetch initial content (up to 10000 tracks)
+            self.fetch_playlist_content(p["id"], p["path"], limit=10000)
+            processed_entries.append(
+                {"filename": p["name"], "id": p["id"], "is_directory": True}
+            )
         self._cache_directory_listing_with_attrs("/playlists", processed_entries)
-        return [p["name"] for p in playlists]
+        return [".", ".."] + [p["name"] for p in playlist_entries]
 
     def _cache_directory_listing_with_attrs(
         self, dir_path: str, processed_tracks: List[Dict[str, Any]]
@@ -424,29 +414,33 @@ class ContentFetcher:
             self.logger.info("  " * indent + str(obj))
 
     def readdir_albums(self) -> List[str]:
-        """List all albums from YouTube Music API.
-
-        Returns:
-            List of album names
-        """
+        """List all albums from the registry."""
         self.logger.info("Fetching albums for /albums directory")
-        albums = self.fetch_and_cache(
-            path="/albums",
-            fetch_func=self.client.get_library_albums,
-            limit=1000,
-            process_func=lambda data: [
-                self.get_playlist_info("albums", a) for a in data
-            ],
-            auto_refresh=True,
-        )
-        if not albums:
-            return []
-
-        processed_entries = [
-            {"filename": a["name"], "id": a["id"], "is_directory": True} for a in albums
-        ]
+        album_entries = [a for a in self.PLAYLIST_REGISTRY if a["type"] == "album"]
+        processed_entries = []
+        for a in album_entries:
+            # Fetch initial content (up to 10000 tracks)
+            self.fetch_playlist_content(a["id"], a["path"], limit=10000)
+            processed_entries.append(
+                {"filename": a["name"], "id": a["id"], "is_directory": True}
+            )
         self._cache_directory_listing_with_attrs("/albums", processed_entries)
-        return [a["name"] for a in albums]
+        return [".", ".."] + [a["name"] for a in album_entries]
+
+    def readdir_liked_songs(self) -> List[str]:
+        """List liked songs from the registry."""
+        self.logger.info("Fetching liked songs for /liked_songs directory")
+        liked_songs_entry = next(
+            (p for p in self.PLAYLIST_REGISTRY if p["type"] == "liked_songs"), None
+        )
+        if not liked_songs_entry:
+            self.logger.error("Liked songs not found in registry")
+            return [".", ".."]
+        # Fetch initial content (up to 10000 tracks)
+        filenames = self.fetch_playlist_content(
+            liked_songs_entry["id"], liked_songs_entry["path"], limit=10000
+        )
+        return [".", ".."] + filenames
 
     def readdir_artist_content(self, path: str) -> List[str]:
         """Handle listing artist content (albums, singles, songs).
