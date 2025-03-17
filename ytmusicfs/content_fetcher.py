@@ -587,105 +587,6 @@ class ContentFetcher:
 
         return content_items
 
-    def readdir_album_content(self, path: str) -> List[str]:
-        """Handle listing album tracks.
-
-        Args:
-            path: Path to the album directory
-
-        Returns:
-            List of track filenames
-        """
-        # Extract album path components
-        if path.startswith("/artists/"):
-            # Path format: /artists/{artist_name}/Albums/{album_name}
-            parts = path.split("/")
-            if len(parts) < 5:
-                self.logger.error(f"Invalid artist album path: {path}")
-                return []
-
-            artist_name = parts[2]
-            album_type = parts[3]  # Should be "Albums"
-            album_name = parts[4]
-
-            # Get album data from cache
-            album_data_key = f"/artists/{artist_name}/Albums/{album_name}_data"
-            album_data = self.cache.get(album_data_key)
-
-            if not album_data:
-                self.logger.warning(f"Album data not found in cache: {album_name}")
-                return []
-
-            album_id = album_data.get("browseId")
-
-        elif path.startswith("/albums/"):
-            # Path format: /albums/{album_name}
-            album_name = os.path.basename(path)
-            self.logger.debug(f"Handling album content for: {album_name}")
-
-            # Get the list of albums to find the ID
-            albums = self.cache.get("/albums")
-            if not albums:
-                self.logger.warning("No cached albums found")
-                return []
-
-            # Find the album by name
-            album_id = None
-            for album in albums:
-                sanitized_title = self.processor.sanitize_filename(album["title"])
-                if sanitized_title == album_name:
-                    album_id = album["browseId"]
-                    break
-
-            if not album_id:
-                self.logger.warning(f"Album not found: {album_name}")
-                return []
-        else:
-            self.logger.error(f"Invalid album path: {path}")
-            return []
-
-        # First check cache for the processed tracks
-        cache_key = f"{path}_processed"
-        processed_tracks = self.cache.get(cache_key)
-        if processed_tracks:
-            self.logger.debug(
-                f"Using {len(processed_tracks)} cached processed tracks for {path}"
-            )
-            # Ensure all tracks have is_directory flag
-            for track in processed_tracks:
-                track["is_directory"] = False  # Songs are files
-
-            # Cache directory listing with attributes for efficient getattr lookups
-            self._cache_directory_listing_with_attrs(path, processed_tracks)
-            return [track["filename"] for track in processed_tracks]
-
-        # Fetch the album content
-        self.logger.debug(f"Fetching content for album ID: {album_id}")
-        album_data = self.client.get_album(album_id)
-
-        if not album_data or "tracks" not in album_data:
-            self.logger.warning(
-                f"No tracks found or invalid response format for album: {album_name}"
-            )
-            return []
-
-        # Process the tracks
-        tracks = album_data.get("tracks", [])
-        self.logger.info(f"Processing {len(tracks)} tracks from album: {album_name}")
-        processed_tracks = self.processor.process_tracks(tracks)
-
-        # Set is_directory flag for each track
-        for track in processed_tracks:
-            track["is_directory"] = False  # Songs are files
-
-        # Cache the processed tracks
-        self.cache.set(cache_key, processed_tracks)
-
-        # Cache directory listing with attributes for efficient getattr lookups
-        self._cache_directory_listing_with_attrs(path, processed_tracks)
-
-        return [track["filename"] for track in processed_tracks]
-
     def readdir_search_categories(self) -> List[str]:
         """Handle listing search categories.
 
@@ -1355,55 +1256,26 @@ class ContentFetcher:
         return []
 
     def refresh_all_caches(self) -> None:
-        """Refresh all caches in a consistent manner.
-
-        This method updates all caches (liked songs, playlists, artists, albums)
-        with any changes in the user's library, preserving existing cached data
-        and only updating what's changed.
-        """
+        """Refresh all caches using the unified structure."""
         self.logger.info("Refreshing all content caches...")
-
-        # Refresh liked songs
-        self.cache.refresh_cache_data(
-            cache_key="/liked_songs",
-            fetch_func=self.client.get_liked_songs,
-            processor=self.processor,
-            id_fields=["videoId"],
-            fetch_args={"limit": 100},
-            process_items=True,
-            processed_cache_key="/liked_songs_processed",
-            extract_nested_items="tracks",
-            prepend_new_items=True,
-        )
-
-        # Refresh durations for liked songs
-        self._refresh_durations_for_liked_songs()
 
         # Refresh playlists
         self.cache.refresh_cache_data(
             cache_key="/playlists",
             fetch_func=self.client.get_library_playlists,
             id_fields=["playlistId"],
-            check_updates=True,
-            update_field="title",
-            clear_related_cache=True,
-            related_cache_prefix="/playlist/",
-            related_cache_suffix="_processed",
             fetch_args={"limit": 100},
         )
 
-        # Refresh artists
-        self.cache.refresh_cache_data(
-            cache_key="/artists",
-            fetch_func=self.client.get_library_artists,
-            id_fields=["artistId", "browseId", "id"],
-        )
+        # Refresh liked songs (static entry, refresh content only)
+        self.fetch_playlist_content("LM", "/liked_songs")
 
         # Refresh albums
         self.cache.refresh_cache_data(
             cache_key="/albums",
             fetch_func=self.client.get_library_albums,
-            id_fields=["albumId", "browseId", "id"],
+            id_fields=["browseId"],
+            fetch_args={"limit": 100},
         )
 
         self.logger.info("All content caches refreshed successfully")

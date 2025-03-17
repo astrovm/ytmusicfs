@@ -192,7 +192,21 @@ class YouTubeMusicFS(Operations):
         )
         self.router.register_dynamic(
             "/artists/*/*",
-            lambda path, *args: [".", ".."] + self.fetcher.readdir_album_content(path),
+            lambda path, artist_name, album_type_or_name: [".", ".."]
+            + (
+                self.fetcher.readdir_artist_content(
+                    f"/artists/{artist_name}/{album_type_or_name}"
+                )
+                if album_type_or_name in ["Albums", "Singles", "Songs"]
+                else self.fetcher.fetch_playlist_content(
+                    # For specific album paths under artists, like /artists/Artist/Albums/AlbumName
+                    # Extract browseId from the album data cached during artist content fetching
+                    self.cache.get(
+                        f"/artists/{artist_name}/Albums/{album_type_or_name}_data", {}
+                    ).get("browseId", ""),
+                    path,
+                )
+            ),
         )
         self.router.register_dynamic(
             "/albums/*",
