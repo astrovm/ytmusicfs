@@ -4,7 +4,6 @@ from typing import List, Callable, Optional, Dict, Any
 from ytmusicfs.client import YouTubeMusicClient
 from ytmusicfs.processor import TrackProcessor
 from ytmusicfs.cache import CacheManager
-from ytmusicfs.duration_fetcher import DurationFetcher
 import logging
 import os
 import time
@@ -36,13 +35,6 @@ class ContentFetcher:
         self.cache = cache
         self.logger = logger
         self.browser = browser
-
-        # Initialize the DurationFetcher
-        self.duration_fetcher = DurationFetcher(browser, logger)
-
-        # Used to control background duration fetching
-        self.duration_fetch_lock = threading.Lock()
-        self.duration_fetch_tasks = {}  # Track ongoing fetches by playlist ID
 
     def fetch_and_cache(
         self,
@@ -210,10 +202,6 @@ class ContentFetcher:
                 self.cache.set(cache_key, processed_tracks)
                 self._cache_directory_listing_with_attrs(path, processed_tracks)
 
-                # Start background duration fetching
-                if playlist_id != "LM":  # For non-liked songs playlists
-                    self._fetch_durations_for_playlist(playlist_id)
-
                 return [track["filename"] for track in processed_tracks]
         except Exception as e:
             self.logger.error(f"Error fetching playlist content: {str(e)}")
@@ -266,38 +254,6 @@ class ContentFetcher:
             self.logger.warning(
                 "No callback set for caching directory listings with attributes"
             )
-
-    def _fetch_durations_for_playlist(self, playlist_id: str) -> None:
-        """Start background duration fetching for a playlist if not already running.
-
-        Args:
-            playlist_id: The playlist ID to fetch durations for
-        """
-        with self.duration_fetch_lock:
-            # Check if we're already fetching durations for this playlist
-            if playlist_id in self.duration_fetch_tasks:
-                self.logger.debug(
-                    f"Duration fetching for playlist {playlist_id} already in progress"
-                )
-                return
-
-            self.logger.info(
-                f"Starting background duration fetching for playlist {playlist_id}"
-            )
-
-            def on_complete(durations):
-                self.logger.info(
-                    f"Completed fetching {len(durations)} durations for playlist {playlist_id}"
-                )
-                with self.duration_fetch_lock:
-                    if playlist_id in self.duration_fetch_tasks:
-                        del self.duration_fetch_tasks[playlist_id]
-
-            # Start the background fetch
-            self.duration_fetcher.fetch_durations_background(
-                playlist_id, self.cache, on_complete
-            )
-            self.duration_fetch_tasks[playlist_id] = True
 
     def readdir_artists(self) -> List[str]:
         """Handle listing artists.
@@ -1279,41 +1235,3 @@ class ContentFetcher:
         )
 
         self.logger.info("All content caches refreshed successfully")
-
-    def _refresh_durations_for_liked_songs(self) -> None:
-        """Refresh durations for liked songs synchronously.
-
-        This fetches durations for all liked songs in the foreground and updates cached tracks.
-        """
-        self.logger.info("Refreshing durations for liked songs synchronously...")
-
-        # Fetch durations synchronously
-        durations = self.duration_fetcher.fetch_durations_for_liked_songs(
-            update_callback=lambda video_id, duration: self.cache.set_duration(
-                video_id, duration
-            )
-        )
-        self.logger.info(f"Fetched {len(durations)} durations for liked songs")
-
-        # Update any cached processed tracks with the new durations
-        processed_tracks = self.cache.get("/liked_songs_processed")
-        if processed_tracks:
-            updated = False
-            for track in processed_tracks:
-                video_id = track.get("videoId")
-                if video_id and video_id in durations:
-                    duration_seconds = durations[video_id]
-                    if track.get("duration_seconds") != duration_seconds:
-                        track["duration_seconds"] = duration_seconds
-                        track["duration_formatted"] = self.processor._format_duration(
-                            duration_seconds
-                        )
-                        updated = True
-
-            # Only update the cache if tracks were changed
-            if updated:
-                self.logger.info("Updating cached processed tracks with new durations")
-                self.cache.set("/liked_songs_processed", processed_tracks)
-                self._cache_directory_listing_with_attrs(
-                    "/liked_songs", processed_tracks
-                )
