@@ -170,12 +170,15 @@ class ContentFetcher:
             self.logger.error(f"Unknown playlist source: {source}")
             return {"name": "", "id": "", "type": ""}
 
-    def fetch_playlist_content(self, playlist_id: str, path: str) -> List[str]:
-        """Fetch playlist content using yt-dlp for any playlist ID and cache durations.
+    def fetch_playlist_content(
+        self, playlist_id: str, path: str, limit: int = 10000
+    ) -> List[str]:
+        """Fetch playlist content using yt-dlp with a specified limit and cache durations.
 
         Args:
             playlist_id: Playlist ID (e.g., 'PL123', 'LM', 'MPREb_abc123')
             path: Filesystem path for caching
+            limit: Maximum number of tracks to fetch (default: 10000)
 
         Returns:
             List of track filenames
@@ -195,11 +198,14 @@ class ContentFetcher:
             "quiet": True,
             "no_warnings": True,
             "ignoreerrors": True,
+            "playlistend": limit,  # Limit the number of entries fetched
         }
         if self.browser:
             ydl_opts["cookiesfrombrowser"] = (self.browser,)
 
-        self.logger.debug(f"Fetching content for playlist ID: {playlist_id} via yt-dlp")
+        self.logger.debug(
+            f"Fetching up to {limit} tracks for playlist ID: {playlist_id} via yt-dlp"
+        )
         from yt_dlp import YoutubeDL
 
         try:
@@ -211,7 +217,7 @@ class ContentFetcher:
                     )
                     return []
 
-                tracks = result["entries"]
+                tracks = result["entries"][:limit]  # Ensure we respect the limit
                 self.logger.info(f"Fetched {len(tracks)} tracks for {playlist_id}")
 
                 processed_tracks = []
@@ -226,7 +232,6 @@ class ContentFetcher:
                         else None
                     )
 
-                    # Cache duration immediately if available
                     if video_id and duration_seconds is not None:
                         self.cache.set_duration(video_id, duration_seconds)
 
