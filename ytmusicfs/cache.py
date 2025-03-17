@@ -420,37 +420,6 @@ class CacheManager:
                 f"Failed to delete from database cache for {path}: {e.__class__.__name__}: {e}"
             )
 
-    def add_valid_path(self, path: str, is_directory: bool = None) -> None:
-        """Add a path to the valid paths set and persist it.
-
-        This is kept for backward compatibility. Use mark_valid instead.
-
-        Args:
-            path: The path to mark as valid
-            is_directory: If specified, whether this path represents a directory
-        """
-        self.mark_valid(path, is_directory=is_directory)
-
-    def add_valid_dir(self, dir_path: str) -> None:
-        """Add a directory to valid paths and mark it in the cache.
-
-        This is kept for backward compatibility. Use mark_valid instead.
-
-        Args:
-            dir_path: The directory path to mark as valid
-        """
-        self.mark_valid(dir_path, is_directory=True)
-
-    def add_valid_file(self, file_path: str) -> None:
-        """Add a file to valid paths and mark it in the cache.
-
-        This is kept for backward compatibility. Use mark_valid instead.
-
-        Args:
-            file_path: The file path to mark as valid
-        """
-        self.mark_valid(file_path, is_directory=False)
-
     def path_to_key(self, path: str) -> str:
         """Convert a filesystem path to a cache key.
 

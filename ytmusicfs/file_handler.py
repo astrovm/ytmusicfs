@@ -53,7 +53,7 @@ class FileHandler:
         Args:
             path: The file path
             video_id: YouTube video ID for the file
-            thread_pool: ThreadPoolExecutor for background tasks
+            thread_pool: ThreadPoolExecutor for background tasks (currently unused)
 
         Returns:
             File handle

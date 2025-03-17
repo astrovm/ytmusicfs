@@ -241,7 +241,7 @@ class YouTubeMusicFS(Operations):
                     "st_size": 0,
                 }
                 # Mark as directory in cache system
-                self.cache.add_valid_dir(f"{dir_path}/{filename}")
+                self.cache.mark_valid(f"{dir_path}/{filename}", is_directory=True)
                 self.logger.debug(f"Cached directory: {dir_path}/{filename}")
             else:
                 attrs = {
@@ -273,7 +273,7 @@ class YouTubeMusicFS(Operations):
 
             # Mark path as valid and store metadata with explicit is_directory flag
             file_path = f"{dir_path}/{filename}"
-            self.cache.add_valid_path(file_path, is_directory=is_directory)
+            self.cache.mark_valid(file_path, is_directory=is_directory)
 
             # If it's a file, collect video ID to duration mapping if available
             if not is_directory:
