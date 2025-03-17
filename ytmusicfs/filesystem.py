@@ -747,21 +747,21 @@ class YouTubeMusicFS(Operations):
         """
         self.logger.debug(f"getattr: {path}")
 
-        # For repeated calls to getattr in a short time, use a cached result
+        # Check cache for recent result
         operation_key = f"getattr:{path}"
         now = time.time()
 
         with self.last_access_lock:
             last_time = self.last_access_time.get(operation_key, 0)
-            if now - last_time < self.request_cooldown:
-                if operation_key in self.last_access_results:
-                    self.logger.debug(
-                        f"Using cached result for {operation_key} (within cooldown: {now - last_time:.3f}s)"
-                    )
-                    return self.last_access_results[operation_key]
+            if (
+                now - last_time < self.request_cooldown
+                and operation_key in self.last_access_results
+            ):
+                self.logger.debug(f"Using cached result for {operation_key}")
+                return self.last_access_results[operation_key]
             self.last_access_time[operation_key] = now
 
-        # Default attributes (base values for all files/directories)
+        # Initialize default attributes
         attr = {
             "st_atime": now,
             "st_ctime": now,
@@ -771,214 +771,103 @@ class YouTubeMusicFS(Operations):
             "st_gid": os.getgid(),
         }
 
-        # Special case for the root directory
-        if path == "/":
+        # Case 1: Root or top-level directories
+        if path == "/" or path in ["/playlists", "/liked_songs", "/albums"]:
             attr["st_mode"] = stat.S_IFDIR | 0o755
             attr["st_size"] = 0
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = attr.copy()
-            return attr
+            self._cache_result(operation_key, attr)
+            return attr.copy()
 
-        # Check the entry type from cache to determine file or directory
+        # Case 2: Check if path is already known to be a directory
         entry_type = self.cache.get_entry_type(path)
-        if entry_type:
-            # If we know the entry type, we can immediately set the right attributes
-            if entry_type == "directory":
-                attr["st_mode"] = stat.S_IFDIR | 0o755
-                attr["st_size"] = 0
-                with self.last_access_lock:
-                    self.last_access_results[operation_key] = attr.copy()
-                return attr
-
-        # We no longer need the context check or is_mkdir_context variable since we removed search-related logic
-        # Just use the current user's UID and GID directly
-        uid = os.getuid()
-        gid = os.getgid()
-
-        now = time.time()
-        attr = {
-            "st_atime": now,
-            "st_ctime": now,
-            "st_mtime": now,
-            "st_nlink": 2,
-            "st_uid": uid,  # Set to current user
-            "st_gid": gid,  # Set to current group
-        }
-
-        # Handle root and standard top-level directories
-        if path == "/" or path in [
-            "/playlists",
-            "/liked_songs",
-            "/albums",
-        ]:
-            attr["st_mode"] = stat.S_IFDIR | 0o755
-            attr["st_size"] = 0
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = attr.copy()
-            return attr
-
-        # ----------------------------------------------------------------------
-        # First check if the path is a directory before rejecting based on extension
-        # ----------------------------------------------------------------------
-
-        # Check cache for entry type - this is the most reliable way to determine
-        # if a path is a file or directory
         if entry_type == "directory":
             attr["st_mode"] = stat.S_IFDIR | 0o755
             attr["st_size"] = 0
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = attr.copy()
-            return attr
+            self._cache_result(operation_key, attr)
+            return attr.copy()
 
-        # Now check if this is a potentially valid file or an invalid extension
-        # Only apply the extension check after we've confirmed it's not a directory
-        if "." in os.path.basename(path) and not path.lower().endswith(".m4a"):
-            self.logger.debug(f"Rejecting non-m4a file extension in getattr: {path}")
+        # Case 3: File extension check (only allow .m4a files)
+        basename = os.path.basename(path)
+        if "." in basename and not path.lower().endswith(".m4a"):
+            self.logger.debug(f"Rejecting non-m4a file extension: {path}")
             raise OSError(errno.ENOENT, "No such file or directory")
 
-        # Initialize thread-local path validation cache if needed
-        if not hasattr(self._thread_local, "validated_paths"):
-            self._thread_local.validated_paths = {}
-
-        # Check thread-local validation cache first
-        if path in self._thread_local.validated_paths:
-            if self._thread_local.validated_paths[path] is False:
-                # We've already determined this path is invalid
-                raise OSError(errno.ENOENT, "No such file or directory")
-
-        # For files (especially those with .m4a extension)
+        # Case 4: Try to get file attributes from cached directory listings
         parent_dir = os.path.dirname(path)
-        filename = os.path.basename(path)
+        filename = basename
 
-        # Fast path: if we have already validated the parent directory and have
-        # the directory listing in thread-local cache, we can skip the validity check
-        if (
-            hasattr(self._thread_local, "validated_dirs")
-            and parent_dir in self._thread_local.validated_dirs
-            and hasattr(self._thread_local, "temp_dir_listings")
-            and parent_dir in self._thread_local.temp_dir_listings
-        ):
-            dir_listing = self._thread_local.temp_dir_listings[parent_dir]
-            if dir_listing and filename in dir_listing:
-                # Use the cached attributes directly
-                self.logger.debug(f"Fast path: using validated directory for {path}")
-                cached_attrs = dir_listing[filename].copy()
-
-                # Update timestamps and check for file size updates
-                cached_attrs["st_atime"] = now
-                cached_attrs["st_ctime"] = now
-                cached_attrs["st_mtime"] = now
-
-                file_size_cache_key = f"filesize:{path}"
-                cached_size = self.cache.get(file_size_cache_key)
-                if cached_size is not None:
-                    cached_attrs["st_size"] = cached_size
-
-                with self.last_access_lock:
-                    self.last_access_results[operation_key] = cached_attrs.copy()
-
-                # Cache validation result
-                self._thread_local.validated_paths[path] = True
-
-                return cached_attrs
-            else:
-                # File not found in validated directory
-                self._thread_local.validated_paths[path] = False
-                raise OSError(errno.ENOENT, "No such file or directory")
-
-        # Otherwise fallback to the normal path validation
-        if not self._is_valid_path(path):
-            self.logger.debug(f"Invalid path in getattr: {path}")
-            self._thread_local.validated_paths[path] = False
-            raise OSError(errno.ENOENT, "No such file or directory")
-
-        # Mark this path as valid for future reference
-        self._thread_local.validated_paths[path] = True
-
-        # Use thread-local cached directory listing if available
+        # First check the thread-local directory cache
         if (
             hasattr(self._thread_local, "temp_dir_listings")
             and parent_dir in self._thread_local.temp_dir_listings
         ):
-            dir_listing = self._thread_local.temp_dir_listings[parent_dir]
-            if dir_listing and filename in dir_listing:
-                self.logger.debug(f"Using thread-local cached attributes for {path}")
-                cached_attrs = dir_listing[filename].copy()
 
-                # Update with fresh timestamps
+            dir_listing = self._thread_local.temp_dir_listings[parent_dir]
+            if filename in dir_listing:
+                cached_attrs = dir_listing[filename].copy()
                 cached_attrs["st_atime"] = now
                 cached_attrs["st_ctime"] = now
                 cached_attrs["st_mtime"] = now
 
-                # Check for updated file size
+                # Update file size if we have a more precise value
                 file_size_cache_key = f"filesize:{path}"
                 cached_size = self.cache.get(file_size_cache_key)
                 if cached_size is not None:
                     cached_attrs["st_size"] = cached_size
 
-                with self.last_access_lock:
-                    self.last_access_results[operation_key] = cached_attrs.copy()
+                self._cache_result(operation_key, cached_attrs)
                 return cached_attrs
 
-        # If not in thread-local cache, try to get from main cache
+        # Then check the persistent cache
         cached_attrs = self.cache.get_file_attrs_from_parent_dir(path)
         if cached_attrs:
-            self.logger.debug(
-                f"Using cached attributes from parent directory for {path}"
-            )
-
-            # Update with fresh timestamps
             cached_attrs["st_atime"] = now
             cached_attrs["st_ctime"] = now
             cached_attrs["st_mtime"] = now
 
-            # Check for updated file size
             file_size_cache_key = f"filesize:{path}"
             cached_size = self.cache.get(file_size_cache_key)
             if cached_size is not None:
                 cached_attrs["st_size"] = cached_size
 
-            # Store in thread-local cache for future lookups during this operation
-            if not hasattr(self._thread_local, "temp_dir_listings"):
-                self._thread_local.temp_dir_listings = {}
-
-            if parent_dir not in self._thread_local.temp_dir_listings:
-                # Retrieve and store the entire directory listing
-                dir_listing = self.cache.get_directory_listing_with_attrs(parent_dir)
-                if dir_listing:
-                    self._thread_local.temp_dir_listings[parent_dir] = dir_listing
-
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = cached_attrs.copy()
+            self._cache_result(operation_key, cached_attrs)
             return cached_attrs
 
-        # If no cached attributes, we'll try to get video_id and check for duration
-        try:
-            # Get the video ID
-            video_id = self._get_video_id(path)
+        # Case 5: If path is not found in caches, validate it
+        if not self._is_valid_path(path):
+            self.logger.debug(f"Invalid path in getattr: {path}")
+            raise OSError(errno.ENOENT, "No such file or directory")
 
-            # Check if we already have cached duration
+        # Case 6: For valid files, get video ID and estimate file size
+        try:
+            video_id = self._get_video_id(path)
             duration = self.cache.get_duration(video_id)
 
+            # Estimate file size based on duration (128kbps = 16KB/sec)
             if duration is not None:
-                # Estimate file size based on duration (128kbps = 16KB/sec)
-                estimated_size = duration * 16 * 1024
+                attr["st_size"] = duration * 16 * 1024
             else:
-                # Default size if we don't know duration
-                estimated_size = 4096
+                attr["st_size"] = 4096  # Default size
 
-            # Create basic file attributes
             attr["st_mode"] = stat.S_IFREG | 0o644
-            attr["st_size"] = estimated_size
             attr["st_nlink"] = 1
 
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = attr.copy()
+            self._cache_result(operation_key, attr)
+            return attr.copy()
 
-            return attr
         except Exception as e:
             self.logger.error(f"Error getting file attributes for {path}: {e}")
             raise OSError(errno.ENOENT, "No such file or directory")
+
+    def _cache_result(self, key: str, value: Dict[str, Any]) -> None:
+        """Helper method to cache operation results.
+
+        Args:
+            key: Cache key
+            value: Value to cache
+        """
+        with self.last_access_lock:
+            self.last_access_results[key] = value.copy()
 
     def open(self, path: str, flags: int) -> int:
         """Open a file.
