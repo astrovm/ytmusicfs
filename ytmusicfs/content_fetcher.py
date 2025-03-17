@@ -1218,22 +1218,20 @@ class ContentFetcher:
         self.logger.info("Refreshing all content caches...")
 
         # Refresh playlists
-        self.cache.refresh_cache_data(
+        self.cache.refresh_cache(
             cache_key="/playlists",
             fetch_func=self.client.get_library_playlists,
-            id_fields=["playlistId"],
-            fetch_args={"limit": 100},
+            limit=100,
         )
 
         # Refresh liked songs (static entry, refresh content only)
         self.fetch_playlist_content("LM", "/liked_songs")
 
         # Refresh albums
-        self.cache.refresh_cache_data(
+        self.cache.refresh_cache(
             cache_key="/albums",
             fetch_func=self.client.get_library_albums,
-            id_fields=["browseId"],
-            fetch_args={"limit": 100},
+            limit=100,
         )
 
         self.logger.info("All content caches refreshed successfully")
