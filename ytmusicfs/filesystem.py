@@ -147,14 +147,7 @@ class YouTubeMusicFS(Operations):
             "/playlists/*",
             lambda path, playlist_name: [".", ".."]
             + self.fetcher.fetch_playlist_content(
-                next(
-                    (
-                        p["id"]
-                        for p in (self.fetcher.cache.get("/playlists") or [])
-                        if p["name"] == playlist_name
-                    ),
-                    None,
-                ),
+                self._get_playlist_id_from_name(playlist_name, "playlist"),
                 path,
             ),
         )
@@ -162,14 +155,7 @@ class YouTubeMusicFS(Operations):
             "/albums/*",
             lambda path, album_name: [".", ".."]
             + self.fetcher.fetch_playlist_content(
-                next(
-                    (
-                        a["id"]
-                        for a in (self.fetcher.cache.get("/albums") or [])
-                        if a["name"] == album_name
-                    ),
-                    None,
-                ),
+                self._get_playlist_id_from_name(album_name, "album"),
                 path,
             ),
         )
@@ -439,96 +425,51 @@ class YouTubeMusicFS(Operations):
                 self.video_id_cache[path] = video_id
             return video_id
 
-        # Try to find the song data to extract the video ID
-        if dir_path == "/liked_songs":
-            songs = self.cache.get("/liked_songs_processed")
-            if songs:
-                for song in songs:
-                    if isinstance(song, dict) and song.get("filename") == filename:
-                        video_id = song.get("videoId")
-                        if video_id:
-                            # Cache for future use
-                            with self.video_id_cache_lock:
-                                self.video_id_cache[path] = video_id
-                            return video_id
-        elif dir_path.startswith("/playlists/"):
-            # For playlists, we need to find the playlist ID first
-            playlist_name = dir_path.split("/")[2]
-            playlists = self.cache.get("/playlists")
-            if playlists:
-                playlist_id = None
-                for playlist in playlists:
-                    if (
-                        self.processor.sanitize_filename(playlist["title"])
-                        == playlist_name
-                    ):
-                        playlist_id = playlist["playlistId"]
-                        break
+        # UNIFIED APPROACH:
+        # 1. Find the playlist entry from the ContentFetcher registry
+        # 2. Get the cache key using a consistent pattern
 
-                if playlist_id:
-                    processed_cache_key = f"/playlist/{playlist_id}_processed"
-                    songs = self.cache.get(processed_cache_key)
-                    if songs:
-                        for song in songs:
-                            if (
-                                isinstance(song, dict)
-                                and song.get("filename") == filename
-                            ):
-                                video_id = song.get("videoId")
-                                if video_id:
-                                    # Cache for future use
-                                    with self.video_id_cache_lock:
-                                        self.video_id_cache[path] = video_id
-                                    return video_id
-        else:
-            # For other directories (like albums)
-            songs = self.cache.get(dir_path)
-            if songs:
-                for song in songs:
-                    if isinstance(song, dict) and song.get("filename") == filename:
-                        video_id = song.get("videoId")
+        # Find the corresponding playlist in the fetcher's registry
+        playlist_entry = None
+        for entry in self.fetcher.PLAYLIST_REGISTRY:
+            if entry["path"] == dir_path:
+                playlist_entry = entry
+                break
+
+        if playlist_entry:
+            # Use a consistent cache key pattern for all playlist types
+            cache_key = f"{dir_path}_processed"
+            self.logger.debug(f"Using cache key {cache_key} for {path}")
+
+            # Try to get the track data from the cache
+            tracks = self.cache.get(cache_key)
+            if tracks:
+                for track in tracks:
+                    if isinstance(track, dict) and track.get("filename") == filename:
+                        video_id = track.get("videoId")
                         if video_id:
                             # Cache for future use
                             with self.video_id_cache_lock:
                                 self.video_id_cache[path] = video_id
                             return video_id
 
-        # Try to fetch directory contents if not in cache
-        self.logger.debug(f"Songs not in cache for {dir_path}, attempting to fetch")
+        # If we didn't find the video ID, try to fetch the directory contents
+        self.logger.debug(f"Track not in cache for {dir_path}, attempting to fetch")
         self.readdir(dir_path, None)
 
-        # Try again after refetching
-        if dir_path == "/liked_songs":
-            songs = self.cache.get("/liked_songs_processed")
-        elif dir_path.startswith("/playlists/"):
-            playlist_name = dir_path.split("/")[2]
-            playlists = self.cache.get("/playlists")
-            if playlists:
-                playlist_id = None
-                for playlist in playlists:
-                    if (
-                        self.processor.sanitize_filename(playlist["title"])
-                        == playlist_name
-                    ):
-                        playlist_id = playlist["playlistId"]
-                        break
-
-                if playlist_id:
-                    processed_cache_key = f"/playlist/{playlist_id}_processed"
-                    songs = self.cache.get(processed_cache_key)
-        else:
-            songs = self.cache.get(dir_path)
-
-        # Find the video ID in the songs list
-        if songs:
-            for song in songs:
-                if isinstance(song, dict) and song.get("filename") == filename:
-                    video_id = song.get("videoId")
-                    if video_id:
-                        # Cache for future use
-                        with self.video_id_cache_lock:
-                            self.video_id_cache[path] = video_id
-                        return video_id
+        # Try again with the unified approach
+        if playlist_entry:
+            cache_key = f"{dir_path}_processed"
+            tracks = self.cache.get(cache_key)
+            if tracks:
+                for track in tracks:
+                    if isinstance(track, dict) and track.get("filename") == filename:
+                        video_id = track.get("videoId")
+                        if video_id:
+                            # Cache for future use
+                            with self.video_id_cache_lock:
+                                self.video_id_cache[path] = video_id
+                            return video_id
 
         self.logger.error(f"Could not find video ID for {filename} in {dir_path}")
         raise OSError(errno.ENOENT, "Video ID not found")
@@ -860,6 +801,24 @@ class YouTubeMusicFS(Operations):
         self.cache.close()
 
         self.logger.info("YTMusicFS destroyed successfully")
+
+    def _get_playlist_id_from_name(
+        self, name: str, type_filter: str = None
+    ) -> Optional[str]:
+        """Get playlist ID from its name using the PLAYLIST_REGISTRY.
+
+        Args:
+            name: The sanitized name of the playlist/album
+            type_filter: Optional type to filter by ('playlist', 'album', 'liked_songs')
+
+        Returns:
+            The playlist ID if found, None otherwise
+        """
+        for entry in self.fetcher.PLAYLIST_REGISTRY:
+            if entry["name"] == name:
+                if type_filter is None or entry["type"] == type_filter:
+                    return entry["id"]
+        return None
 
 
 def mount_ytmusicfs(

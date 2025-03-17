@@ -782,3 +782,27 @@ class CacheManager:
             List of valid paths
         """
         return list(self.path_types.keys())
+
+    def get_playlist_content(self, path: str) -> Optional[List[Dict]]:
+        """Get playlist content using a consistent cache key pattern.
+
+        Args:
+            path: The filesystem path of the playlist
+
+        Returns:
+            List of track dictionaries if available, None otherwise
+        """
+        # Always use path_processed as the cache key pattern
+        cache_key = f"{path}_processed"
+        return self.get(cache_key)
+
+    def set_playlist_content(self, path: str, content: List[Dict]) -> None:
+        """Set playlist content using a consistent cache key pattern.
+
+        Args:
+            path: The filesystem path of the playlist
+            content: List of track dictionaries to cache
+        """
+        # Always use path_processed as the cache key pattern
+        cache_key = f"{path}_processed"
+        self.set(cache_key, content)

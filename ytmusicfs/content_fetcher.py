@@ -11,15 +11,8 @@ import threading
 class ContentFetcher:
     """Handles fetching and processing of YouTube Music content."""
 
-    # Centralized registry for all playlist-like items
-    PLAYLIST_REGISTRY = [
-        {
-            "name": "liked_songs",
-            "id": "LM",
-            "type": "liked_songs",
-            "path": "/liked_songs",
-        }
-    ]
+    # Initialize with empty registry - all entries will be added during initialization
+    PLAYLIST_REGISTRY = []
 
     def __init__(
         self,
@@ -43,13 +36,26 @@ class ContentFetcher:
         self.cache = cache
         self.logger = logger
         self.browser = browser
-        # Initialize playlist registry with liked songs and fetch others
+        # Initialize playlist registry with all playlist types
         self._initialize_playlist_registry()
         # Start auto-refresh in a background thread
         threading.Thread(target=self._run_auto_refresh, daemon=True).start()
 
     def _initialize_playlist_registry(self):
-        """Initialize the playlist registry with playlists and albums."""
+        """Initialize the playlist registry with all playlist types."""
+        # Clear any existing entries
+        self.PLAYLIST_REGISTRY = []
+
+        # Add liked songs entry
+        self.PLAYLIST_REGISTRY.append(
+            {
+                "name": "liked_songs",
+                "id": "LM",  # YouTube Music's liked songs playlist ID
+                "type": "liked_songs",
+                "path": "/liked_songs",
+            }
+        )
+
         # Fetch playlists
         playlists = self.client.get_library_playlists(
             limit=1000
@@ -63,12 +69,13 @@ class ContentFetcher:
                 continue
 
             sanitized_name = self.processor.sanitize_filename(p["title"])
+            path = f"/playlists/{sanitized_name}"
             self.PLAYLIST_REGISTRY.append(
                 {
                     "name": sanitized_name,
                     "id": p["playlistId"],
                     "type": "playlist",
-                    "path": f"/playlists/{sanitized_name}",
+                    "path": path,
                 }
             )
 
@@ -76,12 +83,13 @@ class ContentFetcher:
         albums = self.client.get_library_albums(limit=1000)  # Initial fetch for IDs
         for a in albums:
             sanitized_name = self.processor.sanitize_filename(a["title"])
+            path = f"/albums/{sanitized_name}"
             self.PLAYLIST_REGISTRY.append(
                 {
                     "name": sanitized_name,
                     "id": a["browseId"],  # Albums use browseId as playlist ID
                     "type": "album",
-                    "path": f"/albums/{sanitized_name}",
+                    "path": path,
                 }
             )
 
@@ -139,7 +147,9 @@ class ContentFetcher:
             self.logger.info("Skipping podcast playlist (SE) - podcasts not supported")
             return []
 
+        # CONSISTENT CACHE KEY: Always use path_processed regardless of playlist type
         cache_key = f"{path}_processed"
+
         processed_tracks = self.cache.get(cache_key)
         if (
             processed_tracks is not None
@@ -360,20 +370,32 @@ class ContentFetcher:
         if not liked_songs_entry:
             self.logger.error("Liked songs not found in registry")
             return [".", ".."]
+
+        # Unlike albums/playlists which are directories containing songs,
+        # liked_songs directly shows the songs themselves
         # Fetch initial content (up to 10000 tracks)
         filenames = self.fetch_playlist_content(
             liked_songs_entry["id"], liked_songs_entry["path"], limit=10000
         )
+
+        # Return the full directory listing
         return [".", ".."] + filenames
 
     def refresh_all_caches(self) -> None:
         """Refresh all caches with the latest 100 songs from each playlist."""
         self.logger.info("Refreshing all content caches...")
         for playlist in self.PLAYLIST_REGISTRY:
+            # Get all information consistently from the registry
+            playlist_id = playlist["id"]
+            path = playlist["path"]
+            playlist_type = playlist["type"]
+
             self.logger.debug(
-                f"Refreshing {playlist['type']} at {playlist['path']} with ID {playlist['id']}"
+                f"Refreshing {playlist_type} at {path} with ID {playlist_id}"
             )
-            self.fetch_playlist_content(playlist["id"], playlist["path"], limit=100)
+            # Use consistent caching pattern with path
+            self.fetch_playlist_content(playlist_id, path, limit=100)
+
         self.logger.info("All content caches refreshed successfully")
 
     def _run_auto_refresh(self):
