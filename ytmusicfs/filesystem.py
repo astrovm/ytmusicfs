@@ -100,7 +100,7 @@ class YouTubeMusicFS(Operations):
         # Initialize the path router
         self.router = PathRouter()
 
-        # Set the content fetcher in the router to enable the search path handlers
+        # Set the content fetcher in the router
         self.router.set_fetcher(self.fetcher)
 
         # Store parameters for future reference
@@ -798,17 +798,6 @@ class YouTubeMusicFS(Operations):
         )
         is_mkdir_context = context == "mkdir" or "mkdir" in context
 
-        # For mkdir operations on search paths, report path doesn't exist to allow creation
-        if is_mkdir_context and path.startswith("/search/"):
-            parts = path.split("/")
-            if len(parts) == 5 and parts[2] in ["library", "catalog"]:
-                valid_categories = ["songs", "videos", "albums"]
-                if parts[3] in valid_categories:
-                    self.logger.debug(
-                        f"mkdir context detected, forcing non-existence for {path}"
-                    )
-                    raise OSError(errno.ENOENT, "No such file or directory")
-
         # Get current user's UID and GID
         uid = os.getuid()
         gid = os.getgid()
@@ -828,7 +817,6 @@ class YouTubeMusicFS(Operations):
             "/playlists",
             "/liked_songs",
             "/albums",
-            "/search",
         ]:
             attr["st_mode"] = stat.S_IFDIR | 0o755
             attr["st_size"] = 0
@@ -854,48 +842,6 @@ class YouTubeMusicFS(Operations):
         if "." in os.path.basename(path) and not path.lower().endswith(".m4a"):
             self.logger.debug(f"Rejecting non-m4a file extension in getattr: {path}")
             raise OSError(errno.ENOENT, "No such file or directory")
-
-        # Handle search path directories
-        if path.startswith("/search/"):
-            parts = path.split("/")
-
-            # Basic search paths like /search/library or /search/catalog
-            if len(parts) == 3 and parts[2] in ["library", "catalog"]:
-                attr["st_mode"] = stat.S_IFDIR | 0o755
-                attr["st_size"] = 0
-                with self.last_access_lock:
-                    self.last_access_results[operation_key] = attr.copy()
-                return attr
-
-            # Search category paths like /search/library/songs
-            if len(parts) == 4 and parts[2] in ["library", "catalog"]:
-                valid_categories = ["songs", "videos", "albums"]
-                if parts[3] in valid_categories:
-                    attr["st_mode"] = stat.S_IFDIR | 0o755
-                    attr["st_size"] = 0
-                    with self.last_access_lock:
-                        self.last_access_results[operation_key] = attr.copy()
-                    return attr
-
-            if len(parts) >= 5 and parts[2] in ["library", "catalog"]:
-                # Check for search query directories (like /search/library/songs/query)
-                if len(parts) == 5:
-                    # Only report existing if it's in the cache or if mkdir is in progress
-                    if self.cache.is_valid_path(path) or is_mkdir_context:
-                        attr["st_mode"] = stat.S_IFDIR | 0o755
-                        attr["st_size"] = 0
-                        with self.last_access_lock:
-                            self.last_access_results[operation_key] = attr.copy()
-                        return attr
-
-                # Check for categorized search results (like /search/library/songs/query/top_album)
-                if len(parts) == 6:
-                    if self.cache.is_valid_path(path):
-                        attr["st_mode"] = stat.S_IFDIR | 0o755
-                        attr["st_size"] = 0
-                        with self.last_access_lock:
-                            self.last_access_results[operation_key] = attr.copy()
-                        return attr
 
         # Initialize thread-local path validation cache if needed
         if not hasattr(self._thread_local, "validated_paths"):
@@ -1151,27 +1097,7 @@ class YouTubeMusicFS(Operations):
         # Use the fetcher to refresh the caches
         self.fetcher.refresh_all_caches()
 
-        # Delete all search-related cache entries
-        self.cache.delete_pattern("/search/*")
-        self.cache.delete_pattern("/search/*/*_processed")
-        self.cache.delete_pattern("*_search_metadata")
-        self.logger.debug("Deleted search metadata entries")
-
         self.logger.info("All caches refreshed successfully")
-
-    def _perform_search(self, search_query, scope, filter_type):
-        """Perform a search operation.
-
-        Args:
-            search_query: Query string to search for
-            scope: Search scope (library or None for all)
-            filter_type: Type of items to filter for (songs, albums, etc.)
-
-        Returns:
-            Search results
-        """
-        # Delegate to ContentFetcher for search operations
-        return self.fetcher._perform_search(search_query, scope, filter_type)
 
     def mkdir(self, path, mode):
         """Create a directory.
@@ -1184,70 +1110,9 @@ class YouTubeMusicFS(Operations):
             0 on success
         """
         self.logger.debug(f"mkdir: {path}")
-
-        # Only allow creating directories under the /search path
-        if not path.startswith("/search/"):
-            self.logger.warning(f"Rejecting mkdir for non-search path: {path}")
-            raise OSError(errno.EPERM, "Can only create directories under /search")
-
-        # Validate the search path structure
-        parts = path.split("/")
-        if len(parts) < 4 or parts[2] not in ["library", "catalog"]:
-            self.logger.warning(f"Invalid search path structure for mkdir: {path}")
-            raise OSError(
-                errno.EINVAL,
-                "Invalid search path format (must be /search/{library|catalog}/...)",
-            )
-
-        # For /search/{library|catalog}/{songs|videos|albums|artists|playlists}
-        if len(parts) == 4:
-            valid_categories = ["songs", "videos", "albums"]
-            if parts[3] not in valid_categories:
-                self.logger.warning(f"Invalid search category for mkdir: {parts[3]}")
-                raise OSError(
-                    errno.EINVAL,
-                    f"Invalid search category (must be one of {', '.join(valid_categories)})",
-                )
-            # These directories already exist virtually
-            self._cache_valid_dir(path)
-            # Clear thread-local cache
-            self._clear_thread_local_cache()
-            return 0
-
-        # For /search/{library|catalog}/{songs|videos|albums|artists|playlists}/{query}
-        if len(parts) == 5:
-            valid_categories = ["songs", "videos", "albums"]
-            if parts[3] not in valid_categories:
-                self.logger.warning(f"Invalid search category for mkdir: {parts[3]}")
-                raise OSError(
-                    errno.EINVAL,
-                    f"Invalid search category (must be one of {', '.join(valid_categories)})",
-                )
-
-            # This is a search query directory - perform the search
-            search_query = parts[4]
-            scope = parts[2]  # 'library' or 'catalog'
-            filter_type = parts[3]  # category
-
-            # Store search metadata for later use
-            self.cache.store_search_metadata(path, search_query, scope, filter_type)
-
-            try:
-                # Perform the search
-                self._perform_search(search_query, scope, filter_type)
-                # Mark as valid
-                self._cache_valid_dir(path)
-                # Clear thread-local cache
-                self._clear_thread_local_cache()
-                return 0
-            except Exception as e:
-                self.logger.error(f"Search failed for {path}: {e}")
-                raise OSError(errno.EIO, f"Search failed: {str(e)}")
-
-        self.logger.warning(f"Rejecting mkdir for unsupported path depth: {path}")
-        raise OSError(
-            errno.EINVAL, "Can only create directories at the category or query level"
-        )
+        # For now, disallow creating directories anywhere
+        self.logger.warning(f"mkdir not supported: {path}")
+        raise OSError(errno.EPERM, "Directory creation not supported")
 
     def rmdir(self, path):
         """Remove a directory.
@@ -1259,72 +1124,9 @@ class YouTubeMusicFS(Operations):
             0 on success
         """
         self.logger.debug(f"rmdir: {path}")
-
-        # Only allow removing directories under the /search path
-        if not path.startswith("/search/"):
-            self.logger.warning(f"Rejecting rmdir for non-search path: {path}")
-            raise OSError(errno.EPERM, "Can only remove directories under /search")
-
-        # Validate the search path structure
-        parts = path.split("/")
-        if len(parts) < 4 or parts[2] not in ["library", "catalog"]:
-            self.logger.warning(f"Invalid search path structure for rmdir: {path}")
-            raise OSError(
-                errno.EINVAL,
-                "Invalid search path format (must be /search/{library|catalog}/...)",
-            )
-
-        # For /search/{library|catalog}/{songs|videos|albums|artists|playlists}
-        if len(parts) == 4:
-            valid_categories = ["songs", "videos", "albums"]
-            if parts[3] not in valid_categories:
-                self.logger.warning(f"Invalid search category for rmdir: {parts[3]}")
-                raise OSError(
-                    errno.EINVAL,
-                    f"Invalid search category (must be one of {', '.join(valid_categories)})",
-                )
-            # These directories are virtual and permanent
-            self.logger.warning(f"Cannot remove category directory: {path}")
-            raise OSError(errno.EPERM, "Cannot remove category directories")
-
-        # For /search/{library|catalog}/{songs|videos|albums|artists|playlists}/{query}
-        if len(parts) == 5:
-            valid_categories = ["songs", "videos", "albums"]
-            if parts[3] not in valid_categories:
-                self.logger.warning(f"Invalid search category for rmdir: {parts[3]}")
-                raise OSError(
-                    errno.EINVAL,
-                    f"Invalid search category (must be one of {', '.join(valid_categories)})",
-                )
-
-            # This is a search query directory - check if it's a valid path
-            if not self.cache.is_valid_path(path):
-                self.logger.warning(f"Cannot remove non-existent directory: {path}")
-                raise OSError(errno.ENOENT, "No such directory")
-
-            # Find all child paths in the cache that start with this path
-            search_pattern = f"{path}/*"
-            child_keys = self.cache.get_keys_by_pattern(search_pattern)
-
-            # Clear the child paths from cache
-            for key in child_keys:
-                self.cache.delete(key)
-
-            # Remove the directory itself from cache
-            self.cache.remove_valid_path(path)
-            self.cache.delete(path)
-
-            # Clean up associated metadata
-            self.cache.delete(f"{path}_listing_with_attrs")
-            self.cache.delete(f"valid_files:{path}")
-
-            # Clear thread-local cache
-            self._clear_thread_local_cache()
-
-            return 0
-
-        self.logger.warning(f"Rejecting rmdir for unsupported path depth: {path}")
-        raise OSError(errno.EPERM, "Cannot remove directory outside of search paths")
+        # For now, disallow removing directories anywhere
+        self.logger.warning(f"rmdir not supported: {path}")
+        raise OSError(errno.EPERM, "Directory removal not supported")
 
     def _clear_thread_local_cache(self):
         """Clear the thread-local cache to prevent memory leaks.
