@@ -141,7 +141,9 @@ class ContentFetcher:
 
         cache_key = f"{path}_processed"
         processed_tracks = self.cache.get(cache_key)
-        if processed_tracks:
+        if (
+            processed_tracks is not None
+        ):  # Check for None specifically to handle empty lists
             self.logger.debug(f"Using {len(processed_tracks)} cached tracks for {path}")
             for track in processed_tracks:
                 track["is_directory"] = False
@@ -155,6 +157,9 @@ class ContentFetcher:
             "no_warnings": True,
             "ignoreerrors": True,
             "playlistend": limit,  # Limit the number of entries fetched
+            "extractor_args": {
+                "youtubetab": {"skip": ["authcheck"]}
+            },  # Skip authentication check
         }
         if self.browser:
             ydl_opts["cookiesfrombrowser"] = (self.browser,)
@@ -171,6 +176,10 @@ class ContentFetcher:
                     self.logger.warning(
                         f"No tracks found for playlist ID: {playlist_id}"
                     )
+                    # Cache empty list to prevent repeated attempts
+                    empty_tracks = []
+                    self.cache.set(cache_key, empty_tracks)
+                    self._cache_directory_listing_with_attrs(path, empty_tracks)
                     return []
 
                 tracks = result["entries"][:limit]  # Ensure we respect the limit
