@@ -42,6 +42,36 @@ class ContentFetcher:
         # Start auto-refresh in a background thread
         threading.Thread(target=self._run_auto_refresh, daemon=True).start()
 
+    def get_playlist_id_from_name(self, name: str, type_filter: Optional[str] = None) -> Optional[str]:
+        """Get playlist ID from its name using the PLAYLIST_REGISTRY.
+
+        Args:
+            name: The sanitized name of the playlist/album
+            type_filter: Optional type to filter by ('playlist', 'album', 'liked_songs')
+
+        Returns:
+            The playlist ID if found, None otherwise
+        """
+        for entry in self.PLAYLIST_REGISTRY:
+            if entry["name"] == name:
+                if type_filter is None or entry["type"] == type_filter:
+                    return entry["id"]
+        return None
+
+    def get_playlist_entry_from_path(self, path: str) -> Optional[Dict[str, Any]]:
+        """Get playlist entry from its path using the PLAYLIST_REGISTRY.
+
+        Args:
+            path: The filesystem path of the playlist
+
+        Returns:
+            The playlist entry dictionary if found, None otherwise
+        """
+        for entry in self.PLAYLIST_REGISTRY:
+            if entry["path"] == path:
+                return entry
+        return None
+
     def _initialize_playlist_registry(self):
         """Initialize the playlist registry with all playlist types."""
         # Clear any existing entries

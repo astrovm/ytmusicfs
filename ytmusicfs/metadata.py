@@ -89,16 +89,8 @@ class MetadataManager:
                 errno.ENOENT, "Video ID not found, no content fetcher available"
             )
 
-        # UNIFIED APPROACH:
-        # 1. Find the playlist entry from the ContentFetcher registry
-        # 2. Get the cache key using a consistent pattern
-
-        # Find the corresponding playlist in the fetcher's registry
-        playlist_entry = None
-        for entry in self.content_fetcher.PLAYLIST_REGISTRY:
-            if entry["path"] == dir_path:
-                playlist_entry = entry
-                break
+        # Find the corresponding playlist using the new method
+        playlist_entry = self.content_fetcher.get_playlist_entry_from_path(dir_path)
 
         if playlist_entry:
             # Use a consistent cache key pattern for all playlist types

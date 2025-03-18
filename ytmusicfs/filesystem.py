@@ -734,7 +734,7 @@ class YouTubeMusicFS(Operations):
     def _get_playlist_id_from_name(
         self, name: str, type_filter: str = None
     ) -> Optional[str]:
-        """Get playlist ID from its name using the PLAYLIST_REGISTRY.
+        """Get playlist ID from its name using the ContentFetcher.
 
         Args:
             name: The sanitized name of the playlist/album
@@ -743,11 +743,7 @@ class YouTubeMusicFS(Operations):
         Returns:
             The playlist ID if found, None otherwise
         """
-        for entry in self.fetcher.PLAYLIST_REGISTRY:
-            if entry["name"] == name:
-                if type_filter is None or entry["type"] == type_filter:
-                    return entry["id"]
-        return None
+        return self.fetcher.get_playlist_id_from_name(name, type_filter)
 
 
 def mount_ytmusicfs(
