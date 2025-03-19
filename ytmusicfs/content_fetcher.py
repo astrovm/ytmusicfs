@@ -7,6 +7,7 @@ from ytmusicfs.yt_dlp_utils import extract_playlist_content
 import logging
 import time
 import threading
+import traceback
 
 
 class ContentFetcher:
@@ -42,7 +43,9 @@ class ContentFetcher:
         # Start auto-refresh in a background thread
         threading.Thread(target=self._run_auto_refresh, daemon=True).start()
 
-    def get_playlist_id_from_name(self, name: str, type_filter: Optional[str] = None) -> Optional[str]:
+    def get_playlist_id_from_name(
+        self, name: str, type_filter: Optional[str] = None
+    ) -> Optional[str]:
         """Get playlist ID from its name using the PLAYLIST_REGISTRY.
 
         Args:
@@ -218,18 +221,77 @@ class ContentFetcher:
     def readdir_playlists(self) -> List[str]:
         """List all user playlists from the registry."""
         self.logger.info("Fetching playlists for /playlists directory")
-        playlist_entries = [
-            p for p in self.PLAYLIST_REGISTRY if p["type"] == "playlist"
-        ]
-        processed_entries = []
-        for p in playlist_entries:
-            # Fetch initial content (up to 10000 tracks)
-            self.fetch_playlist_content(p["id"], p["path"], limit=10000)
-            processed_entries.append(
-                {"filename": p["name"], "id": p["id"], "is_directory": True}
-            )
-        self._cache_directory_listing_with_attrs("/playlists", processed_entries)
-        return [".", ".."] + [p["name"] for p in playlist_entries]
+        try:
+            # First, ensure PLAYLIST_REGISTRY is initialized
+            if not self.PLAYLIST_REGISTRY:
+                self.logger.warning(
+                    "Playlist registry is empty, attempting to initialize"
+                )
+                self._initialize_playlist_registry()
+                if not self.PLAYLIST_REGISTRY:
+                    self.logger.error("Failed to initialize playlist registry")
+                    return [".", ".."]
+
+            # Get playlist entries of type "playlist"
+            playlist_entries = [
+                p for p in self.PLAYLIST_REGISTRY if p["type"] == "playlist"
+            ]
+
+            if not playlist_entries:
+                self.logger.warning("No playlist entries found in registry")
+                return [".", ".."]
+
+            self.logger.debug(f"Found {len(playlist_entries)} playlist entries")
+
+            processed_entries = []
+            for p in playlist_entries:
+                try:
+                    # Make sure we have an ID and a name
+                    if not p.get("id") or not p.get("name"):
+                        self.logger.warning(f"Skipping invalid playlist entry: {p}")
+                        continue
+
+                    # Fetch initial content (up to 10000 tracks)
+                    self.logger.debug(
+                        f"Fetching content for playlist: {p['name']} (ID: {p['id']})"
+                    )
+                    self.fetch_playlist_content(p["id"], p["path"], limit=10000)
+
+                    processed_entries.append(
+                        {"filename": p["name"], "id": p["id"], "is_directory": True}
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        f"Error processing playlist {p.get('name', 'Unknown')}: {str(e)}"
+                    )
+                    # Continue with next playlist instead of failing completely
+
+            # Only cache if we have entries
+            if processed_entries:
+                self.logger.debug(
+                    f"Caching {len(processed_entries)} processed playlist entries"
+                )
+                try:
+                    self._cache_directory_listing_with_attrs(
+                        "/playlists", processed_entries
+                    )
+                except Exception as e:
+                    self.logger.error(f"Error caching directory listing: {str(e)}")
+                    # Still continue to return the result even if caching fails
+            else:
+                self.logger.warning("No playlists processed successfully")
+
+            # Return directory listing
+            result = [".", ".."] + [
+                p["name"] for p in playlist_entries if p.get("name")
+            ]
+            self.logger.debug(f"Returning {len(result)-2} playlist entries")
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Fatal error in readdir_playlists: {str(e)}")
+            self.logger.error(traceback.format_exc())
+            return [".", ".."]
 
     def _cache_directory_listing_with_attrs(
         self, dir_path: str, processed_tracks: List[Dict[str, Any]]

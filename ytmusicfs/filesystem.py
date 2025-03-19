@@ -348,6 +348,32 @@ class YouTubeMusicFS(Operations):
 
         # Use the router to handle the path
         try:
+            # Extra debugging for /playlists
+            if path == "/playlists":
+                self.logger.debug("Special handling for /playlists path")
+                try:
+                    # Check if playlists exist in the registry
+                    if hasattr(self.fetcher, "PLAYLIST_REGISTRY"):
+                        playlist_count = len(
+                            [
+                                p
+                                for p in self.fetcher.PLAYLIST_REGISTRY
+                                if p["type"] == "playlist"
+                            ]
+                        )
+                        self.logger.debug(
+                            f"Found {playlist_count} playlists in registry"
+                        )
+
+                    # Verify router registration
+                    if (
+                        not hasattr(self.router, "handlers")
+                        or "/playlists" not in self.router.handlers
+                    ):
+                        self.logger.error("Router missing handler for /playlists")
+                except Exception as debug_e:
+                    self.logger.error(f"Debug inspection error: {debug_e}")
+
             # Simplified validation logic - use router and cache manager directly
             if not self.router.validate_path(path) and not self.cache.is_valid_path(
                 path, "readdir"
@@ -359,7 +385,17 @@ class YouTubeMusicFS(Operations):
                 return result
 
             # Delegate directory listing to the router
-            result = self.router.route(path)
+            self.logger.debug(f"Routing path: {path}")
+            try:
+                result = self.router.route(path)
+                self.logger.debug(f"Router returned {len(result)} entries for {path}")
+            except Exception as router_error:
+                self.logger.error(f"Router error for {path}: {router_error}")
+                self.logger.error(traceback.format_exc())
+                result = [".", ".."]
+                with self.last_access_lock:
+                    self.last_access_results[operation_key] = result
+                return result
 
             # Mark this as a valid directory and cache all files for future validation
             if path != "/" and len(result) > 2:  # More than just "." and ".."

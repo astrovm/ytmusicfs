@@ -2,6 +2,7 @@
 
 from typing import Dict, Callable, List
 import re
+import logging
 
 
 class PathRouter:
@@ -148,48 +149,95 @@ class PathRouter:
             List of directory entries from the handler
         """
         result = None
+        logger = (
+            logging.getLogger("YTMusicFS")
+            if not hasattr(self, "logger")
+            else self.logger
+        )
+
+        # Extra debugging for problematic paths
+        if path == "/playlists":
+            logger.debug(f"Router handling special path: {path}")
+            if not self.handlers or path not in self.handlers:
+                logger.error(f"No handler registered for {path}")
+                return [".", ".."]
+
+            # Extra validation for handler callable
+            handler = self.handlers[path]
+            if not callable(handler):
+                logger.error(f"Handler for {path} is not callable: {type(handler)}")
+                return [".", ".."]
 
         # First try exact matches
         if path in self.handlers:
-            result = self.handlers[path]()
-            # Mark this path as valid in the cache
-            if (
-                self.cache and path != "/" and len(result) > 2
-            ):  # More than just "." and ".."
-                self.cache.mark_valid(path, is_directory=True)
+            try:
+                logger.debug(f"Found exact handler for {path}")
+                result = self.handlers[path]()
+                # Mark this path as valid in the cache
+                if (
+                    self.cache and path != "/" and len(result) > 2
+                ):  # More than just "." and ".."
+                    self.cache.mark_valid(path, is_directory=True)
+            except Exception as e:
+                logger.error(f"Error calling handler for {path}: {e}")
+                import traceback
+
+                logger.error(traceback.format_exc())
+                return [".", ".."]
 
         # Then try prefix matches
         elif not result:
             for prefix, handler in self.subpath_handlers:
                 if path.startswith(prefix):
-                    result = handler(path)
-                    # Mark this path as valid in the cache
-                    if (
-                        self.cache and path != "/" and len(result) > 2
-                    ):  # More than just "." and ".."
-                        self.cache.mark_valid(path, is_directory=True)
-                    break
+                    try:
+                        logger.debug(
+                            f"Found prefix handler for {path} with prefix {prefix}"
+                        )
+                        result = handler(path)
+                        # Mark this path as valid in the cache
+                        if (
+                            self.cache and path != "/" and len(result) > 2
+                        ):  # More than just "." and ".."
+                            self.cache.mark_valid(path, is_directory=True)
+                        break
+                    except Exception as e:
+                        logger.error(f"Error calling prefix handler for {path}: {e}")
+                        import traceback
+
+                        logger.error(traceback.format_exc())
+                        return [".", ".."]
 
         # Finally try pattern matches
         if not result:
             for pattern, handler in self.pattern_handlers:
-                match_success, captured_values = self._match_wildcard_pattern(
-                    pattern, path
-                )
-                if match_success:
-                    # Mark this path as valid in the cache
-                    if self.cache:
-                        self.cache.mark_valid(path, is_directory=True)
+                try:
+                    match_success, captured_values = self._match_wildcard_pattern(
+                        pattern, path
+                    )
+                    if match_success:
+                        logger.debug(
+                            f"Found pattern handler for {path} with pattern {pattern}"
+                        )
+                        # Mark this path as valid in the cache
+                        if self.cache:
+                            self.cache.mark_valid(path, is_directory=True)
 
-                    # Pass both the full path and the captured values
-                    if captured_values:
-                        result = handler(path, *captured_values)
-                    else:
-                        result = handler(path)
-                    break
+                        # Pass both the full path and the captured values
+                        if captured_values:
+                            result = handler(path, *captured_values)
+                        else:
+                            result = handler(path)
+                        break
+                except Exception as e:
+                    logger.error(f"Error calling pattern handler for {path}: {e}")
+                    import traceback
+
+                    logger.error(traceback.format_exc())
+                    return [".", ".."]
 
         # Default to empty dir if no handler matched
         if not result:
+            logger.debug(f"No handler found for {path}")
             result = [".", ".."]
 
         # Process results to mark individual entries as valid
