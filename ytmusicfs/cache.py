@@ -217,12 +217,11 @@ class CacheManager:
                 f"Failed to mark path as valid: {e.__class__.__name__}: {e}"
             )
 
-    def is_valid_path(self, path: str, context: str = None) -> bool:
+    def is_valid_path(self, path: str) -> bool:
         """Enhanced path validation with improved caching for better performance.
 
         Args:
             path: The path to validate
-            context: Optional context for logging
 
         Returns:
             Boolean indicating if the path is valid
