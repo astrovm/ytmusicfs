@@ -289,12 +289,7 @@ class ContentFetcher:
                         )
                         continue
 
-                    # Fetch initial content
-                    self.logger.debug(
-                        f"Fetching content for {playlist_type}: {entry['name']} (ID: {entry['id']})"
-                    )
-                    self.fetch_playlist_content(entry["id"], entry["path"], limit=10000)
-
+                    # Only fetch metadata for directory listing, not content
                     processed_entries.append(
                         {
                             "filename": entry["name"],
