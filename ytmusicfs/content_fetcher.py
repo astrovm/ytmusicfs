@@ -221,7 +221,7 @@ class ContentFetcher:
     def readdir_playlist_by_type(
         self, playlist_type: str = None, directory_path: str = None
     ) -> List[str]:
-        """Generic method to list playlists/albums/liked_songs based on type.
+        """Generic method to list playlists/albums/liked_songs based on type with optimized caching.
 
         Args:
             playlist_type: Type of playlists to filter ('playlist', 'album', 'liked_songs')
@@ -240,6 +240,14 @@ class ContentFetcher:
             else:
                 self.logger.error(f"Invalid playlist type: {playlist_type}")
                 return [".", ".."]
+
+        # Check if we have this directory listing cached already and return if found
+        # This is the most significant optimization - avoid re-processing already cached entries
+        dir_listing = self.cache.get_directory_listing_with_attrs(directory_path)
+        if dir_listing is not None:
+            self.logger.debug(f"Using cached directory listing for {directory_path}")
+            # Return just the filenames
+            return [".", ".."] + [name for name in dir_listing.keys()]
 
         # Special handling for liked_songs which directly shows songs rather than folders
         if playlist_type == "liked_songs":
@@ -280,6 +288,10 @@ class ContentFetcher:
             self.logger.debug(f"Found {len(entries)} {playlist_type} entries")
 
             processed_entries = []
+
+            # Prepare batch cache entries
+            batch_entries = {}
+
             for entry in entries:
                 try:
                     # Make sure we have an ID and a name
@@ -289,7 +301,7 @@ class ContentFetcher:
                         )
                         continue
 
-                    # Only fetch metadata for directory listing, not content
+                    # Only fetch metadata for directory listing, not content - crucial optimization
                     processed_entries.append(
                         {
                             "filename": entry["name"],
@@ -297,11 +309,20 @@ class ContentFetcher:
                             "is_directory": True,
                         }
                     )
+
+                    # Cache path validity for quick future lookups
+                    child_path = f"{directory_path}/{entry['name']}"
+                    batch_entries[f"valid_dir:{child_path}"] = True
+
                 except Exception as e:
                     self.logger.error(
                         f"Error processing {playlist_type} {entry.get('name', 'Unknown')}: {str(e)}"
                     )
                     # Continue with next entry instead of failing completely
+
+            # Batch update path validations
+            if batch_entries:
+                self.cache.set_batch(batch_entries)
 
             # Only cache if we have entries
             if processed_entries:
