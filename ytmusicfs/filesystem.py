@@ -390,33 +390,7 @@ class YouTubeMusicFS(Operations):
 
         # Priority 5: Use the router
         try:
-            # Extra debugging for /playlists
-            if path == "/playlists":
-                self.logger.debug("Special handling for /playlists path")
-                try:
-                    # Check if playlists exist in the registry
-                    if hasattr(self.fetcher, "PLAYLIST_REGISTRY"):
-                        playlist_count = len(
-                            [
-                                p
-                                for p in self.fetcher.PLAYLIST_REGISTRY
-                                if p["type"] == "playlist"
-                            ]
-                        )
-                        self.logger.debug(
-                            f"Found {playlist_count} playlists in registry"
-                        )
-
-                    # Verify router registration
-                    if (
-                        not hasattr(self.router, "handlers")
-                        or "/playlists" not in self.router.handlers
-                    ):
-                        self.logger.error("Router missing handler for /playlists")
-                except Exception as debug_e:
-                    self.logger.error(f"Debug inspection error: {debug_e}")
-
-            # Simplified validation logic - use router and cache manager directly
+            # VALIDATION: Use router's validation logic to reject invalid paths
             if not self.router.validate_path(path):
                 self.logger.debug(f"Rejecting invalid path in readdir: {path}")
                 result = [".", ".."]
@@ -569,6 +543,11 @@ class YouTubeMusicFS(Operations):
             parts = path.split("/")
             category = parts[1]
             item_name = parts[2]
+
+            # VALIDATION: First check if this is a valid path
+            if not self.router.validate_path(path):
+                self.logger.debug(f"Rejecting invalid level 2 path in getattr: {path}")
+                raise FuseOSError(errno.ENOENT)
 
             if category in ["playlists", "albums"]:
                 # This is likely a directory

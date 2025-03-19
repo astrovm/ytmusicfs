@@ -118,6 +118,10 @@ class PathRouter:
         Returns:
             Boolean indicating if the path might be valid
         """
+        # First, check level 2 paths for validity
+        if not self.validate_level2_path(path):
+            return False
+
         # Check if path is registered directly
         if path in self.handlers:
             return True
@@ -139,6 +143,45 @@ class PathRouter:
 
         return False
 
+    def validate_level2_path(self, path: str) -> bool:
+        """Validate a level 2 path specifically for albums/playlists.
+
+        This method checks if paths like /albums/X, /playlists/Y actually refer
+        to existing items in our data. This prevents tab completion from creating
+        invalid directory entries.
+
+        Args:
+            path: The path to validate
+
+        Returns:
+            True if the path is valid, False otherwise
+        """
+        logger = (
+            logging.getLogger("YTMusicFS")
+            if not hasattr(self, "logger")
+            else self.logger
+        )
+
+        # Only process level 2 paths
+        parts = path.split("/")
+        if len(parts) != 3:
+            return True  # Not a level 2 path, so don't reject it here
+
+        # Only check specific directories
+        if parts[1] not in ["albums", "playlists", "liked_songs"]:
+            return True  # Not an album/playlist path, so don't reject it here
+
+        # Check if this is in the parent directory listing
+        if self.cache:
+            parent_dir = f"/{parts[1]}"
+            dir_listing = self.cache.get_directory_listing_with_attrs(parent_dir)
+            if dir_listing and parts[2] not in dir_listing:
+                # This path doesn't exist in our data
+                logger.debug(f"Invalid level 2 path, not in directory listing: {path}")
+                return False
+
+        return True
+
     def route(self, path: str) -> List[str]:
         """Route a path to the appropriate handler.
 
@@ -155,18 +198,10 @@ class PathRouter:
             else self.logger
         )
 
-        # Extra debugging for problematic paths
-        if path == "/playlists":
-            logger.debug(f"Router handling special path: {path}")
-            if not self.handlers or path not in self.handlers:
-                logger.error(f"No handler registered for {path}")
-                return [".", ".."]
-
-            # Extra validation for handler callable
-            handler = self.handlers[path]
-            if not callable(handler):
-                logger.error(f"Handler for {path} is not callable: {type(handler)}")
-                return [".", ".."]
+        # Early validation - if this is an invalid level 2 path, return empty dir
+        if not self.validate_level2_path(path):
+            logger.debug(f"Path {path} failed level 2 validation, returning empty dir")
+            return [".", ".."]
 
         # First try exact matches
         if path in self.handlers:
