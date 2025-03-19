@@ -134,17 +134,24 @@ class YouTubeMusicFS(Operations):
                 "albums",
             ],
         )
+
+        # Use the unified playlist handling for all playlist types
         self.router.register(
-            "/playlists", lambda: [".", ".."] + self.fetcher.readdir_playlists()
+            "/playlists",
+            lambda: self.fetcher.readdir_playlist_by_type("playlist", "/playlists"),
         )
         self.router.register(
-            "/liked_songs", lambda: [".", ".."] + self.fetcher.readdir_liked_songs()
+            "/liked_songs",
+            lambda: self.fetcher.readdir_playlist_by_type(
+                "liked_songs", "/liked_songs"
+            ),
         )
         self.router.register(
-            "/albums", lambda: [".", ".."] + self.fetcher.readdir_albums()
+            "/albums", lambda: self.fetcher.readdir_playlist_by_type("album", "/albums")
         )
 
         # Register dynamic handlers with wildcard capture
+        # Use a unified approach for content fetching since all are just different playlist types
         self.router.register_dynamic(
             "/playlists/*",
             lambda path, playlist_name: [".", ".."]
@@ -191,15 +198,26 @@ class YouTubeMusicFS(Operations):
             self.cache.mark_valid("/liked_songs", is_directory=True)
             self.cache.mark_valid("/albums", is_directory=True)
 
-            # Fetch playlists in background thread
-            def fetch_playlists():
+            # Fetch content in background thread with unified method
+            def fetch_content():
                 try:
-                    self.router.route("/playlists")
+                    # Use the unified method to preload each type
+                    self.logger.debug("Preloading playlists")
+                    self.fetcher.readdir_playlist_by_type("playlist", "/playlists")
                     self.logger.debug("Preloaded playlists")
-                except Exception as e:
-                    self.logger.error(f"Failed to preload playlists: {e}")
 
-            self.thread_pool.submit(fetch_playlists)
+                    self.logger.debug("Preloading albums")
+                    self.fetcher.readdir_playlist_by_type("album", "/albums")
+                    self.logger.debug("Preloaded albums")
+
+                    self.logger.debug("Preloading liked songs")
+                    self.fetcher.readdir_playlist_by_type("liked_songs", "/liked_songs")
+                    self.logger.debug("Preloaded liked songs")
+                except Exception as e:
+                    self.logger.error(f"Failed to preload content: {e}")
+                    self.logger.error(traceback.format_exc())
+
+            self.thread_pool.submit(fetch_content)
 
         except Exception as e:
             self.logger.error(f"Error preloading cache: {e}")

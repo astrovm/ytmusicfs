@@ -218,9 +218,47 @@ class ContentFetcher:
             self.logger.error(f"Error fetching playlist content: {str(e)}")
             return []
 
-    def readdir_playlists(self) -> List[str]:
-        """List all user playlists from the registry."""
-        self.logger.info("Fetching playlists for /playlists directory")
+    def readdir_playlist_by_type(
+        self, playlist_type: str = None, directory_path: str = None
+    ) -> List[str]:
+        """Generic method to list playlists/albums/liked_songs based on type.
+
+        Args:
+            playlist_type: Type of playlists to filter ('playlist', 'album', 'liked_songs')
+            directory_path: Directory path where these items are shown
+
+        Returns:
+            List of directory entries
+        """
+        if not directory_path:
+            if playlist_type == "playlist":
+                directory_path = "/playlists"
+            elif playlist_type == "album":
+                directory_path = "/albums"
+            elif playlist_type == "liked_songs":
+                directory_path = "/liked_songs"
+            else:
+                self.logger.error(f"Invalid playlist type: {playlist_type}")
+                return [".", ".."]
+
+        # Special handling for liked_songs which directly shows songs rather than folders
+        if playlist_type == "liked_songs":
+            self.logger.info(f"Fetching liked songs for {directory_path} directory")
+            liked_songs_entry = next(
+                (p for p in self.PLAYLIST_REGISTRY if p["type"] == "liked_songs"), None
+            )
+            if not liked_songs_entry:
+                self.logger.error("Liked songs not found in registry")
+                return [".", ".."]
+
+            # Directly show the songs as files
+            filenames = self.fetch_playlist_content(
+                liked_songs_entry["id"], liked_songs_entry["path"], limit=10000
+            )
+            return [".", ".."] + filenames
+
+        # Regular handling for playlists and albums (which show as directories)
+        self.logger.info(f"Fetching {playlist_type}s for {directory_path} directory")
         try:
             # First, ensure PLAYLIST_REGISTRY is initialized
             if not self.PLAYLIST_REGISTRY:
@@ -232,66 +270,80 @@ class ContentFetcher:
                     self.logger.error("Failed to initialize playlist registry")
                     return [".", ".."]
 
-            # Get playlist entries of type "playlist"
-            playlist_entries = [
-                p for p in self.PLAYLIST_REGISTRY if p["type"] == "playlist"
-            ]
+            # Get entries of the specified type
+            entries = [p for p in self.PLAYLIST_REGISTRY if p["type"] == playlist_type]
 
-            if not playlist_entries:
-                self.logger.warning("No playlist entries found in registry")
+            if not entries:
+                self.logger.warning(f"No {playlist_type} entries found in registry")
                 return [".", ".."]
 
-            self.logger.debug(f"Found {len(playlist_entries)} playlist entries")
+            self.logger.debug(f"Found {len(entries)} {playlist_type} entries")
 
             processed_entries = []
-            for p in playlist_entries:
+            for entry in entries:
                 try:
                     # Make sure we have an ID and a name
-                    if not p.get("id") or not p.get("name"):
-                        self.logger.warning(f"Skipping invalid playlist entry: {p}")
+                    if not entry.get("id") or not entry.get("name"):
+                        self.logger.warning(
+                            f"Skipping invalid {playlist_type} entry: {entry}"
+                        )
                         continue
 
-                    # Fetch initial content (up to 10000 tracks)
+                    # Fetch initial content
                     self.logger.debug(
-                        f"Fetching content for playlist: {p['name']} (ID: {p['id']})"
+                        f"Fetching content for {playlist_type}: {entry['name']} (ID: {entry['id']})"
                     )
-                    self.fetch_playlist_content(p["id"], p["path"], limit=10000)
+                    self.fetch_playlist_content(entry["id"], entry["path"], limit=10000)
 
                     processed_entries.append(
-                        {"filename": p["name"], "id": p["id"], "is_directory": True}
+                        {
+                            "filename": entry["name"],
+                            "id": entry["id"],
+                            "is_directory": True,
+                        }
                     )
                 except Exception as e:
                     self.logger.error(
-                        f"Error processing playlist {p.get('name', 'Unknown')}: {str(e)}"
+                        f"Error processing {playlist_type} {entry.get('name', 'Unknown')}: {str(e)}"
                     )
-                    # Continue with next playlist instead of failing completely
+                    # Continue with next entry instead of failing completely
 
             # Only cache if we have entries
             if processed_entries:
                 self.logger.debug(
-                    f"Caching {len(processed_entries)} processed playlist entries"
+                    f"Caching {len(processed_entries)} processed {playlist_type} entries"
                 )
                 try:
                     self._cache_directory_listing_with_attrs(
-                        "/playlists", processed_entries
+                        directory_path, processed_entries
                     )
                 except Exception as e:
                     self.logger.error(f"Error caching directory listing: {str(e)}")
                     # Still continue to return the result even if caching fails
             else:
-                self.logger.warning("No playlists processed successfully")
+                self.logger.warning(f"No {playlist_type}s processed successfully")
 
             # Return directory listing
-            result = [".", ".."] + [
-                p["name"] for p in playlist_entries if p.get("name")
-            ]
-            self.logger.debug(f"Returning {len(result)-2} playlist entries")
+            result = [".", ".."] + [p["name"] for p in entries if p.get("name")]
+            self.logger.debug(f"Returning {len(result)-2} {playlist_type} entries")
             return result
 
         except Exception as e:
-            self.logger.error(f"Fatal error in readdir_playlists: {str(e)}")
+            self.logger.error(f"Fatal error in readdir_{playlist_type}s: {str(e)}")
             self.logger.error(traceback.format_exc())
             return [".", ".."]
+
+    def readdir_playlists(self) -> List[str]:
+        """List all user playlists from the registry."""
+        return self.readdir_playlist_by_type("playlist", "/playlists")
+
+    def readdir_albums(self) -> List[str]:
+        """List all albums from the registry."""
+        return self.readdir_playlist_by_type("album", "/albums")
+
+    def readdir_liked_songs(self) -> List[str]:
+        """List liked songs from the registry."""
+        return self.readdir_playlist_by_type("liked_songs", "/liked_songs")
 
     def _cache_directory_listing_with_attrs(
         self, dir_path: str, processed_tracks: List[Dict[str, Any]]
@@ -318,65 +370,65 @@ class ContentFetcher:
     def _auto_refresh_cache(self, refresh_interval: int = 600) -> None:
         """Auto-refresh all playlist caches every 10 minutes."""
         now = time.time()
+
+        # Group playlists by type for more structured processing
+        playlist_counts = {"playlist": 0, "album": 0, "liked_songs": 0}
+
+        # Count refreshed items by type
         for playlist in self.PLAYLIST_REGISTRY:
             cache_key = f"{playlist['path']}_processed"
             last_refresh = self.cache.get_last_refresh(cache_key)
+
+            # Skip if refreshed recently
             if last_refresh and (now - last_refresh) < refresh_interval:
                 continue
-            self.logger.debug(
-                f"Auto-refreshing {playlist['path']} with ID {playlist['id']}"
+
+            playlist_type = playlist["type"]
+            if playlist_type in playlist_counts:
+                self.logger.debug(
+                    f"Auto-refreshing {playlist_type} at {playlist['path']} with ID {playlist['id']}"
+                )
+                self.fetch_playlist_content(playlist["id"], playlist["path"], limit=100)
+                self.cache.set_last_refresh(cache_key, now)
+                playlist_counts[playlist_type] += 1
+
+        # Log summary
+        total_refreshed = sum(playlist_counts.values())
+        if total_refreshed > 0:
+            self.logger.info(
+                f"Auto-refreshed {total_refreshed} items: "
+                + f"{playlist_counts['playlist']} playlists, "
+                + f"{playlist_counts['album']} albums, "
+                + f"{playlist_counts['liked_songs']} liked songs collections"
             )
-            self.fetch_playlist_content(playlist["id"], playlist["path"], limit=100)
-            self.cache.set_last_refresh(cache_key, now)
-
-    def readdir_albums(self) -> List[str]:
-        """List all albums from the registry."""
-        self.logger.info("Fetching albums for /albums directory")
-        album_entries = [a for a in self.PLAYLIST_REGISTRY if a["type"] == "album"]
-        processed_entries = []
-        for a in album_entries:
-            # Fetch initial content (up to 10000 tracks)
-            self.fetch_playlist_content(a["id"], a["path"], limit=10000)
-            processed_entries.append(
-                {"filename": a["name"], "id": a["id"], "is_directory": True}
-            )
-        self._cache_directory_listing_with_attrs("/albums", processed_entries)
-        return [".", ".."] + [a["name"] for a in album_entries]
-
-    def readdir_liked_songs(self) -> List[str]:
-        """List liked songs from the registry."""
-        self.logger.info("Fetching liked songs for /liked_songs directory")
-        liked_songs_entry = next(
-            (p for p in self.PLAYLIST_REGISTRY if p["type"] == "liked_songs"), None
-        )
-        if not liked_songs_entry:
-            self.logger.error("Liked songs not found in registry")
-            return [".", ".."]
-
-        # Unlike albums/playlists which are directories containing songs,
-        # liked_songs directly shows the songs themselves
-        # Fetch initial content (up to 10000 tracks)
-        filenames = self.fetch_playlist_content(
-            liked_songs_entry["id"], liked_songs_entry["path"], limit=10000
-        )
-
-        # Return the full directory listing
-        return [".", ".."] + filenames
 
     def refresh_all_caches(self) -> None:
         """Refresh all caches with the latest 100 songs from each playlist."""
         self.logger.info("Refreshing all content caches...")
-        for playlist in self.PLAYLIST_REGISTRY:
-            # Get all information consistently from the registry
-            playlist_id = playlist["id"]
-            path = playlist["path"]
-            playlist_type = playlist["type"]
 
-            self.logger.debug(
-                f"Refreshing {playlist_type} at {path} with ID {playlist_id}"
-            )
-            # Use consistent caching pattern with path
-            self.fetch_playlist_content(playlist_id, path, limit=100)
+        # Group playlists by type for more structured processing
+        playlists_by_type = {"playlist": [], "album": [], "liked_songs": []}
+
+        # Sort playlists by type
+        for playlist in self.PLAYLIST_REGISTRY:
+            playlist_type = playlist["type"]
+            if playlist_type in playlists_by_type:
+                playlists_by_type[playlist_type].append(playlist)
+
+        # Process each type in a consistent way
+        for playlist_type, playlists in playlists_by_type.items():
+            self.logger.info(f"Refreshing {len(playlists)} {playlist_type}s")
+
+            for playlist in playlists:
+                # Get all information consistently from the registry
+                playlist_id = playlist["id"]
+                path = playlist["path"]
+
+                self.logger.debug(
+                    f"Refreshing {playlist_type} at {path} with ID {playlist_id}"
+                )
+                # Use consistent caching pattern with path
+                self.fetch_playlist_content(playlist_id, path, limit=100)
 
         self.logger.info("All content caches refreshed successfully")
 
