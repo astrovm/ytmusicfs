@@ -683,7 +683,7 @@ class YouTubeMusicFS(Operations):
                 raise FuseOSError(errno.EISDIR)
 
             # If the path is not valid, raise error
-            if entry_type is None and not self._is_valid_path(path):
+            if entry_type is None and not self.cache.is_valid_path(path):
                 self.logger.debug(f"Invalid path in open: {path}")
                 raise FuseOSError(errno.ENOENT)
 
@@ -829,22 +829,6 @@ class YouTubeMusicFS(Operations):
         finally:
             # Nothing to clean up as thread-local cache is no longer used
             pass
-
-    def _is_valid_path(self, path: str) -> bool:
-        """Check if a path is valid using the cache manager.
-
-        Args:
-            path: The path to validate
-
-        Returns:
-            Boolean indicating if the path is valid
-        """
-        # Get the context for better logging
-        context = inspect.currentframe().f_back.f_code.co_name
-        self.logger.debug(f"_is_valid_path called from {context} for {path}")
-
-        # Use the cache manager's validation
-        return self.cache.is_valid_path(path, context)
 
     def destroy(self, path: str) -> None:
         """Clean up when filesystem is unmounted.
