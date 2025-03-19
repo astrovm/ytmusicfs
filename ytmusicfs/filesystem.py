@@ -417,9 +417,7 @@ class YouTubeMusicFS(Operations):
                     self.logger.error(f"Debug inspection error: {debug_e}")
 
             # Simplified validation logic - use router and cache manager directly
-            if not self.router.validate_path(path) and not self.cache.is_valid_path(
-                path, "readdir"
-            ):
+            if not self.router.validate_path(path):
                 self.logger.debug(f"Rejecting invalid path in readdir: {path}")
                 result = [".", ".."]
                 with self.last_access_lock:
@@ -597,9 +595,7 @@ class YouTubeMusicFS(Operations):
 
         # CASE 5: Use the router to validate - fallback approach
         try:
-            if not self.router.validate_path(path) and not self.cache.is_valid_path(
-                path, "getattr"
-            ):
+            if not self.router.validate_path(path):
                 self.logger.debug(f"Path not valid: {path}")
                 raise FuseOSError(errno.ENOENT)
 
@@ -683,7 +679,7 @@ class YouTubeMusicFS(Operations):
                 raise FuseOSError(errno.EISDIR)
 
             # If the path is not valid, raise error
-            if entry_type is None and not self.cache.is_valid_path(path):
+            if entry_type is None and not self.router.validate_path(path):
                 self.logger.debug(f"Invalid path in open: {path}")
                 raise FuseOSError(errno.ENOENT)
 
