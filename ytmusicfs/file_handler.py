@@ -3,10 +3,9 @@
 from pathlib import Path
 from typing import Optional, Any, Callable
 from ytmusicfs.downloader import Downloader
-from ytmusicfs.yt_dlp_utils import extract_stream_url_process
+from ytmusicfs.yt_dlp_utils import extract_stream_url_async
 import errno
 import logging
-import multiprocessing
 import requests
 import threading
 import time
@@ -43,6 +42,7 @@ class FileHandler:
         self.next_fh = 1  # Next file handle to assign
         self.path_to_fh = {}  # Store path to file handle mapping
         self.file_handle_lock = threading.RLock()  # Lock for file handle operations
+        self.futures = {}  # Store futures for async operations by video_id
 
         # Initialize Downloader
         self.downloader = Downloader(cache_dir, logger, update_file_size_callback)
@@ -78,16 +78,6 @@ class FileHandler:
             self.path_to_fh[path] = fh
 
         return fh
-
-    def _extract_stream_url(self, video_id: str, browser: str, queue):
-        """Extract stream URL from YouTube Music using yt-dlp.
-
-        Args:
-            video_id: YouTube video ID
-            browser: Browser to use for cookies
-            queue: Queue to communicate results back to main process
-        """
-        extract_stream_url_process(video_id, browser, queue)
 
     def _stream_content(
         self, stream_url: str, offset: int, size: int, retries: int = 3
@@ -201,14 +191,23 @@ class FileHandler:
             # Otherwise, proceed with fetching the stream URL
             self.logger.debug(f"Fetching stream URL on-demand for {video_id}")
 
-            queue = multiprocessing.Queue()
-            process = multiprocessing.Process(
-                target=self._extract_stream_url, args=(video_id, self.browser, queue)
-            )
-            process.start()
-
+            # Use ThreadPoolExecutor-based async extraction
             try:
-                result = queue.get(timeout=30)
+                # Check if we already have a future for this video_id
+                if video_id in self.futures:
+                    future = self.futures[video_id]
+                else:
+                    # Submit new extraction task
+                    future = extract_stream_url_async(video_id, self.browser)
+                    self.futures[video_id] = future
+
+                # Wait for result with timeout
+                result = future.result(timeout=30)
+
+                # Clean up future reference
+                if video_id in self.futures:
+                    del self.futures[video_id]
+
                 if result["status"] == "error":
                     error_msg = result["error"]
                     self.logger.error(
@@ -240,6 +239,11 @@ class FileHandler:
                 with self.file_handle_lock:
                     file_info["status"] = "error"
                     file_info["error"] = error_msg
+
+                # Clean up future reference in case of error
+                if video_id in self.futures:
+                    del self.futures[video_id]
+
                 raise OSError(errno.EIO, error_msg)
 
         # If we are here, we need to stream directly from URL because:

@@ -775,6 +775,15 @@ class YouTubeMusicFS(Operations):
             except Exception as e:
                 self.logger.error(f"Error shutting down thread pool: {e}")
 
+        # Shutdown the yt_dlp_utils thread pool
+        try:
+            from ytmusicfs.yt_dlp_utils import shutdown as yt_dlp_shutdown
+
+            self.logger.info("Shutting down yt_dlp_utils thread pool")
+            yt_dlp_shutdown()
+        except Exception as e:
+            self.logger.error(f"Error shutting down yt_dlp_utils thread pool: {e}")
+
         # Close the cache if it exists
         if hasattr(self, "cache") and self.cache is not None:
             try:

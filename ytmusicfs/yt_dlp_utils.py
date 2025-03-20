@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 
+from concurrent.futures import ThreadPoolExecutor, Future
 from yt_dlp import YoutubeDL
 import logging
 import re
 
 logger = logging.getLogger("YTDLPUtils")
+
+# Shared thread pool for all extraction operations
+_thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="yt_dlp_extract")
 
 
 def extract_playlist_content(playlist_id, limit=10000, browser=None):
@@ -124,18 +128,43 @@ def extract_stream_url(video_id, browser=None):
         return result
 
 
-def extract_stream_url_process(video_id, browser, queue):
+def extract_stream_url_async(video_id, browser=None) -> Future:
     """
-    Extract stream URL in a separate process and put result in queue.
-    Used for background processing in file handler.
+    Extract stream URL asynchronously using ThreadPoolExecutor.
 
     Args:
         video_id (str): YouTube video ID.
         browser (str, optional): Browser name for cookie extraction.
-        queue (multiprocessing.Queue): Queue to put result in.
+
+    Returns:
+        Future: Future object that will contain the extraction result.
+    """
+    logger.debug(f"Submitting async extraction task for video ID: {video_id}")
+    return _thread_pool.submit(_extract_stream_url_worker, video_id, browser)
+
+
+def _extract_stream_url_worker(video_id, browser=None):
+    """
+    Worker function to extract stream URL for a thread pool task.
+
+    Args:
+        video_id (str): YouTube video ID.
+        browser (str, optional): Browser name for cookie extraction.
+
+    Returns:
+        dict: Dictionary with extraction status and data.
     """
     try:
         result = extract_stream_url(video_id, browser)
-        queue.put({"status": "success", **result})
+        return {"status": "success", **result}
     except Exception as e:
-        queue.put({"status": "error", "error": str(e)})
+        logger.error(f"Error extracting stream URL for {video_id}: {str(e)}")
+        return {"status": "error", "error": str(e)}
+
+
+def shutdown():
+    """
+    Shutdown the thread pool. Call this when the application is terminating.
+    """
+    logger.info("Shutting down yt_dlp_utils thread pool")
+    _thread_pool.shutdown(wait=False)
