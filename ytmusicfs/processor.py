@@ -203,19 +203,19 @@ class TrackProcessor:
         # Handle artist information
         # yt-dlp flat extraction provides only uploader, not detailed artist info
         if "artist" in track and isinstance(track["artist"], str):
-            # Already processed artist string from yt-dlp
-            artist = track["artist"]
+            # Already processed artist string from yt-dlp, but still need to clean potential "- Topic" suffix
+            artist = self._clean_artist_name(track["artist"])
         elif "artists" in track and isinstance(track["artists"], list):
             # ytmusicapi provides a list of artist objects
             artist = self.clean_artists(track["artists"])
         else:
-            # Fallback
-            artist = track.get("uploader", "Unknown Artist")
+            # Fallback - clean uploader name to remove "- Topic" suffix
+            artist = self._clean_artist_name(track.get("uploader", "Unknown Artist"))
 
         # Get album info - try for existing data or use defaults
         if "album" in track and isinstance(track["album"], str):
             album = track["album"]
-            album_artist = track.get("album_artist", artist)
+            album_artist = self._clean_artist_name(track.get("album_artist", artist))
         else:
             # Try to extract from track data or use default
             album, album_artist = self.extract_album_info(track)
