@@ -174,53 +174,10 @@ class YouTubeMusicFS(Operations):
         self.cache.mark_valid("/liked_songs", is_directory=True)
         self.cache.mark_valid("/albums", is_directory=True)
 
-        # Flag to track initialization state
-        self.initialized = False
-
-        # Pre-warm the cache
-        self._preload_cache()
-
-        self.initialized = True
         self.logger.info("YTMusicFS initialized successfully")
         self.logger.debug(
             f"Using auth_file: {auth_file}, cache_dir: {self.cache.cache_dir}"
         )
-
-    def _preload_cache(self) -> None:
-        """Preload common paths and data into the cache."""
-        self.logger.info("Preloading cache...")
-
-        try:
-            # Mark basic directories as valid
-            self.cache.mark_valid("/", is_directory=True)
-            self.cache.mark_valid("/playlists", is_directory=True)
-            self.cache.mark_valid("/liked_songs", is_directory=True)
-            self.cache.mark_valid("/albums", is_directory=True)
-
-            # Fetch content in background thread with unified method
-            def fetch_content():
-                try:
-                    # Use the unified method to preload each type
-                    self.logger.debug("Preloading playlists")
-                    self.fetcher.readdir_playlist_by_type("playlist", "/playlists")
-                    self.logger.debug("Preloaded playlists")
-
-                    self.logger.debug("Preloading albums")
-                    self.fetcher.readdir_playlist_by_type("album", "/albums")
-                    self.logger.debug("Preloaded albums")
-
-                    self.logger.debug("Preloading liked songs")
-                    self.fetcher.readdir_playlist_by_type("liked_songs", "/liked_songs")
-                    self.logger.debug("Preloaded liked songs")
-                except Exception as e:
-                    self.logger.error(f"Failed to preload content: {e}")
-                    self.logger.error(traceback.format_exc())
-
-            self.thread_pool.submit(fetch_content)
-
-        except Exception as e:
-            self.logger.error(f"Error preloading cache: {e}")
-            self.logger.error(traceback.format_exc())
 
     def _cache_directory_listing_with_attrs(
         self, dir_path: str, processed_tracks: List[Dict[str, Any]]
