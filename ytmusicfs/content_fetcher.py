@@ -141,7 +141,11 @@ class ContentFetcher:
         )
 
     def fetch_playlist_content(
-        self, playlist_id: str, path: str, limit: int = 10000
+        self,
+        playlist_id: str,
+        path: str,
+        limit: int = 10000,
+        force_refresh: bool = False,
     ) -> List[str]:
         """Fetch playlist content using yt-dlp with a specified limit and cache durations.
 
@@ -149,6 +153,7 @@ class ContentFetcher:
             playlist_id: Playlist ID (e.g., 'PL123', 'LM', 'MPREb_abc123')
             path: Filesystem path for caching
             limit: Maximum number of tracks to fetch (default: 10000)
+            force_refresh: If True, fetch fresh data and merge with existing cache (default: False)
 
         Returns:
             List of track filenames
@@ -161,43 +166,63 @@ class ContentFetcher:
         # CONSISTENT CACHE KEY: Always use path_processed regardless of playlist type
         cache_key = f"{path}_processed"
 
-        processed_tracks = self.cache.get(cache_key)
-        if (
-            processed_tracks is not None
-        ):  # Check for None specifically to handle empty lists
-            self.logger.debug(f"Using {len(processed_tracks)} cached tracks for {path}")
-            for track in processed_tracks:
-                track["is_directory"] = False
-            self._cache_directory_listing_with_attrs(path, processed_tracks)
-            return [track["filename"] for track in processed_tracks]
+        # Get existing cached tracks
+        existing_tracks = self.cache.get(cache_key) or []
 
+        # If not forcing refresh and we have cached data, return it directly
+        if not force_refresh and existing_tracks:
+            self.logger.debug(f"Using {len(existing_tracks)} cached tracks for {path}")
+            for track in existing_tracks:
+                track["is_directory"] = False
+            self._cache_directory_listing_with_attrs(path, existing_tracks)
+            return [track["filename"] for track in existing_tracks]
+
+        # We're either forcing a refresh or don't have cached data
         self.logger.debug(
             f"Fetching up to {limit} tracks for playlist ID: {playlist_id} via yt-dlp"
         )
 
         try:
+            # Fetch tracks from YouTube Music
             tracks = extract_playlist_content(playlist_id, limit, self.browser)
             self.logger.info(f"Fetched {len(tracks)} tracks for {playlist_id}")
 
-            processed_tracks = []
-            # Collect all durations in a batch
+            # If no tracks were returned and we have existing tracks, return them
+            if not tracks and existing_tracks:
+                self.logger.warning(
+                    f"No tracks returned for {playlist_id}, using cached data"
+                )
+                return [track["filename"] for track in existing_tracks]
+
+            # Process the fetched tracks
+            new_tracks = []
             durations_batch = {}
+            existing_ids = (
+                {t.get("videoId") for t in existing_tracks if t.get("videoId")}
+                if force_refresh
+                else set()
+            )
 
             for entry in tracks:
                 if not entry:
                     continue
 
                 video_id = entry.get("id")
+
+                # Skip if we already have this track and we're doing a force refresh
+                if force_refresh and video_id in existing_ids:
+                    continue
+
+                # Process duration for batch update
                 duration_seconds = (
                     int(entry.get("duration", 0))
                     if entry.get("duration") is not None
                     else None
                 )
-
-                # Collect durations for batch processing
                 if video_id and duration_seconds is not None:
                     durations_batch[video_id] = duration_seconds
 
+                # Create track info
                 track_info = {
                     "title": entry.get("title", "Unknown Title"),
                     "artist": entry.get("uploader", "Unknown Artist"),
@@ -214,17 +239,33 @@ class ContentFetcher:
                 processed_track = self.processor.extract_track_info(track_info)
                 processed_track["filename"] = filename
                 processed_track["is_directory"] = False
-                processed_tracks.append(processed_track)
+                new_tracks.append(processed_track)
 
-            # Cache all durations in a single batch operation
+            # Update durations cache
             if durations_batch:
                 self.cache.set_durations_batch(durations_batch)
 
-            self.cache.set(cache_key, processed_tracks)
-            self._cache_directory_listing_with_attrs(path, processed_tracks)
-            return [track["filename"] for track in processed_tracks]
+            # Update the cache and return tracks
+            if force_refresh and existing_tracks:
+                # Merge new tracks with existing ones (new tracks first)
+                result_tracks = new_tracks + existing_tracks
+                self.logger.info(
+                    f"Added {len(new_tracks)} new tracks to existing {len(existing_tracks)} cached tracks"
+                )
+            else:
+                # Just use the new tracks
+                result_tracks = new_tracks
+
+            # Cache the tracks and update directory listing
+            self.cache.set(cache_key, result_tracks)
+            self._cache_directory_listing_with_attrs(path, result_tracks)
+            return [track["filename"] for track in result_tracks]
+
         except Exception as e:
             self.logger.error(f"Error fetching playlist content: {str(e)}")
+            # If we have existing tracks, return them rather than an empty list on error
+            if existing_tracks:
+                return [track["filename"] for track in existing_tracks]
             return []
 
     def readdir_playlist_by_type(
@@ -413,7 +454,10 @@ class ContentFetcher:
                 self.logger.debug(
                     f"Auto-refreshing {playlist_type} at {playlist['path']} with ID {playlist['id']}"
                 )
-                self.fetch_playlist_content(playlist["id"], playlist["path"], limit=100)
+                # Force refresh to get latest content from YouTube Music
+                self.fetch_playlist_content(
+                    playlist["id"], playlist["path"], limit=100, force_refresh=True
+                )
                 self.cache.set_last_refresh(cache_key, now)
                 playlist_counts[playlist_type] += 1
 
