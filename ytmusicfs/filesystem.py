@@ -2,7 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from fuse import FUSE, Operations, FuseOSError
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List
 from ytmusicfs.cache import CacheManager
 from ytmusicfs.client import YouTubeMusicClient
 from ytmusicfs.content_fetcher import ContentFetcher
@@ -12,7 +12,6 @@ from ytmusicfs.path_router import PathRouter
 from ytmusicfs.processor import TrackProcessor
 from ytmusicfs.oauth_adapter import YTMusicOAuthAdapter
 import errno
-import inspect
 import logging
 import os
 import stat
