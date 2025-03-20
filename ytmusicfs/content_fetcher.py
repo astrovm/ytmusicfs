@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Callable
 from ytmusicfs.cache import CacheManager
 from ytmusicfs.processor import TrackProcessor
 from ytmusicfs.yt_dlp_utils import YTDLPUtils
@@ -40,10 +40,9 @@ class ContentFetcher:
         self.logger = logger
         self.browser = browser
         self.yt_dlp_utils = yt_dlp_utils
-        # Initialize playlist registry with all playlist types
+        # Preload playlist registry at startup
         self._initialize_playlist_registry()
-        # No auto-refresh - we'll refresh on demand when content is accessed
-        self.logger.info("Using on-demand refresh for cache updates")
+        self.logger.info("Preloaded playlist registry at initialization")
 
     def get_playlist_id_from_name(
         self, name: str, type_filter: Optional[str] = None
@@ -77,19 +76,25 @@ class ContentFetcher:
                 return entry
         return None
 
-    def _initialize_playlist_registry(self, force_refresh=False):
-        """Initialize the playlist registry with all playlist types.
+    def _initialize_playlist_registry(self, force_refresh: bool = False) -> None:
+        """Initialize or refresh the playlist registry with all playlist types.
 
         Args:
             force_refresh: Whether to force a refresh even if the registry was recently refreshed
         """
         # Check if registry refresh is needed
         cache_key = "playlist_registry"
-        needs_refresh = force_refresh or self.check_refresh_needed(cache_key)
+        last_refresh, status = self.cache.get_refresh_metadata(cache_key)
+        refresh_interval = 3600  # 1 hour default
 
-        # If registry exists and no refresh needed, we can skip
-        if self.PLAYLIST_REGISTRY and not needs_refresh:
-            self.logger.debug("Using cached playlist registry (not yet expired)")
+        if (
+            not force_refresh
+            and last_refresh
+            and (time.time() - last_refresh < refresh_interval)
+        ):
+            self.logger.debug(
+                f"Using existing playlist registry (last refreshed: {int(time.time() - last_refresh)}s ago)"
+            )
             return
 
         # Clear any existing entries
@@ -146,8 +151,8 @@ class ContentFetcher:
             f"Initialized playlist registry with {len(self.PLAYLIST_REGISTRY)} entries"
         )
 
-        # Record refresh time
-        self.cache.set_last_refresh("playlist_registry", time.time())
+        # Record refresh time with status
+        self.cache.set_refresh_metadata(cache_key, time.time(), "fresh")
 
     def fetch_playlist_content(
         self,
@@ -175,49 +180,177 @@ class ContentFetcher:
         # CONSISTENT CACHE KEY: Always use path_processed regardless of playlist type
         cache_key = f"{path}_processed"
 
+        # Define the fetch function to be passed to refresh_content
+        def fetch_tracks(lim):
+            return self.yt_dlp_utils.extract_playlist_content(
+                playlist_id, lim, self.browser
+            )
+
+        # Use the centralized refresh method
+        tracks = self.refresh_content(
+            cache_key, fetch_tracks, path, limit, force_refresh
+        )
+
+        # Return just the filenames
+        return [track["filename"] for track in tracks]
+
+    def readdir_playlist_by_type(
+        self, playlist_type: str = None, directory_path: str = None
+    ) -> List[str]:
+        """List playlists/albums/liked_songs instantly using cached data."""
+        if not directory_path:
+            directory_path = {
+                "playlist": "/playlists",
+                "album": "/albums",
+                "liked_songs": "/liked_songs",
+            }.get(playlist_type, "")
+            if not directory_path:
+                self.logger.error(f"Invalid playlist type: {playlist_type}")
+                return [".", ".."]
+
+        cache_key = f"{directory_path}_listing"
+        cached_listing = self.cache.get_directory_listing_with_attrs(directory_path)
+        if cached_listing:
+            self.logger.debug(f"Instant cache hit for {directory_path}")
+            return [".", ".."] + list(cached_listing.keys())
+
+        if playlist_type == "liked_songs":
+            entry = next(
+                (p for p in self.PLAYLIST_REGISTRY if p["type"] == "liked_songs"), None
+            )
+            if not entry:
+                self.logger.error("Liked songs not found")
+                return [".", ".."]
+            tracks = self.refresh_content(
+                f"{entry['path']}_processed",
+                lambda lim: self.yt_dlp_utils.extract_playlist_content(
+                    entry["id"], lim, self.browser
+                ),
+                entry["path"],
+            )
+            return [".", ".."] + [track["filename"] for track in tracks]
+
+        # For playlists and albums, list directories
+        entries = [p for p in self.PLAYLIST_REGISTRY if p["type"] == playlist_type]
+        if not entries:
+            self.logger.warning(f"No {playlist_type} entries found")
+            return [".", ".."]
+
+        processed_entries = [
+            {"filename": e["name"], "is_directory": True} for e in entries
+        ]
+        self._cache_directory_listing_with_attrs(directory_path, processed_entries)
+        self.cache.set_refresh_metadata(cache_key, time.time(), "fresh")
+        return [".", ".."] + [e["name"] for e in entries]
+
+    def _cache_directory_listing_with_attrs(
+        self, dir_path: str, processed_tracks: List[Dict[str, Any]]
+    ) -> None:
+        """Cache directory listing with file attributes for efficient lookups.
+
+        Args:
+            dir_path: Directory path
+            processed_tracks: List of processed track dictionaries
+        """
+        # This is a callback to the filesystem class
+        # The actual implementation is in the filesystem class
+        # We'll need to set a callback function from the filesystem
+        if hasattr(self, "cache_directory_callback") and callable(
+            self.cache_directory_callback
+        ):
+            # Pass processed_tracks with explicit is_directory flag unchanged
+            self.cache_directory_callback(dir_path, processed_tracks)
+        else:
+            self.logger.warning(
+                "No callback set for caching directory listings with attributes"
+            )
+
+    def check_refresh_needed(
+        self, cache_key: str, refresh_interval: int = 3600
+    ) -> bool:
+        """Check if a cache entry needs refreshing based on its age.
+
+        Args:
+            cache_key: The cache key to check
+            refresh_interval: Time in seconds before refresh is needed (default: 3600s = 1 hour)
+
+        Returns:
+            True if refresh is needed, False otherwise
+        """
+        now = time.time()
+        last_refresh, status = self.cache.get_refresh_metadata(cache_key)
+
+        # Refresh is needed if:
+        # - Never refreshed (last_refresh is None)
+        # - Older than refresh_interval
+        # - Status is "stale"
+        if not last_refresh:
+            return True
+        if status == "stale":
+            return True
+        if now - last_refresh >= refresh_interval:
+            return True
+
+        return False
+
+    def refresh_content(
+        self,
+        cache_key: str,
+        fetch_func: Callable,
+        path: str,
+        limit: int = 10000,
+        force_refresh: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Refresh content for a given cache key if needed, returning processed tracks.
+
+        Args:
+            cache_key: The cache key to store the content under
+            fetch_func: Callable function that retrieves the content
+            path: The path for which we're refreshing content
+            limit: Maximum number of items to fetch
+            force_refresh: Whether to force a refresh even if not needed
+
+        Returns:
+            List of processed tracks with metadata
+        """
+        # Check if refresh is needed
+        needs_refresh = force_refresh or self.check_refresh_needed(cache_key)
+
         # Get existing cached tracks
         existing_tracks = self.cache.get(cache_key) or []
 
-        # Check if refresh is needed based on cache age (10 minutes = 600 seconds)
-        refresh_interval = 600
-        now = time.time()
-        last_refresh = self.cache.get_last_refresh(cache_key)
-        needs_refresh = (not last_refresh) or (now - last_refresh >= refresh_interval)
-
-        # If refresh is needed or explicitly requested, do it
-        if needs_refresh or force_refresh:
-            self.logger.info(
-                f"On-demand refresh needed for {path} (age: {(now - (last_refresh or 0)):.0f}s)"
+        # If no refresh needed and we have data, use it
+        if not needs_refresh and existing_tracks:
+            last_refresh, _ = self.cache.get_refresh_metadata(cache_key)
+            last_refresh_age = (
+                "unknown"
+                if not last_refresh
+                else f"{int(time.time() - last_refresh)}s ago"
             )
-            force_refresh = True  # Set force_refresh to true if needed
-        elif existing_tracks:
-            # Not time to refresh yet and we have data
             self.logger.debug(
-                f"Using {len(existing_tracks)} cached tracks for {path} (age: {(now - (last_refresh or 0)):.0f}s)"
+                f"Using {len(existing_tracks)} cached tracks for {path} (last refresh: {last_refresh_age})"
             )
             for track in existing_tracks:
                 track["is_directory"] = False
             self._cache_directory_listing_with_attrs(path, existing_tracks)
-            return [track["filename"] for track in existing_tracks]
+            return existing_tracks
 
-        # We're either forcing a refresh or don't have cached data
-        self.logger.debug(
-            f"Fetching up to {limit} tracks for playlist ID: {playlist_id} via yt-dlp"
-        )
+        # Set status to pending while we're refreshing
+        self.logger.info(f"Refreshing content for {path}")
+        self.cache.set_refresh_metadata(cache_key, time.time(), "pending")
 
         try:
-            # Fetch tracks from YouTube Music
-            tracks = self.yt_dlp_utils.extract_playlist_content(
-                playlist_id, limit, self.browser
-            )
-            self.logger.info(f"Fetched {len(tracks)} tracks for {playlist_id}")
+            # Fetch new content
+            tracks = fetch_func(limit)
+            self.logger.info(f"Fetched {len(tracks)} items for {path}")
 
             # If no tracks were returned and we have existing tracks, return them
             if not tracks and existing_tracks:
                 self.logger.warning(
-                    f"No tracks returned for {playlist_id}, using cached data"
+                    f"No content returned for {path}, using cached data"
                 )
-                return [track["filename"] for track in existing_tracks]
+                self.cache.set_refresh_metadata(cache_key, time.time(), "stale")
+                return existing_tracks
 
             # Process the fetched tracks
             new_tracks = []
@@ -256,10 +389,10 @@ class ContentFetcher:
                     "is_directory": False,
                 }
 
-                # Process the track info first to get clean artist name
+                # Process the track info
                 processed_track = self.processor.extract_track_info(track_info)
 
-                # Generate filename AFTER processing the track (with cleaned artist name)
+                # Generate filename
                 filename = self.processor.sanitize_filename(
                     f"{processed_track['artist']} - {processed_track['title']}.m4a"
                 )
@@ -271,7 +404,7 @@ class ContentFetcher:
             if durations_batch:
                 self.cache.set_durations_batch(durations_batch)
 
-            # Update the cache and return tracks
+            # Update the cache
             if force_refresh and existing_tracks:
                 # Merge new tracks with existing ones (new tracks first)
                 result_tracks = new_tracks + existing_tracks
@@ -286,209 +419,15 @@ class ContentFetcher:
             self.cache.set(cache_key, result_tracks)
             self._cache_directory_listing_with_attrs(path, result_tracks)
 
-            # Update the last refresh time
-            self.cache.set_last_refresh(cache_key, time.time())
+            # Update refresh metadata
+            self.cache.set_refresh_metadata(cache_key, time.time(), "fresh")
 
-            return [track["filename"] for track in result_tracks]
-
-        except Exception as e:
-            self.logger.error(f"Error fetching playlist content: {str(e)}")
-            # If we have existing tracks, return them rather than an empty list on error
-            if existing_tracks:
-                return [track["filename"] for track in existing_tracks]
-            return []
-
-    def readdir_playlist_by_type(
-        self, playlist_type: str = None, directory_path: str = None
-    ) -> List[str]:
-        """Generic method to list playlists/albums/liked_songs based on type with optimized caching.
-
-        Args:
-            playlist_type: Type of playlists to filter ('playlist', 'album', 'liked_songs')
-            directory_path: Directory path where these items are shown
-
-        Returns:
-            List of directory entries
-        """
-        if not directory_path:
-            if playlist_type == "playlist":
-                directory_path = "/playlists"
-            elif playlist_type == "album":
-                directory_path = "/albums"
-            elif playlist_type == "liked_songs":
-                directory_path = "/liked_songs"
-            else:
-                self.logger.error(f"Invalid playlist type: {playlist_type}")
-                return [".", ".."]
-
-        # Cache key for this directory
-        cache_key = f"{directory_path}_listing"
-
-        # Check if we have this directory listing cached already
-        dir_listing = self.cache.get_directory_listing_with_attrs(directory_path)
-
-        # Check if refresh is needed based on cache age
-        needs_refresh = self.check_refresh_needed(cache_key)
-
-        if dir_listing is not None and not needs_refresh:
-            # Use cached data if it exists and doesn't need refreshing
-            self.logger.debug(f"Using cached directory listing for {directory_path}")
-            # Return just the filenames
-            return [".", ".."] + [name for name in dir_listing.keys()]
-        elif dir_listing is not None and needs_refresh:
-            self.logger.info(f"On-demand refresh needed for directory {directory_path}")
-            # We'll proceed with refreshing but still have the dir_listing as fallback
-
-        # Special handling for liked_songs which directly shows songs rather than folders
-        if playlist_type == "liked_songs":
-            self.logger.info(f"Fetching liked songs for {directory_path} directory")
-            liked_songs_entry = next(
-                (p for p in self.PLAYLIST_REGISTRY if p["type"] == "liked_songs"), None
-            )
-            if not liked_songs_entry:
-                self.logger.error("Liked songs not found in registry")
-                return [".", ".."]
-
-            # Directly show the songs as files
-            filenames = self.fetch_playlist_content(
-                liked_songs_entry["id"], liked_songs_entry["path"], limit=10000
-            )
-            return [".", ".."] + filenames
-
-        # Regular handling for playlists and albums (which show as directories)
-        self.logger.info(f"Fetching {playlist_type}s for {directory_path} directory")
-        try:
-            # First, ensure PLAYLIST_REGISTRY is initialized
-            if not self.PLAYLIST_REGISTRY:
-                self.logger.warning(
-                    "Playlist registry is empty, attempting to initialize"
-                )
-                self._initialize_playlist_registry()
-                if not self.PLAYLIST_REGISTRY:
-                    self.logger.error("Failed to initialize playlist registry")
-                    return [".", ".."]
-
-            # Get entries of the specified type
-            entries = [p for p in self.PLAYLIST_REGISTRY if p["type"] == playlist_type]
-
-            if not entries:
-                self.logger.warning(f"No {playlist_type} entries found in registry")
-                return [".", ".."]
-
-            self.logger.debug(f"Found {len(entries)} {playlist_type} entries")
-
-            processed_entries = []
-
-            # Prepare batch cache entries
-            batch_entries = {}
-
-            for entry in entries:
-                try:
-                    # Make sure we have an ID and a name
-                    if not entry.get("id") or not entry.get("name"):
-                        self.logger.warning(
-                            f"Skipping invalid {playlist_type} entry: {entry}"
-                        )
-                        continue
-
-                    # Only fetch metadata for directory listing, not content - crucial optimization
-                    processed_entries.append(
-                        {
-                            "filename": entry["name"],
-                            "id": entry["id"],
-                            "is_directory": True,
-                        }
-                    )
-
-                    # Cache path validity for quick future lookups
-                    child_path = f"{directory_path}/{entry['name']}"
-                    batch_entries[f"valid_dir:{child_path}"] = True
-
-                except Exception as e:
-                    self.logger.error(
-                        f"Error processing {playlist_type} {entry.get('name', 'Unknown')}: {str(e)}"
-                    )
-                    # Continue with next entry instead of failing completely
-
-            # Batch update path validations
-            if batch_entries:
-                self.cache.set_batch(batch_entries)
-
-            # Only cache if we have entries
-            if processed_entries:
-                self.logger.debug(
-                    f"Caching {len(processed_entries)} processed {playlist_type} entries"
-                )
-                try:
-                    self._cache_directory_listing_with_attrs(
-                        directory_path, processed_entries
-                    )
-                except Exception as e:
-                    self.logger.error(f"Error caching directory listing: {str(e)}")
-                    # Still continue to return the result even if caching fails
-            else:
-                self.logger.warning(f"No {playlist_type}s processed successfully")
-
-            # Record the refresh time
-            cache_key = f"{directory_path}_listing"
-            self.cache.set_last_refresh(cache_key, time.time())
-
-            # Return directory listing
-            result = [".", ".."] + [p["name"] for p in entries if p.get("name")]
-            self.logger.debug(f"Returning {len(result)-2} {playlist_type} entries")
-            return result
+            return result_tracks
 
         except Exception as e:
-            self.logger.error(f"Fatal error in readdir_{playlist_type}s: {str(e)}")
+            self.logger.error(f"Refresh failed for {path}: {str(e)}")
             self.logger.error(traceback.format_exc())
-            return [".", ".."]
-
-    def readdir_playlists(self) -> List[str]:
-        """List all user playlists from the registry."""
-        return self.readdir_playlist_by_type("playlist", "/playlists")
-
-    def readdir_albums(self) -> List[str]:
-        """List all albums from the registry."""
-        return self.readdir_playlist_by_type("album", "/albums")
-
-    def readdir_liked_songs(self) -> List[str]:
-        """List liked songs from the registry."""
-        return self.readdir_playlist_by_type("liked_songs", "/liked_songs")
-
-    def _cache_directory_listing_with_attrs(
-        self, dir_path: str, processed_tracks: List[Dict[str, Any]]
-    ) -> None:
-        """Cache directory listing with file attributes for efficient lookups.
-
-        Args:
-            dir_path: Directory path
-            processed_tracks: List of processed track dictionaries
-        """
-        # This is a callback to the filesystem class
-        # The actual implementation is in the filesystem class
-        # We'll need to set a callback function from the filesystem
-        if hasattr(self, "cache_directory_callback") and callable(
-            self.cache_directory_callback
-        ):
-            # Pass processed_tracks with explicit is_directory flag unchanged
-            self.cache_directory_callback(dir_path, processed_tracks)
-        else:
-            self.logger.warning(
-                "No callback set for caching directory listings with attributes"
-            )
-
-    def check_refresh_needed(self, cache_key: str, refresh_interval: int = 600) -> bool:
-        """Check if a cache entry needs refreshing based on its age.
-
-        Args:
-            cache_key: The cache key to check
-            refresh_interval: Time in seconds before refresh is needed (default: 600s = 10min)
-
-        Returns:
-            True if refresh is needed, False otherwise
-        """
-        now = time.time()
-        last_refresh = self.cache.get_last_refresh(cache_key)
-
-        # Refresh needed if never refreshed or older than refresh_interval
-        return (not last_refresh) or (now - last_refresh >= refresh_interval)
+            # Mark as stale since refresh failed
+            self.cache.set_refresh_metadata(cache_key, time.time(), "stale")
+            # Return cached data if available
+            return existing_tracks if existing_tracks else []

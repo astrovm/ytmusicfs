@@ -157,7 +157,8 @@ class YouTubeMusicFS(Operations):
             ),
         )
         self.router.register(
-            "/albums", lambda: self.fetcher.readdir_playlist_by_type("album", "/albums")
+            "/albums",
+            lambda: self.fetcher.readdir_playlist_by_type("album", "/albums"),
         )
 
         # Register dynamic handlers with wildcard capture

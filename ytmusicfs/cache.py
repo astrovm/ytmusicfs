@@ -2,7 +2,7 @@
 
 from cachetools import LRUCache
 from pathlib import Path
-from typing import Any, Optional, Dict
+from typing import Any, Optional, Dict, Tuple
 import hashlib
 import json
 import logging
@@ -80,6 +80,17 @@ class CacheManager:
                     original_path TEXT
                 )
             """
+            )
+
+            # Create the new refresh_tracker table
+            self.cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS refresh_tracker (
+                    key TEXT PRIMARY KEY,
+                    last_refresh REAL,
+                    status TEXT CHECK(status IN ('fresh', 'pending', 'stale'))
+                )
+                """
             )
             self.conn.commit()
 
@@ -1010,27 +1021,65 @@ class CacheManager:
             return entry_type == "directory"
         return None
 
-    def get_last_refresh(self, key: str) -> Optional[float]:
-        """Get the last refresh time for a key.
+    def set_refresh_metadata(
+        self, key: str, timestamp: float, status: str = "fresh"
+    ) -> None:
+        """Set refresh metadata for a cache key.
 
         Args:
-            key: The key to get the last refresh time for
+            key: The key to set refresh metadata for
+            timestamp: The timestamp of the refresh
+            status: Status of the refresh ('fresh', 'pending', or 'stale')
+        """
+        if status not in ("fresh", "pending", "stale"):
+            self.logger.warning(
+                f"Invalid refresh status '{status}' for {key}, using 'fresh'"
+            )
+            status = "fresh"
+
+        try:
+            with self.lock:
+                self.cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO refresh_tracker (key, last_refresh, status)
+                    VALUES (?, ?, ?)
+                    """,
+                    (self.path_to_key(key), timestamp, status),
+                )
+                self.conn.commit()
+            self.logger.debug(
+                f"Set refresh metadata for {key}: {status} at {timestamp}"
+            )
+        except sqlite3.Error as e:
+            self.logger.warning(
+                f"Failed to set refresh metadata for {key}: {e.__class__.__name__}: {e}"
+            )
+
+    def get_refresh_metadata(self, key: str) -> Tuple[Optional[float], Optional[str]]:
+        """Get last refresh time and status for a cache key.
+
+        Args:
+            key: The key to get refresh metadata for
 
         Returns:
-            The last refresh time as a timestamp, or None if not found
+            Tuple of (timestamp, status) or (None, None) if not found
         """
-        refresh_key = f"refresh_time:{key}"
-        return self.get(refresh_key)
-
-    def set_last_refresh(self, key: str, timestamp: float) -> None:
-        """Set the last refresh time for a key.
-
-        Args:
-            key: The key to set the last refresh time for
-            timestamp: The timestamp to set
-        """
-        refresh_key = f"refresh_time:{key}"
-        self.set(refresh_key, timestamp)
+        try:
+            db_key = self.path_to_key(key)
+            with self.lock:
+                self.cursor.execute(
+                    "SELECT last_refresh, status FROM refresh_tracker WHERE key = ?",
+                    (db_key,),
+                )
+                row = self.cursor.fetchone()
+                if row:
+                    return row[0], row[1]
+            return None, None
+        except sqlite3.Error as e:
+            self.logger.warning(
+                f"Failed to get refresh metadata for {key}: {e.__class__.__name__}: {e}"
+            )
+            return None, None
 
     def close(self) -> None:
         """Close the cache and release resources."""
