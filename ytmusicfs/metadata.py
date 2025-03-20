@@ -63,12 +63,23 @@ class MetadataManager:
             self.logger.warning(f"Attempting to get video ID for non-file: {path}")
             raise OSError(errno.EINVAL, "Not a music file")
 
-        # Check if we already have the video ID for this path in cache
+        # Check if we already have the video ID for this path in memory cache
         with self.video_id_cache_lock:
             if path in self.video_id_cache:
                 video_id = self.video_id_cache[path]
                 self.logger.debug(f"Using cached video ID {video_id} for {path}")
                 return video_id
+
+        # Check for video ID in persistent cache
+        cache_key = f"video_id:{path}"
+        video_id = self.cache.get(cache_key)
+        if video_id:
+            self.logger.debug(
+                f"Found video ID {video_id} in persistent cache for {path}"
+            )
+            with self.video_id_cache_lock:
+                self.video_id_cache[path] = video_id
+            return video_id
 
         dir_path = os.path.dirname(path)
         filename = os.path.basename(path)
@@ -81,6 +92,8 @@ class MetadataManager:
             self.logger.debug(f"Found video ID {video_id} in parent directory cache")
             with self.video_id_cache_lock:
                 self.video_id_cache[path] = video_id
+            # Save to persistent cache
+            self.cache.set(cache_key, video_id)
             return video_id
 
         # If we don't have a content fetcher, we can't go further
@@ -110,6 +123,8 @@ class MetadataManager:
                             # Cache for future use
                             with self.video_id_cache_lock:
                                 self.video_id_cache[path] = video_id
+                            # Save to persistent cache
+                            self.cache.set(f"video_id:{path}", video_id)
                             return video_id
 
         # If we didn't find the video ID, try to fetch the directory contents
@@ -129,6 +144,8 @@ class MetadataManager:
                             # Cache for future use
                             with self.video_id_cache_lock:
                                 self.video_id_cache[path] = video_id
+                            # Save to persistent cache
+                            self.cache.set(f"video_id:{path}", video_id)
                             return video_id
 
         self.logger.error(f"Could not find video ID for {filename} in {dir_path}")

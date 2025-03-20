@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 
-import json
-import logging
 from pathlib import Path
 from typing import Optional, Tuple
+import json
+import logging
 
 
 class ConfigManager:
