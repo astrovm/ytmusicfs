@@ -73,7 +73,7 @@ class PathRouter:
         - ** matches any sequence of characters across multiple path segments
 
         Args:
-            pattern: The path pattern to match (e.g., "/playlists/*", "/artists/**/tracks")
+            pattern: The path pattern to match (e.g., "/playlists/*")
             handler: The handler function to call with the full path
         """
         self.pattern_handlers.append((pattern, handler))

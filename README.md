@@ -8,7 +8,7 @@ YTMusicFS mounts your YouTube Music library as a standard filesystem, allowing y
 
 - **Filesystem Interface**: Access your YouTube Music library through a standard filesystem
 - **Traditional Player Support**: Play songs with any audio player that can read files
-- **Complete Library Access**: Browse playlists, liked songs, artists, and albums
+- **Complete Library Access**: Browse playlists, liked songs, and albums
 - **Persistent Authentication**: Uses OAuth for reliable, long-lasting sessions
 - **Disk Caching**: Caches metadata and audio to improve browsing performance and enable offline playback of previously streamed songs
 - **On-Demand Streaming**: Streams audio directly from YouTube Music servers
@@ -162,7 +162,6 @@ fusermount -u ~/Music/ytmusic
 
 - `/playlists/` - Your YouTube Music playlists
 - `/liked_songs/` - Your liked songs
-- `/artists/` - Artists in your library
 - `/albums/` - Albums in your library
 
 ## Command Line Options
