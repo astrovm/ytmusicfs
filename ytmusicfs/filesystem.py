@@ -8,9 +8,9 @@ from ytmusicfs.client import YouTubeMusicClient
 from ytmusicfs.content_fetcher import ContentFetcher
 from ytmusicfs.file_handler import FileHandler
 from ytmusicfs.metadata import MetadataManager
+from ytmusicfs.oauth_adapter import YTMusicOAuthAdapter
 from ytmusicfs.path_router import PathRouter
 from ytmusicfs.processor import TrackProcessor
-from ytmusicfs.oauth_adapter import YTMusicOAuthAdapter
 import errno
 import logging
 import os
@@ -43,6 +43,10 @@ class YouTubeMusicFS(Operations):
         # Get or create the logger
         self.logger = logging.getLogger("YTMusicFS")
 
+        # Thread-related objects
+        self.thread_pool = ThreadPoolExecutor(max_workers=8)
+        self.logger.info("Thread pool initialized with 8 workers")
+
         # Initialize the OAuth adapter first
         oauth_adapter = YTMusicOAuthAdapter(
             auth_file=auth_file,
@@ -74,6 +78,7 @@ class YouTubeMusicFS(Operations):
             cache=self.cache,
             logger=self.logger,
             browser=browser,
+            thread_pool=self.thread_pool,
         )
 
         # Set the callback for caching directory listings with attributes
@@ -105,10 +110,6 @@ class YouTubeMusicFS(Operations):
             threading.RLock()
         )  # Lock for last_access_time operations
         self.last_access_results = {}  # {operation_path: cached_result}
-
-        # Thread-related objects
-        self.thread_pool = ThreadPoolExecutor(max_workers=8)
-        self.logger.info("Thread pool initialized with 8 workers")
 
         # Store the browser parameter
         self.browser = browser
@@ -757,11 +758,29 @@ class YouTubeMusicFS(Operations):
         """
         self.logger.info("Destroying YTMusicFS instance")
 
-        # Shutdown thread pool
-        self.thread_pool.shutdown(wait=True)
+        # Stop auto-refresh task if fetcher exists
+        if hasattr(self, "fetcher") and self.fetcher is not None:
+            if hasattr(self.fetcher, "stop_auto_refresh"):
+                try:
+                    self.logger.info("Stopping auto-refresh task")
+                    self.fetcher.stop_auto_refresh()
+                except Exception as e:
+                    self.logger.error(f"Error stopping auto-refresh task: {e}")
 
-        # Close the cache
-        self.cache.close()
+        # Shutdown thread pool if it exists
+        if hasattr(self, "thread_pool") and self.thread_pool is not None:
+            try:
+                self.logger.info("Shutting down thread pool")
+                self.thread_pool.shutdown(wait=True)
+            except Exception as e:
+                self.logger.error(f"Error shutting down thread pool: {e}")
+
+        # Close the cache if it exists
+        if hasattr(self, "cache") and self.cache is not None:
+            try:
+                self.cache.close()
+            except Exception as e:
+                self.logger.error(f"Error closing cache: {e}")
 
         self.logger.info("YTMusicFS destroyed successfully")
 

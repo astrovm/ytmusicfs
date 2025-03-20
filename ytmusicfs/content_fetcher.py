@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Dict, Any
-from ytmusicfs.processor import TrackProcessor
 from ytmusicfs.cache import CacheManager
+from ytmusicfs.processor import TrackProcessor
 from ytmusicfs.yt_dlp_utils import extract_playlist_content
 import logging
 import time
-import threading
 import traceback
 
 
@@ -23,6 +23,7 @@ class ContentFetcher:
         cache: CacheManager,
         logger: logging.Logger,
         browser: Optional[str] = None,
+        thread_pool: ThreadPoolExecutor = None,
     ):
         """Initialize the ContentFetcher.
 
@@ -32,16 +33,24 @@ class ContentFetcher:
             cache: Cache manager for storing fetched data
             logger: Logger instance
             browser: Browser to use for cookies (optional)
+            thread_pool: ThreadPoolExecutor to use for background tasks
         """
         self.client = client
         self.processor = processor
         self.cache = cache
         self.logger = logger
         self.browser = browser
+        self.thread_pool = thread_pool
+        self._running = False  # Flag for controlling the auto-refresh thread
         # Initialize playlist registry with all playlist types
         self._initialize_playlist_registry()
-        # Start auto-refresh in a background thread
-        threading.Thread(target=self._run_auto_refresh).start()
+        # Start auto-refresh in a background thread using thread pool
+        if not self.thread_pool:
+            self.logger.warning("No thread pool provided, auto-refresh will not start")
+            return
+
+        self.logger.info("Starting auto-refresh task using thread pool")
+        self.refresh_future = self.thread_pool.submit(self._run_auto_refresh)
 
     def get_playlist_id_from_name(
         self, name: str, type_filter: Optional[str] = None
@@ -419,7 +428,40 @@ class ContentFetcher:
             )
 
     def _run_auto_refresh(self):
-        """Run the auto-refresh loop every 10 minutes."""
-        while True:
-            self._auto_refresh_cache(refresh_interval=600)
-            time.sleep(600)  # Sleep for 10 minutes
+        """Run the auto-refresh loop every 10 minutes with proper termination handling."""
+        self.logger.info("Auto-refresh background task started")
+        self._running = True
+
+        try:
+            while self._running:
+                try:
+                    self._auto_refresh_cache(refresh_interval=600)
+                except Exception as e:
+                    self.logger.error(f"Error in auto refresh: {str(e)}")
+                    self.logger.error(traceback.format_exc())
+
+                # Sleep in small increments to allow for graceful termination
+                for _ in range(60):
+                    if not self._running:
+                        break
+                    time.sleep(
+                        10
+                    )  # 10-second sleep intervals (60 * 10 = 600 seconds total)
+        except Exception as e:
+            self.logger.error(f"Fatal error in auto-refresh thread: {str(e)}")
+            self.logger.error(traceback.format_exc())
+        finally:
+            self.logger.info("Auto-refresh background task terminated")
+
+    def stop_auto_refresh(self):
+        """Stop the auto-refresh background task gracefully."""
+        self.logger.info("Stopping auto-refresh background task")
+        self._running = False
+
+        # Cancel the future if it exists and is still running
+        if hasattr(self, "refresh_future") and self.refresh_future:
+            if not self.refresh_future.done():
+                self.logger.debug("Attempting to cancel refresh future")
+                # This won't forcibly stop the thread, but marks it for cancellation
+                # when it reaches the next cancellation point
+                self.refresh_future.cancel()
