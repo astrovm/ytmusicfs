@@ -78,7 +78,6 @@ class YouTubeMusicFS(Operations):
             cache=self.cache,
             logger=self.logger,
             browser=browser,
-            thread_pool=self.thread_pool,
         )
 
         # Set the callback for caching directory listings with attributes
@@ -757,15 +756,6 @@ class YouTubeMusicFS(Operations):
             path: Mount point path
         """
         self.logger.info("Destroying YTMusicFS instance")
-
-        # Stop auto-refresh task if fetcher exists
-        if hasattr(self, "fetcher") and self.fetcher is not None:
-            if hasattr(self.fetcher, "stop_auto_refresh"):
-                try:
-                    self.logger.info("Stopping auto-refresh task")
-                    self.fetcher.stop_auto_refresh()
-                except Exception as e:
-                    self.logger.error(f"Error stopping auto-refresh task: {e}")
 
         # Shutdown thread pool if it exists
         if hasattr(self, "thread_pool") and self.thread_pool is not None:

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Dict, Any
 from ytmusicfs.cache import CacheManager
 from ytmusicfs.processor import TrackProcessor
@@ -23,7 +22,6 @@ class ContentFetcher:
         cache: CacheManager,
         logger: logging.Logger,
         browser: Optional[str] = None,
-        thread_pool: ThreadPoolExecutor = None,
     ):
         """Initialize the ContentFetcher.
 
@@ -33,24 +31,16 @@ class ContentFetcher:
             cache: Cache manager for storing fetched data
             logger: Logger instance
             browser: Browser to use for cookies (optional)
-            thread_pool: ThreadPoolExecutor to use for background tasks
         """
         self.client = client
         self.processor = processor
         self.cache = cache
         self.logger = logger
         self.browser = browser
-        self.thread_pool = thread_pool
-        self._running = False  # Flag for controlling the auto-refresh thread
         # Initialize playlist registry with all playlist types
         self._initialize_playlist_registry()
-        # Start auto-refresh in a background thread using thread pool
-        if not self.thread_pool:
-            self.logger.warning("No thread pool provided, auto-refresh will not start")
-            return
-
-        self.logger.info("Starting auto-refresh task using thread pool")
-        self.refresh_future = self.thread_pool.submit(self._run_auto_refresh)
+        # No auto-refresh - we'll refresh on demand when content is accessed
+        self.logger.info("Using on-demand refresh for cache updates")
 
     def get_playlist_id_from_name(
         self, name: str, type_filter: Optional[str] = None
@@ -84,8 +74,21 @@ class ContentFetcher:
                 return entry
         return None
 
-    def _initialize_playlist_registry(self):
-        """Initialize the playlist registry with all playlist types."""
+    def _initialize_playlist_registry(self, force_refresh=False):
+        """Initialize the playlist registry with all playlist types.
+
+        Args:
+            force_refresh: Whether to force a refresh even if the registry was recently refreshed
+        """
+        # Check if registry refresh is needed
+        cache_key = "playlist_registry"
+        needs_refresh = force_refresh or self.check_refresh_needed(cache_key)
+
+        # If registry exists and no refresh needed, we can skip
+        if self.PLAYLIST_REGISTRY and not needs_refresh:
+            self.logger.debug("Using cached playlist registry (not yet expired)")
+            return
+
         # Clear any existing entries
         self.PLAYLIST_REGISTRY = []
 
@@ -140,6 +143,9 @@ class ContentFetcher:
             f"Initialized playlist registry with {len(self.PLAYLIST_REGISTRY)} entries"
         )
 
+        # Record refresh time
+        self.cache.set_last_refresh("playlist_registry", time.time())
+
     def fetch_playlist_content(
         self,
         playlist_id: str,
@@ -169,9 +175,23 @@ class ContentFetcher:
         # Get existing cached tracks
         existing_tracks = self.cache.get(cache_key) or []
 
-        # If not forcing refresh and we have cached data, return it directly
-        if not force_refresh and existing_tracks:
-            self.logger.debug(f"Using {len(existing_tracks)} cached tracks for {path}")
+        # Check if refresh is needed based on cache age (10 minutes = 600 seconds)
+        refresh_interval = 600
+        now = time.time()
+        last_refresh = self.cache.get_last_refresh(cache_key)
+        needs_refresh = (not last_refresh) or (now - last_refresh >= refresh_interval)
+
+        # If refresh is needed or explicitly requested, do it
+        if needs_refresh or force_refresh:
+            self.logger.info(
+                f"On-demand refresh needed for {path} (age: {(now - (last_refresh or 0)):.0f}s)"
+            )
+            force_refresh = True  # Set force_refresh to true if needed
+        elif existing_tracks:
+            # Not time to refresh yet and we have data
+            self.logger.debug(
+                f"Using {len(existing_tracks)} cached tracks for {path} (age: {(now - (last_refresh or 0)):.0f}s)"
+            )
             for track in existing_tracks:
                 track["is_directory"] = False
             self._cache_directory_listing_with_attrs(path, existing_tracks)
@@ -259,6 +279,10 @@ class ContentFetcher:
             # Cache the tracks and update directory listing
             self.cache.set(cache_key, result_tracks)
             self._cache_directory_listing_with_attrs(path, result_tracks)
+
+            # Update the last refresh time
+            self.cache.set_last_refresh(cache_key, time.time())
+
             return [track["filename"] for track in result_tracks]
 
         except Exception as e:
@@ -291,13 +315,23 @@ class ContentFetcher:
                 self.logger.error(f"Invalid playlist type: {playlist_type}")
                 return [".", ".."]
 
-        # Check if we have this directory listing cached already and return if found
-        # This is the most significant optimization - avoid re-processing already cached entries
+        # Cache key for this directory
+        cache_key = f"{directory_path}_listing"
+
+        # Check if we have this directory listing cached already
         dir_listing = self.cache.get_directory_listing_with_attrs(directory_path)
-        if dir_listing is not None:
+
+        # Check if refresh is needed based on cache age
+        needs_refresh = self.check_refresh_needed(cache_key)
+
+        if dir_listing is not None and not needs_refresh:
+            # Use cached data if it exists and doesn't need refreshing
             self.logger.debug(f"Using cached directory listing for {directory_path}")
             # Return just the filenames
             return [".", ".."] + [name for name in dir_listing.keys()]
+        elif dir_listing is not None and needs_refresh:
+            self.logger.info(f"On-demand refresh needed for directory {directory_path}")
+            # We'll proceed with refreshing but still have the dir_listing as fallback
 
         # Special handling for liked_songs which directly shows songs rather than folders
         if playlist_type == "liked_songs":
@@ -389,6 +423,10 @@ class ContentFetcher:
             else:
                 self.logger.warning(f"No {playlist_type}s processed successfully")
 
+            # Record the refresh time
+            cache_key = f"{directory_path}_listing"
+            self.cache.set_last_refresh(cache_key, time.time())
+
             # Return directory listing
             result = [".", ".."] + [p["name"] for p in entries if p.get("name")]
             self.logger.debug(f"Returning {len(result)-2} {playlist_type} entries")
@@ -433,79 +471,18 @@ class ContentFetcher:
                 "No callback set for caching directory listings with attributes"
             )
 
-    def _auto_refresh_cache(self, refresh_interval: int = 600) -> None:
-        """Auto-refresh all playlist caches every 10 minutes."""
+    def check_refresh_needed(self, cache_key: str, refresh_interval: int = 600) -> bool:
+        """Check if a cache entry needs refreshing based on its age.
+
+        Args:
+            cache_key: The cache key to check
+            refresh_interval: Time in seconds before refresh is needed (default: 600s = 10min)
+
+        Returns:
+            True if refresh is needed, False otherwise
+        """
         now = time.time()
+        last_refresh = self.cache.get_last_refresh(cache_key)
 
-        # Group playlists by type for more structured processing
-        playlist_counts = {"playlist": 0, "album": 0, "liked_songs": 0}
-
-        # Count refreshed items by type
-        for playlist in self.PLAYLIST_REGISTRY:
-            cache_key = f"{playlist['path']}_processed"
-            last_refresh = self.cache.get_last_refresh(cache_key)
-
-            # Skip if refreshed recently
-            if last_refresh and (now - last_refresh) < refresh_interval:
-                continue
-
-            playlist_type = playlist["type"]
-            if playlist_type in playlist_counts:
-                self.logger.debug(
-                    f"Auto-refreshing {playlist_type} at {playlist['path']} with ID {playlist['id']}"
-                )
-                # Force refresh to get latest content from YouTube Music
-                self.fetch_playlist_content(
-                    playlist["id"], playlist["path"], limit=100, force_refresh=True
-                )
-                self.cache.set_last_refresh(cache_key, now)
-                playlist_counts[playlist_type] += 1
-
-        # Log summary
-        total_refreshed = sum(playlist_counts.values())
-        if total_refreshed > 0:
-            self.logger.info(
-                f"Auto-refreshed {total_refreshed} items: "
-                + f"{playlist_counts['playlist']} playlists, "
-                + f"{playlist_counts['album']} albums, "
-                + f"{playlist_counts['liked_songs']} liked songs collections"
-            )
-
-    def _run_auto_refresh(self):
-        """Run the auto-refresh loop every 10 minutes with proper termination handling."""
-        self.logger.info("Auto-refresh background task started")
-        self._running = True
-
-        try:
-            while self._running:
-                try:
-                    self._auto_refresh_cache(refresh_interval=600)
-                except Exception as e:
-                    self.logger.error(f"Error in auto refresh: {str(e)}")
-                    self.logger.error(traceback.format_exc())
-
-                # Sleep in small increments to allow for graceful termination
-                for _ in range(60):
-                    if not self._running:
-                        break
-                    time.sleep(
-                        10
-                    )  # 10-second sleep intervals (60 * 10 = 600 seconds total)
-        except Exception as e:
-            self.logger.error(f"Fatal error in auto-refresh thread: {str(e)}")
-            self.logger.error(traceback.format_exc())
-        finally:
-            self.logger.info("Auto-refresh background task terminated")
-
-    def stop_auto_refresh(self):
-        """Stop the auto-refresh background task gracefully."""
-        self.logger.info("Stopping auto-refresh background task")
-        self._running = False
-
-        # Cancel the future if it exists and is still running
-        if hasattr(self, "refresh_future") and self.refresh_future:
-            if not self.refresh_future.done():
-                self.logger.debug("Attempting to cancel refresh future")
-                # This won't forcibly stop the thread, but marks it for cancellation
-                # when it reaches the next cancellation point
-                self.refresh_future.cancel()
+        # Refresh needed if never refreshed or older than refresh_interval
+        return (not last_refresh) or (now - last_refresh >= refresh_interval)
