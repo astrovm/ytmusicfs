@@ -205,7 +205,6 @@ class FileHandler:
             process = multiprocessing.Process(
                 target=self._extract_stream_url, args=(video_id, self.browser, queue)
             )
-            process.daemon = True
             process.start()
 
             try:

@@ -41,7 +41,7 @@ class ContentFetcher:
         # Initialize playlist registry with all playlist types
         self._initialize_playlist_registry()
         # Start auto-refresh in a background thread
-        threading.Thread(target=self._run_auto_refresh, daemon=True).start()
+        threading.Thread(target=self._run_auto_refresh).start()
 
     def get_playlist_id_from_name(
         self, name: str, type_filter: Optional[str] = None
