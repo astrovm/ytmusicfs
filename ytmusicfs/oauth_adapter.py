@@ -2,7 +2,7 @@
 
 from typing import Optional, Any
 from ytmusicapi import YTMusic, OAuthCredentials
-import json
+from ytmusicfs.config import ConfigManager
 import logging
 import os
 
@@ -25,37 +25,32 @@ class YTMusicOAuthAdapter:
         Initialize the YTMusic OAuth adapter.
 
         Args:
-            auth_file: Path to the OAuth token file created by setup_oauth()
+            auth_file: Path to the auth JSON file
             client_id: OAuth client ID from Google Cloud Console
             client_secret: OAuth client secret from Google Cloud Console
             logger: Optional logger instance
             browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
         """
-        self.auth_file = auth_file
-        self.client_id = client_id
-        self.client_secret = client_secret
         self.logger = logger or logging.getLogger(__name__)
         self.browser = browser
         self.ytmusic = None
-        self.auth_data = None
 
         # Validate inputs
         if not os.path.exists(auth_file):
             raise FileNotFoundError(f"Auth file not found: {auth_file}")
 
-        # Try to read client ID and secret from the auth file if not provided
-        if not client_id or not client_secret:
-            try:
-                with open(auth_file, "r") as f:
-                    self.auth_data = json.load(f)
-                    self.client_id = client_id or self.auth_data.get("client_id")
-                    self.client_secret = client_secret or self.auth_data.get(
-                        "client_secret"
-                    )
-            except Exception as e:
-                self.logger.warning(
-                    f"Could not read client credentials from auth file: {e}"
-                )
+        # Initialize config manager
+        self.config = ConfigManager(auth_file=auth_file, logger=self.logger)
+
+        # Use client_id/secret if provided, otherwise use ones from config
+        self.client_id = client_id
+        self.client_secret = client_secret
+
+        # If not provided, try to load from config
+        if not self.client_id or not self.client_secret:
+            config_id, config_secret = self.config.get_credentials()
+            self.client_id = self.client_id or config_id
+            self.client_secret = self.client_secret or config_secret
 
         if not self.client_id or not self.client_secret:
             self.logger.warning(
@@ -83,30 +78,8 @@ class YTMusicOAuthAdapter:
 
             # Initialize YTMusic with OAuth
             self.ytmusic = YTMusic(
-                auth=self.auth_file, oauth_credentials=oauth_credentials
+                auth=str(self.config.auth_file), oauth_credentials=oauth_credentials
             )
-
-            # Check if client credentials exist in the auth file and remove them if needed
-            try:
-                with open(self.auth_file, "r") as f:
-                    auth_data = json.load(f)
-
-                # Remove client_id and client_secret from the auth file if present
-                modified = False
-                if "client_id" in auth_data:
-                    del auth_data["client_id"]
-                    modified = True
-                if "client_secret" in auth_data:
-                    del auth_data["client_secret"]
-                    modified = True
-
-                # Save the modified auth file if changes were made
-                if modified:
-                    with open(self.auth_file, "w") as f:
-                        json.dump(auth_data, f, indent=2)
-                    self.logger.debug("Removed client credentials from auth file")
-            except Exception as e:
-                self.logger.warning(f"Error checking auth file for credentials: {e}")
 
             # Test connection with a lightweight call
             self.ytmusic.get_library_playlists(limit=1)

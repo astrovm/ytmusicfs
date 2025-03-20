@@ -1,251 +1,180 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
+from typing import Tuple, Optional
 from ytmusicfs import __version__
+from ytmusicfs.config import ConfigManager
 from ytmusicfs.filesystem import mount_ytmusicfs
+from ytmusicfs.oauth_setup import main as oauth_setup
 import argparse
-import json
 import logging
 import os
 import sys
 
 
-def load_credentials(config_dir, credentials_file=None):
-    """Load client credentials from a separate file."""
-    if credentials_file:
-        cred_file = Path(credentials_file)
-    else:
-        cred_file = Path(config_dir) / "credentials.json"
+def setup_logging(
+    args: argparse.Namespace, log_dir: str = "~/.local/share/ytmusicfs/logs"
+) -> logging.Logger:
+    """Configure logging based on command-line arguments.
 
-    if not cred_file.exists():
-        return None, None
+    Args:
+        args: Parsed command-line arguments.
+        log_dir: Directory for log files.
 
-    try:
-        with open(cred_file, "r") as f:
-            credentials = json.load(f)
+    Returns:
+        Configured logger instance.
+    """
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
-        return credentials.get("client_id"), credentials.get("client_secret")
-    except Exception:
-        return None, None
+    handlers = [logging.StreamHandler(sys.stdout)]
+    if not args.foreground:
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, "ytmusicfs.log")
+        handlers.append(logging.FileHandler(log_file))
+
+    logging.basicConfig(level=log_level, format=log_format, handlers=handlers)
+
+    return logging.getLogger("YTMusicFS")
 
 
-def main():
+class MountCommandHandler:
+    """Handles the 'mount' command logic."""
+
+    def __init__(self, args: argparse.Namespace, logger: logging.Logger):
+        """Initialize the mount command handler.
+
+        Args:
+            args: Parsed command-line arguments.
+            logger: Logger instance.
+        """
+        self.args = args
+        self.logger = logger
+        self.config = ConfigManager(
+            auth_file=args.auth_file,
+            cache_dir=args.cache_dir,
+            logger=logger,
+        )
+
+    def execute(self) -> int:
+        """Execute the mount command.
+
+        Returns:
+            Exit code (0 for success, 1 for failure).
+        """
+        self.logger.info(f"YTMusicFS version {__version__}")
+        mount_point = Path(self.args.mount_point)
+        mount_point.mkdir(parents=True, exist_ok=True)
+
+        if not self.config.auth_file.exists():
+            self.logger.error(f"Authentication file not found: {self.config.auth_file}")
+            self.logger.error("Run 'ytmusicfs oauth' to set up authentication.")
+            return 1
+
+        client_id, client_secret = self._get_credentials()
+        if not client_id or not client_secret:
+            self.logger.error("Client ID and Client Secret required.")
+            return 1
+
+        try:
+            self.logger.info(f"Mounting at {mount_point}")
+            mount_ytmusicfs(
+                mount_point=str(mount_point),
+                auth_file=str(self.config.auth_file),
+                client_id=client_id,
+                client_secret=client_secret,
+                cache_dir=str(self.config.cache_dir),
+                foreground=self.args.foreground,
+                browser=self.args.browser,
+            )
+            return 0
+        except Exception as e:
+            self.logger.error(f"Mount failed: {e}")
+            return 1
+
+    def _get_credentials(self) -> Tuple[Optional[str], Optional[str]]:
+        """Retrieve or extract client credentials.
+
+        Returns:
+            Tuple of (client_id, client_secret).
+        """
+        client_id, client_secret = self.args.client_id, self.args.client_secret
+        if not client_id or not client_secret:
+            client_id, client_secret = self.config.get_credentials()
+            if client_id and client_secret:
+                self.logger.info("Using credentials from config")
+        return client_id, client_secret
+
+
+def main() -> int:
     """Command-line entry point for YTMusicFS."""
     parser = argparse.ArgumentParser(
         description="YTMusicFS - Mount YouTube Music as a filesystem"
     )
-
-    # Mount point options
     parser.add_argument(
-        "--mount-point",
-        "-m",
-        required=True,
-        help="Directory where the filesystem will be mounted",
+        "--version", "-v", action="version", version=f"YTMusicFS {__version__}"
     )
+    subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # Authentication options
-    auth_group = parser.add_argument_group("Authentication Options")
-    auth_group.add_argument(
-        "--auth-file",
-        "-a",
-        default=os.path.expanduser("~/.config/ytmusicfs/oauth.json"),
-        help="Path to the OAuth token file (default: ~/.config/ytmusicfs/oauth.json)",
+    # Mount command
+    mount_parser = subparsers.add_parser("mount", help="Mount YouTube Music filesystem")
+    mount_parser.add_argument(
+        "--mount-point", "-m", required=True, help="Mount point directory"
     )
-    auth_group.add_argument(
-        "--credentials-file",
-        help="Path to the client credentials file (default: same directory as auth-file with name 'credentials.json')",
+    mount_parser.add_argument("--auth-file", "-a", help="OAuth token file path")
+    mount_parser.add_argument("--credentials-file", help="Client credentials file path")
+    mount_parser.add_argument("--client-id", "-i", help="OAuth client ID")
+    mount_parser.add_argument("--client-secret", "-s", help="OAuth client secret")
+    mount_parser.add_argument("--cache-dir", "-c", help="Cache directory")
+    mount_parser.add_argument(
+        "--foreground", "-f", action="store_true", help="Run in foreground"
     )
-    auth_group.add_argument(
-        "--client-id",
-        "-i",
-        help="OAuth client ID (required for OAuth authentication)",
+    mount_parser.add_argument(
+        "--debug", "-d", action="store_true", help="Enable debug logging"
     )
-    auth_group.add_argument(
-        "--client-secret",
-        "-s",
-        help="OAuth client secret (required for OAuth authentication)",
-    )
-
-    # Cache options
-    cache_group = parser.add_argument_group("Cache Options")
-    cache_group.add_argument(
-        "--cache-dir",
-        "-c",
-        help="Directory to store cache files (default: ~/.cache/ytmusicfs)",
-    )
-    cache_group.add_argument(
-        "--cache-timeout",
-        "-t",
-        type=int,
-        default=2592000,
-        help="Cache timeout in seconds (default: 2592000)",
-    )
-
-    # Operational options
-    op_group = parser.add_argument_group("Operational Options")
-    op_group.add_argument(
-        "--foreground",
-        "-f",
-        action="store_true",
-        help="Run in the foreground (for debugging)",
-    )
-    op_group.add_argument(
-        "--debug",
-        "-d",
-        action="store_true",
-        help="Enable debug logging",
-    )
-    op_group.add_argument(
+    mount_parser.add_argument(
         "--browser",
         "-b",
-        help="Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave', etc.). If not specified, no browser cookies will be used",
+        help="Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')",
+    )
+    mount_parser.set_defaults(
+        func=lambda args: MountCommandHandler(args, setup_logging(args)).execute()
     )
 
-    # Version
-    parser.add_argument(
-        "--version",
-        "-v",
-        action="version",
-        version=f"YTMusicFS {__version__}",
-        help="Show version and exit",
+    # OAuth command
+    oauth_parser = subparsers.add_parser("oauth", help="Set up OAuth authentication")
+    oauth_parser.add_argument("--client-id", "-i", help="OAuth Client ID")
+    oauth_parser.add_argument("--client-secret", "-s", help="OAuth Client Secret")
+    oauth_parser.add_argument("--auth-file", "-a", help="OAuth token file path")
+    oauth_parser.add_argument("--credentials-file", "-c", help="Credentials file path")
+    oauth_parser.add_argument("--open-browser", "-b", action="store_true", default=True)
+    oauth_parser.add_argument(
+        "--no-open-browser", action="store_false", dest="open_browser"
+    )
+    oauth_parser.add_argument(
+        "--debug", "-d", action="store_true", help="Enable debug output"
+    )
+    oauth_parser.set_defaults(
+        func=lambda args: oauth_with_logger(args, setup_logging(args))
     )
 
     args = parser.parse_args()
+    return args.func(args)
 
-    # Set up logging
-    log_level = logging.DEBUG if args.debug else logging.INFO
-    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
-    if args.foreground:
-        logging.basicConfig(level=log_level, format=log_format)
-    else:
-        # Set up log file
-        log_dir = os.path.expanduser("~/.local/share/ytmusicfs/logs")
-        os.makedirs(log_dir, exist_ok=True)
-        log_file = os.path.join(log_dir, "ytmusicfs.log")
+def oauth_with_logger(args, logger):
+    """Wrapper function to pass the logger to the oauth_setup function.
 
-        # Configure file logging
-        logging.basicConfig(
-            level=log_level,
-            format=log_format,
-            handlers=[
-                logging.FileHandler(log_file),
-                logging.StreamHandler(sys.stdout),
-            ],
-        )
+    Args:
+        args: Command line arguments
+        logger: Logger instance
 
-    logger = logging.getLogger("YTMusicFS")
-    logger.info(f"YTMusicFS version {__version__}")
-
-    # Check and create mount point
-    mount_point = Path(args.mount_point)
-    if not mount_point.exists():
-        logger.info(f"Creating mount point directory: {mount_point}")
-        os.makedirs(mount_point, exist_ok=True)
-
-    # Check for auth file
-    auth_file = Path(args.auth_file)
-    if not auth_file.exists():
-        logger.error(f"Authentication file not found: {auth_file}")
-        logger.error("Please run ytmusicfs-oauth to set up authentication:")
-        logger.error(
-            f"  ytmusicfs-oauth --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET"
-        )
-        return 1
-
-    # Get client credentials
-    client_id = args.client_id
-    client_secret = args.client_secret
-
-    # If not provided, try to load from separate credentials file
-    if not client_id or not client_secret:
-        config_dir = auth_file.parent
-        loaded_id, loaded_secret = load_credentials(config_dir, args.credentials_file)
-
-        if loaded_id and loaded_secret:
-            client_id = loaded_id
-            client_secret = loaded_secret
-            logger.info("Using client credentials from credentials file")
-
-    # Check for client credentials in auth file if not provided (backward compatibility)
-    if not client_id or not client_secret:
-        try:
-            with open(auth_file, "r") as f:
-                auth_data = json.load(f)
-
-                # We should no longer store these in the auth file, but check for backward compatibility
-                if "client_id" in auth_data or "client_secret" in auth_data:
-                    logger.warning(
-                        "Found client credentials in OAuth token file - this is not recommended"
-                    )
-                    logger.warning(
-                        "Credentials should be provided via command line or environment variables"
-                    )
-
-                    # Still use them if needed
-                    client_id = client_id or auth_data.get("client_id")
-                    client_secret = client_secret or auth_data.get("client_secret")
-
-                    # Clean up the file by removing credentials
-                    if "client_id" in auth_data:
-                        del auth_data["client_id"]
-                    if "client_secret" in auth_data:
-                        del auth_data["client_secret"]
-
-                    # Save the cleaned file
-                    with open(auth_file, "w") as f:
-                        json.dump(auth_data, f, indent=2)
-                    logger.info(
-                        "Removed client credentials from OAuth token file for security"
-                    )
-
-                if client_id and client_secret:
-                    logger.info("Using client credentials from OAuth token file")
-        except Exception as e:
-            logger.warning(f"Failed to read client credentials from auth file: {e}")
-
-    # Final check for client credentials
-    if not client_id or not client_secret:
-        logger.error("Client ID and Client Secret are required for authentication")
-        logger.error("Options:")
-        logger.error("1. Provide them with --client-id and --client-secret")
-        logger.error(
-            "2. Set YTMUSICFS_CLIENT_ID and YTMUSICFS_CLIENT_SECRET environment variables"
-        )
-        logger.error(
-            "3. Use ytmusicfs-oauth to set up authentication with your credentials"
-        )
-        logger.error("")
-        logger.error("To regenerate your OAuth token with credentials:")
-        logger.error(
-            f"  ytmusicfs-oauth --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET"
-        )
-        return 1
-
-    # Mount the filesystem
-    try:
-        logger.info(f"Mounting YouTube Music filesystem at {mount_point}")
-
-        mount_ytmusicfs(
-            mount_point=str(mount_point),
-            auth_file=str(auth_file),
-            client_id=client_id,
-            client_secret=client_secret,
-            foreground=args.foreground,
-            debug=args.debug,
-            cache_dir=args.cache_dir,
-            cache_timeout=args.cache_timeout,
-            browser=args.browser,
-            credentials_file=args.credentials_file,
-        )
-
-        return 0
-    except Exception as e:
-        logger.error(f"Failed to mount filesystem: {e}")
-        import traceback
-
-        logger.error(traceback.format_exc())
-        return 1
+    Returns:
+        Exit code
+    """
+    args.logger = logger
+    result, _ = oauth_setup(args)
+    return result
 
 
 if __name__ == "__main__":
