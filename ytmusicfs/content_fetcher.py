@@ -251,12 +251,13 @@ class ContentFetcher:
                     "is_directory": False,
                 }
 
-                filename = self.processor.sanitize_filename(
-                    f"{track_info['artist']} - {track_info['title']}.m4a"
-                )
-                track_info["filename"] = filename
-
+                # Process the track info first to get clean artist name
                 processed_track = self.processor.extract_track_info(track_info)
+
+                # Generate filename AFTER processing the track (with cleaned artist name)
+                filename = self.processor.sanitize_filename(
+                    f"{processed_track['artist']} - {processed_track['title']}.m4a"
+                )
                 processed_track["filename"] = filename
                 processed_track["is_directory"] = False
                 new_tracks.append(processed_track)
