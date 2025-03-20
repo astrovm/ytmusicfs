@@ -13,7 +13,7 @@ YTMusicFS mounts your YouTube Music library as a standard filesystem, allowing y
 - **Disk Caching**: Caches metadata and audio to improve browsing performance and enable offline playback of previously streamed songs
 - **On-Demand Streaming**: Streams audio directly from YouTube Music servers
 - **Smart Auto-Refresh**: Automatically refreshes your entire library cache every 10 minutes using an intelligent merging approach that preserves existing data and only updates what has changed, optimized for large libraries
-- **Browser Cookies**: Uses browser cookies for authentication to access higher quality audio streams (up to 256kbps)
+- **Browser Cookies**: Uses browser cookies for authentication to access higher quality audio streams (up to 256kbps) and private playlists
 
 ## Requirements
 
@@ -129,9 +129,9 @@ You can also specify a browser for cookie retrieval:
 ytmusicfs mount --mount-point ~/Music/ytmusic --browser brave
 ```
 
-Supported browsers include: chrome, firefox, brave, edge, safari, opera, and others supported by yt-dlp.
+Supported browsers include: chrome, firefox, brave, and others supported by yt-dlp.
 
-The `--browser` option allows YouTube Premium subscribers to access higher quality audio streams (up to 256kbps) by using your browser's cookies for authentication. Without this option, audio will stream at standard quality, even for Premium subscribers.
+The `--browser` option allows YouTube Premium subscribers to access higher quality audio streams (up to 256kbps) and private playlists by using your browser's cookies for authentication. Without this option, audio will stream at standard quality, even for Premium subscribers, and private playlists will not be accessible.
 
 ### Browse and Play Music
 
