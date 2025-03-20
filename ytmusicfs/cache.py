@@ -2,17 +2,16 @@
 
 from cachetools import LRUCache
 from pathlib import Path
-from typing import Any, Optional, Dict, List
+from typing import Any, Optional, Dict
 import hashlib
 import json
 import logging
 import os
-import sqlite3
-import threading
-import time
-import stat
-import traceback
 import random
+import sqlite3
+import stat
+import time
+import traceback
 
 
 class CacheManager:
@@ -20,16 +19,19 @@ class CacheManager:
 
     def __init__(
         self,
+        thread_manager: Any,  # ThreadManager (required)
         cache_dir: Optional[str] = None,
         cache_timeout: int = 2592000,
         maxsize: int = 1000,
         logger: Optional[logging.Logger] = None,
     ):
-        """Initialize the cache manager with simplified caching strategy.
+        """
+        Initialize the CacheManager.
 
         Args:
-            cache_dir: Directory for persistent cache (default: ~/.cache/ytmusicfs)
-            cache_timeout: Time in seconds before cached data expires (default: 30 days)
+            thread_manager: ThreadManager instance for thread synchronization (required)
+            cache_dir: Path to the cache directory. Defaults to ~/.cache/ytmusicfs.
+            cache_timeout: Cache timeout in seconds (default: 30 days).
             maxsize: Maximum number of items to keep in memory cache (default: 1000)
             logger: Logger instance to use
         """
@@ -44,8 +46,12 @@ class CacheManager:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.logger.info(f"Using cache directory: {self.cache_dir}")
 
+        # Store thread manager
+        self.thread_manager = thread_manager
+
         # Initialize a single lock for database operations
-        self.lock = threading.RLock()
+        self.lock = thread_manager.create_lock()
+        self.logger.debug("Using ThreadManager for lock creation in CacheManager")
 
         # Initialize SQLite database
         self.db_path = self.cache_dir / "cache.db"
@@ -1041,12 +1047,27 @@ class CacheManager:
             self.logger.error(traceback.format_exc())
 
     def __del__(self):
-        """Clean up resources when the object is deleted."""
+        """Clean up when the object is garbage collected."""
         try:
-            if hasattr(self, "conn") and self.conn:
-                self.conn.close()
+            self.close()
         except Exception:
-            pass  # Can't log here as the logger might be gone
+            pass  # Suppress errors during cleanup
+
+    def set_thread_manager(self, thread_manager):
+        """
+        Set the thread manager instance.
+
+        Args:
+            thread_manager: ThreadManager instance
+        """
+        self.thread_manager = thread_manager
+
+        # Update lock
+        if thread_manager:
+            old_lock = self.lock
+            with old_lock:
+                self.lock = thread_manager.create_lock()
+            self.logger.debug("Updated lock in CacheManager with ThreadManager")
 
     def get_cache_stats(self) -> Dict[str, int]:
         """Get cache performance statistics.

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Any
 import logging
 import os
 import requests
 import tempfile
-import threading
 import time
 
 
@@ -15,6 +14,7 @@ class Downloader:
 
     def __init__(
         self,
+        thread_manager: Any,  # ThreadManager (required)
         cache_dir: Path,
         logger: logging.Logger,
         update_file_size_callback: Callable[[str, int], None],
@@ -22,6 +22,7 @@ class Downloader:
         """Initialize the Downloader.
 
         Args:
+            thread_manager: ThreadManager instance for thread synchronization.
             cache_dir: Directory to store downloaded files.
             logger: Logger instance for logging.
             update_file_size_callback: Function to update file size in filesystem cache.
@@ -29,10 +30,29 @@ class Downloader:
         self.cache_dir = cache_dir
         self.logger = logger
         self.update_file_size_callback = update_file_size_callback
+        self.thread_manager = thread_manager
+
         self.active_downloads = (
             {}
         )  # video_id: {'progress': int, 'total': int, 'status': str}
-        self.lock = threading.Lock()
+
+        # Use ThreadManager for lock creation
+        self.lock = thread_manager.create_lock()
+        self.logger.debug("Using ThreadManager for lock creation in Downloader")
+
+    def set_thread_manager(self, thread_manager):
+        """Set the thread manager instance.
+
+        Args:
+            thread_manager: ThreadManager instance
+        """
+        self.thread_manager = thread_manager
+
+        # Update lock
+        old_lock = self.lock
+        with old_lock:
+            self.lock = thread_manager.create_lock()
+        self.logger.debug("Updated lock in Downloader with ThreadManager")
 
     def download_file(
         self,
@@ -71,6 +91,42 @@ class Downloader:
             ):
                 self.logger.debug(f"Download already in progress for {video_id}")
                 return True
+
+        # Start download as a background task using ThreadManager
+        self.logger.debug(f"Submitting download task for {video_id} to ThreadManager")
+        self.thread_manager.submit_task(
+            "io",
+            self._download_task,
+            video_id,
+            stream_url,
+            path,
+            retries,
+            chunk_size,
+        )
+        return True
+
+    def _download_task(
+        self,
+        video_id: str,
+        stream_url: str,
+        path: str,
+        retries: int = 3,
+        chunk_size: int = 8192,
+    ) -> bool:
+        """Internal download task that can be run in a thread.
+
+        Args:
+            video_id: YouTube video ID.
+            stream_url: URL to download from (not cached).
+            path: Filesystem path for size updates.
+            retries: Number of retry attempts.
+            chunk_size: Size of chunks to download.
+
+        Returns:
+            True if download succeeds, False otherwise.
+        """
+        audio_path = self.cache_dir / "audio" / f"{video_id}.m4a"
+        status_path = audio_path.parent / f"{video_id}.status"
 
         # Create a temporary file for the download
         temp_file = tempfile.NamedTemporaryFile(

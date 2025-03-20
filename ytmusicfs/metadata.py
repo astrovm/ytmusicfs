@@ -2,7 +2,6 @@
 
 import os
 import errno
-import threading
 
 
 class MetadataManager:
@@ -13,24 +12,28 @@ class MetadataManager:
         cache: CacheManager instance for accessing cached data.
         logger: Logger instance for logging.
         content_fetcher: ContentFetcher instance for accessing playlist data.
+        thread_manager: ThreadManager instance for thread synchronization.
     """
 
-    def __init__(self, cache, logger, content_fetcher=None):
+    def __init__(self, cache, logger, thread_manager, content_fetcher=None):
         """
         Initialize the MetadataManager.
 
         Args:
             cache: CacheManager instance.
             logger: Logger instance.
+            thread_manager: ThreadManager instance for thread synchronization.
             content_fetcher: Optional ContentFetcher instance for accessing playlists.
         """
         self.cache = cache
         self.logger = logger
+        self.thread_manager = thread_manager
         self.content_fetcher = content_fetcher
 
         # Video ID cache with lock protection
         self.video_id_cache = {}
-        self.video_id_cache_lock = threading.RLock()
+        self.video_id_cache_lock = thread_manager.create_lock()
+        self.logger.debug("Using ThreadManager for lock creation in MetadataManager")
 
     def set_content_fetcher(self, content_fetcher):
         """
@@ -40,6 +43,20 @@ class MetadataManager:
             content_fetcher: ContentFetcher instance.
         """
         self.content_fetcher = content_fetcher
+
+    def set_thread_manager(self, thread_manager):
+        """
+        Set the thread manager instance.
+
+        Args:
+            thread_manager: ThreadManager instance.
+        """
+        self.thread_manager = thread_manager
+        # Recreate the lock using the thread manager
+        old_lock = self.video_id_cache_lock
+        with old_lock:
+            self.video_id_cache_lock = thread_manager.create_lock()
+        self.logger.debug("Updated lock in MetadataManager with ThreadManager")
 
     def get_video_id(self, path):
         """

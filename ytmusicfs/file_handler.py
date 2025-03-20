@@ -16,6 +16,7 @@ class FileHandler:
 
     def __init__(
         self,
+        thread_manager: Any,  # ThreadManager (required)
         cache_dir: Path,
         cache: Any,  # CacheManager
         logger: logging.Logger,
@@ -25,6 +26,7 @@ class FileHandler:
         """Initialize the FileHandler.
 
         Args:
+            thread_manager: ThreadManager instance for thread synchronization
             cache_dir: Directory for persistent cache
             cache: CacheManager instance for caching
             logger: Logger instance to use
@@ -36,16 +38,37 @@ class FileHandler:
         self.cache = cache
         self.logger = logger
         self.update_file_size_callback = update_file_size_callback
+        self.thread_manager = thread_manager
 
         # File handling state
         self.open_files = {}  # {fh: {'stream_url': str, 'video_id': str, ...}}
         self.next_fh = 1  # Next file handle to assign
         self.path_to_fh = {}  # Store path to file handle mapping
-        self.file_handle_lock = threading.RLock()  # Lock for file handle operations
+        self.file_handle_lock = thread_manager.create_lock()
+        self.logger.debug("Using ThreadManager for lock creation in FileHandler")
         self.futures = {}  # Store futures for async operations by video_id
 
         # Initialize Downloader
-        self.downloader = Downloader(cache_dir, logger, update_file_size_callback)
+        self.downloader = Downloader(
+            thread_manager, cache_dir, logger, update_file_size_callback
+        )
+
+    def set_thread_manager(self, thread_manager):
+        """Set the thread manager instance and update related components.
+
+        Args:
+            thread_manager: ThreadManager instance
+        """
+        self.thread_manager = thread_manager
+
+        # Update lock
+        old_lock = self.file_handle_lock
+        with old_lock:
+            self.file_handle_lock = thread_manager.create_lock()
+        self.logger.debug("Updated lock in FileHandler with ThreadManager")
+
+        # Update Downloader
+        self.downloader.set_thread_manager(thread_manager)
 
     def open(self, path: str, video_id: str) -> int:
         """Open a file and return a file handle.

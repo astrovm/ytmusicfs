@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-from concurrent.futures import ThreadPoolExecutor
 from fuse import FUSE, Operations, FuseOSError
 from typing import Dict, Any, Optional, List
 from ytmusicfs.cache import CacheManager
@@ -11,11 +10,12 @@ from ytmusicfs.metadata import MetadataManager
 from ytmusicfs.oauth_adapter import YTMusicOAuthAdapter
 from ytmusicfs.path_router import PathRouter
 from ytmusicfs.processor import TrackProcessor
+from ytmusicfs.thread_manager import ThreadManager
+from ytmusicfs.yt_dlp_utils import set_thread_manager
 import errno
 import logging
 import os
 import stat
-import threading
 import time
 import traceback
 
@@ -43,9 +43,13 @@ class YouTubeMusicFS(Operations):
         # Get or create the logger
         self.logger = logging.getLogger("YTMusicFS")
 
-        # Thread-related objects
-        self.thread_pool = ThreadPoolExecutor(max_workers=8)
-        self.logger.info("Thread pool initialized with 8 workers")
+        # Initialize the ThreadManager first
+        self.thread_manager = ThreadManager(logger=self.logger)
+        self.logger.info("ThreadManager initialized")
+
+        # Register the ThreadManager with yt_dlp_utils
+        set_thread_manager(self.thread_manager)
+        self.logger.debug("ThreadManager registered with yt_dlp_utils")
 
         # Initialize the OAuth adapter first
         oauth_adapter = YTMusicOAuthAdapter(
@@ -64,6 +68,7 @@ class YouTubeMusicFS(Operations):
 
         # Initialize the cache component
         self.cache = CacheManager(
+            thread_manager=self.thread_manager,
             cache_dir=cache_dir,
             logger=self.logger,
         )
@@ -94,7 +99,10 @@ class YouTubeMusicFS(Operations):
 
         # Initialize the metadata manager
         self.metadata_manager = MetadataManager(
-            cache=self.cache, logger=self.logger, content_fetcher=self.fetcher
+            cache=self.cache,
+            logger=self.logger,
+            thread_manager=self.thread_manager,
+            content_fetcher=self.fetcher,
         )
 
         # Store parameters for future reference
@@ -103,11 +111,9 @@ class YouTubeMusicFS(Operations):
         self.client_secret = client_secret
         self.request_cooldown = 1.0  # Default to 1 second cooldown
 
-        # Debounce mechanism for repeated requests
+        # Debounce mechanism for repeated requests - use ThreadManager for locks
         self.last_access_time = {}  # {operation_path: last_access_time}
-        self.last_access_lock = (
-            threading.RLock()
-        )  # Lock for last_access_time operations
+        self.last_access_lock = self.thread_manager.create_lock()
         self.last_access_results = {}  # {operation_path: cached_result}
 
         # Store the browser parameter
@@ -115,6 +121,7 @@ class YouTubeMusicFS(Operations):
 
         # Initialize the file handler component
         self.file_handler = FileHandler(
+            thread_manager=self.thread_manager,
             cache_dir=self.cache.cache_dir,
             cache=self.cache,
             logger=self.logger,
@@ -385,7 +392,9 @@ class YouTubeMusicFS(Operations):
                 # Submit batch update in one operation if there are entries
                 if batch_entries:
                     # Store batch of path validations at once
-                    self.thread_pool.submit(self.cache.set_batch, batch_entries)
+                    self.thread_manager.submit_task(
+                        "io", self.cache.set_batch, batch_entries
+                    )
 
             # Cache this result for the cooldown period
             with self.last_access_lock:
@@ -757,22 +766,13 @@ class YouTubeMusicFS(Operations):
         """
         self.logger.info("Destroying YTMusicFS instance")
 
-        # Shutdown thread pool if it exists
-        if hasattr(self, "thread_pool") and self.thread_pool is not None:
+        # Shutdown thread pool via ThreadManager
+        if hasattr(self, "thread_manager") and self.thread_manager is not None:
             try:
-                self.logger.info("Shutting down thread pool")
-                self.thread_pool.shutdown(wait=True)
+                self.logger.info("Shutting down ThreadManager")
+                self.thread_manager.shutdown(wait=True, timeout=10.0)
             except Exception as e:
-                self.logger.error(f"Error shutting down thread pool: {e}")
-
-        # Shutdown the yt_dlp_utils thread pool
-        try:
-            from ytmusicfs.yt_dlp_utils import shutdown as yt_dlp_shutdown
-
-            self.logger.info("Shutting down yt_dlp_utils thread pool")
-            yt_dlp_shutdown()
-        except Exception as e:
-            self.logger.error(f"Error shutting down yt_dlp_utils thread pool: {e}")
+                self.logger.error(f"Error shutting down ThreadManager: {e}")
 
         # Close the cache if it exists
         if hasattr(self, "cache") and self.cache is not None:
