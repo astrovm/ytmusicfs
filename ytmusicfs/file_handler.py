@@ -47,13 +47,12 @@ class FileHandler:
         # Initialize Downloader
         self.downloader = Downloader(cache_dir, logger, update_file_size_callback)
 
-    def open(self, path: str, video_id: str, thread_pool) -> int:
+    def open(self, path: str, video_id: str) -> int:
         """Open a file and return a file handle.
 
         Args:
             path: The file path
             video_id: YouTube video ID for the file
-            thread_pool: ThreadPoolExecutor for background tasks (currently unused)
 
         Returns:
             File handle

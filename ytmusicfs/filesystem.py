@@ -675,7 +675,7 @@ class YouTubeMusicFS(Operations):
                 raise FuseOSError(errno.ENOENT)
 
             # Delegate to file handler
-            return self.file_handler.open(path, video_id, self.thread_pool)
+            return self.file_handler.open(path, video_id)
 
         except Exception as e:
             if isinstance(e, FuseOSError):
