@@ -708,18 +708,6 @@ class YouTubeMusicFS(Operations):
         }
         self.cache.update_file_attrs_in_parent_dir(path, attr)
 
-    def refresh_cache(self) -> None:
-        """Refresh all caches.
-
-        This method updates all caches with any changes in the user's library.
-        """
-        self.logger.info("Refreshing all caches...")
-
-        # Use the fetcher to refresh the caches
-        self.fetcher.refresh_all_caches()
-
-        self.logger.info("All caches refreshed successfully")
-
     def mkdir(self, path, mode):
         """Create a directory.
 

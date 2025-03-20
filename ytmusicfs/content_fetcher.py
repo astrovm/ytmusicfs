@@ -418,36 +418,6 @@ class ContentFetcher:
                 + f"{playlist_counts['liked_songs']} liked songs collections"
             )
 
-    def refresh_all_caches(self) -> None:
-        """Refresh all caches with the latest 100 songs from each playlist."""
-        self.logger.info("Refreshing all content caches...")
-
-        # Group playlists by type for more structured processing
-        playlists_by_type = {"playlist": [], "album": [], "liked_songs": []}
-
-        # Sort playlists by type
-        for playlist in self.PLAYLIST_REGISTRY:
-            playlist_type = playlist["type"]
-            if playlist_type in playlists_by_type:
-                playlists_by_type[playlist_type].append(playlist)
-
-        # Process each type in a consistent way
-        for playlist_type, playlists in playlists_by_type.items():
-            self.logger.info(f"Refreshing {len(playlists)} {playlist_type}s")
-
-            for playlist in playlists:
-                # Get all information consistently from the registry
-                playlist_id = playlist["id"]
-                path = playlist["path"]
-
-                self.logger.debug(
-                    f"Refreshing {playlist_type} at {path} with ID {playlist_id}"
-                )
-                # Use consistent caching pattern with path
-                self.fetch_playlist_content(playlist_id, path, limit=100)
-
-        self.logger.info("All content caches refreshed successfully")
-
     def _run_auto_refresh(self):
         """Run the auto-refresh loop every 10 minutes."""
         while True:
