@@ -40,20 +40,6 @@ class Downloader:
         self.lock = thread_manager.create_lock()
         self.logger.debug("Using ThreadManager for lock creation in Downloader")
 
-    def set_thread_manager(self, thread_manager):
-        """Set the thread manager instance.
-
-        Args:
-            thread_manager: ThreadManager instance
-        """
-        self.thread_manager = thread_manager
-
-        # Update lock
-        old_lock = self.lock
-        with old_lock:
-            self.lock = thread_manager.create_lock()
-        self.logger.debug("Updated lock in Downloader with ThreadManager")
-
     def download_file(
         self,
         video_id: str,

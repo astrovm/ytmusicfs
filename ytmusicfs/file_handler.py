@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Optional, Any, Callable
 from ytmusicfs.downloader import Downloader
-from ytmusicfs.yt_dlp_utils import extract_stream_url_async
+from ytmusicfs.yt_dlp_utils import YTDLPUtils
 import errno
 import logging
 import requests
@@ -16,11 +16,12 @@ class FileHandler:
 
     def __init__(
         self,
-        thread_manager: Any,  # ThreadManager (required)
+        thread_manager: Any,  # ThreadManager
         cache_dir: Path,
         cache: Any,  # CacheManager
         logger: logging.Logger,
         update_file_size_callback: Callable[[str, int], None],
+        yt_dlp_utils: YTDLPUtils,
         browser: Optional[str] = None,
     ):
         """Initialize the FileHandler.
@@ -31,6 +32,7 @@ class FileHandler:
             cache: CacheManager instance for caching
             logger: Logger instance to use
             update_file_size_callback: Callback to update file size in filesystem cache
+            yt_dlp_utils: YTDLPUtils instance for YouTube interaction
             browser: Browser to use for cookies (e.g., 'chrome', 'firefox')
         """
         self.cache_dir = cache_dir
@@ -39,6 +41,7 @@ class FileHandler:
         self.logger = logger
         self.update_file_size_callback = update_file_size_callback
         self.thread_manager = thread_manager
+        self.yt_dlp_utils = yt_dlp_utils
 
         # File handling state
         self.open_files = {}  # {fh: {'stream_url': str, 'video_id': str, ...}}
@@ -52,23 +55,6 @@ class FileHandler:
         self.downloader = Downloader(
             thread_manager, cache_dir, logger, update_file_size_callback
         )
-
-    def set_thread_manager(self, thread_manager):
-        """Set the thread manager instance and update related components.
-
-        Args:
-            thread_manager: ThreadManager instance
-        """
-        self.thread_manager = thread_manager
-
-        # Update lock
-        old_lock = self.file_handle_lock
-        with old_lock:
-            self.file_handle_lock = thread_manager.create_lock()
-        self.logger.debug("Updated lock in FileHandler with ThreadManager")
-
-        # Update Downloader
-        self.downloader.set_thread_manager(thread_manager)
 
     def open(self, path: str, video_id: str) -> int:
         """Open a file and return a file handle.
@@ -221,7 +207,9 @@ class FileHandler:
                     future = self.futures[video_id]
                 else:
                     # Submit new extraction task
-                    future = extract_stream_url_async(video_id, self.browser)
+                    future = self.yt_dlp_utils.extract_stream_url_async(
+                        video_id, self.browser
+                    )
                     self.futures[video_id] = future
 
                 # Wait for result with timeout

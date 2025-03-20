@@ -11,7 +11,7 @@ from ytmusicfs.oauth_adapter import YTMusicOAuthAdapter
 from ytmusicfs.path_router import PathRouter
 from ytmusicfs.processor import TrackProcessor
 from ytmusicfs.thread_manager import ThreadManager
-from ytmusicfs.yt_dlp_utils import set_thread_manager
+from ytmusicfs.yt_dlp_utils import YTDLPUtils
 import errno
 import logging
 import os
@@ -47,9 +47,11 @@ class YouTubeMusicFS(Operations):
         self.thread_manager = ThreadManager(logger=self.logger)
         self.logger.info("ThreadManager initialized")
 
-        # Register the ThreadManager with yt_dlp_utils
-        set_thread_manager(self.thread_manager)
-        self.logger.debug("ThreadManager registered with yt_dlp_utils")
+        # Initialize YTDLPUtils with the ThreadManager
+        self.yt_dlp_utils = YTDLPUtils(
+            thread_manager=self.thread_manager, logger=self.logger
+        )
+        self.logger.debug("YTDLPUtils initialized with ThreadManager")
 
         # Initialize the OAuth adapter first
         oauth_adapter = YTMusicOAuthAdapter(
@@ -82,6 +84,7 @@ class YouTubeMusicFS(Operations):
             processor=self.processor,
             cache=self.cache,
             logger=self.logger,
+            yt_dlp_utils=self.yt_dlp_utils,
             browser=browser,
         )
 
@@ -126,6 +129,7 @@ class YouTubeMusicFS(Operations):
             cache=self.cache,
             logger=self.logger,
             update_file_size_callback=self._update_file_size,
+            yt_dlp_utils=self.yt_dlp_utils,
             browser=self.browser,
         )
 

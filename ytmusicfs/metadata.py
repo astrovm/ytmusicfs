@@ -44,20 +44,6 @@ class MetadataManager:
         """
         self.content_fetcher = content_fetcher
 
-    def set_thread_manager(self, thread_manager):
-        """
-        Set the thread manager instance.
-
-        Args:
-            thread_manager: ThreadManager instance.
-        """
-        self.thread_manager = thread_manager
-        # Recreate the lock using the thread manager
-        old_lock = self.video_id_cache_lock
-        with old_lock:
-            self.video_id_cache_lock = thread_manager.create_lock()
-        self.logger.debug("Updated lock in MetadataManager with ThreadManager")
-
     def get_video_id(self, path):
         """
         Get the video ID for a file path using cached data.

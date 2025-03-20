@@ -1047,33 +1047,18 @@ class CacheManager:
             self.logger.error(traceback.format_exc())
 
     def __del__(self):
-        """Clean up when the object is garbage collected."""
+        """Attempt to close database connection during garbage collection."""
         try:
             self.close()
         except Exception:
-            pass  # Suppress errors during cleanup
-
-    def set_thread_manager(self, thread_manager):
-        """
-        Set the thread manager instance.
-
-        Args:
-            thread_manager: ThreadManager instance
-        """
-        self.thread_manager = thread_manager
-
-        # Update lock
-        if thread_manager:
-            old_lock = self.lock
-            with old_lock:
-                self.lock = thread_manager.create_lock()
-            self.logger.debug("Updated lock in CacheManager with ThreadManager")
+            # Don't raise exceptions during garbage collection
+            pass
 
     def get_cache_stats(self) -> Dict[str, int]:
-        """Get cache performance statistics.
+        """Get cache statistics.
 
         Returns:
-            Dictionary with hit/miss statistics
+            Dictionary with cache statistics.
         """
         hit_rate = 0
         if (self.stats["hits"] + self.stats["misses"]) > 0:

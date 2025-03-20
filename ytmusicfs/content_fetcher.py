@@ -3,7 +3,7 @@
 from typing import List, Optional, Dict, Any
 from ytmusicfs.cache import CacheManager
 from ytmusicfs.processor import TrackProcessor
-from ytmusicfs.yt_dlp_utils import extract_playlist_content
+from ytmusicfs.yt_dlp_utils import YTDLPUtils
 import logging
 import time
 import traceback
@@ -21,6 +21,7 @@ class ContentFetcher:
         processor: TrackProcessor,
         cache: CacheManager,
         logger: logging.Logger,
+        yt_dlp_utils: YTDLPUtils,
         browser: Optional[str] = None,
     ):
         """Initialize the ContentFetcher.
@@ -30,6 +31,7 @@ class ContentFetcher:
             processor: Track processor for handling track data
             cache: Cache manager for storing fetched data
             logger: Logger instance
+            yt_dlp_utils: YTDLPUtils instance for YouTube interaction
             browser: Browser to use for cookies (optional)
         """
         self.client = client
@@ -37,6 +39,7 @@ class ContentFetcher:
         self.cache = cache
         self.logger = logger
         self.browser = browser
+        self.yt_dlp_utils = yt_dlp_utils
         # Initialize playlist registry with all playlist types
         self._initialize_playlist_registry()
         # No auto-refresh - we'll refresh on demand when content is accessed
@@ -204,7 +207,9 @@ class ContentFetcher:
 
         try:
             # Fetch tracks from YouTube Music
-            tracks = extract_playlist_content(playlist_id, limit, self.browser)
+            tracks = self.yt_dlp_utils.extract_playlist_content(
+                playlist_id, limit, self.browser
+            )
             self.logger.info(f"Fetched {len(tracks)} tracks for {playlist_id}")
 
             # If no tracks were returned and we have existing tracks, return them
