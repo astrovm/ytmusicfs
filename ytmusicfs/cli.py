@@ -8,7 +8,6 @@ from ytmusicfs.filesystem import mount_ytmusicfs
 from ytmusicfs.oauth_setup import main as oauth_setup
 import argparse
 import logging
-import os
 import sys
 
 
