@@ -12,14 +12,11 @@ import os
 import sys
 
 
-def setup_logging(
-    args: argparse.Namespace, log_dir: str = "~/.local/share/ytmusicfs/logs"
-) -> logging.Logger:
+def setup_logging(args: argparse.Namespace) -> logging.Logger:
     """Configure logging based on command-line arguments.
 
     Args:
         args: Parsed command-line arguments.
-        log_dir: Directory for log files.
 
     Returns:
         Configured logger instance.
@@ -29,9 +26,10 @@ def setup_logging(
 
     handlers = [logging.StreamHandler(sys.stdout)]
     if not args.foreground:
-        os.makedirs(log_dir, exist_ok=True)
-        log_file = os.path.join(log_dir, "ytmusicfs.log")
-        handlers.append(logging.FileHandler(log_file))
+        log_path = Path.home() / ".local" / "share" / "ytmusicfs" / "logs"
+        log_path.mkdir(parents=True, exist_ok=True)
+        log_file = log_path / "ytmusicfs.log"
+        handlers.append(logging.FileHandler(str(log_file)))
 
     logging.basicConfig(level=log_level, format=log_format, handlers=handlers)
 
