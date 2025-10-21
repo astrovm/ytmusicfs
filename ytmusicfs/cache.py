@@ -3,6 +3,7 @@
 from cachetools import LRUCache
 from pathlib import Path
 from typing import Any, Optional, Dict, Tuple
+from ytmusicfs.constants import TOP_LEVEL_CATEGORIES, TOP_LEVEL_PATHS
 import hashlib
 import json
 import logging
@@ -120,7 +121,7 @@ class CacheManager:
     def _preload_common_paths(self):
         """Preload common paths into the cache for faster access."""
         # Add root path and standard directories
-        common_paths = ["/", "/playlists", "/albums", "/liked_songs"]
+        common_paths = ["/", *TOP_LEVEL_PATHS]
 
         for path in common_paths:
             self.mark_valid(path, is_directory=True)
@@ -130,6 +131,10 @@ class CacheManager:
                 "is_directory": True,
                 "time": time.time() + self.cache_timeout * 2,  # Double timeout
             }
+            if path != "/":
+                category = path.lstrip("/")
+                if category in TOP_LEVEL_CATEGORIES:
+                    self.path_types[path] = "directory"
 
     def _load_valid_paths(self) -> None:
         """Load valid paths from SQLite into memory."""
@@ -244,7 +249,11 @@ class CacheManager:
             Boolean indicating if the path is valid
         """
         # Special static paths are always valid
-        if path == "/" or path in ["/playlists", "/liked_songs", "/albums"]:
+        if path == "/" or path in TOP_LEVEL_PATHS:
+            if path != "/":
+                category = path.lstrip("/")
+                if category in TOP_LEVEL_CATEGORIES:
+                    self.path_types[path] = "directory"
             return True
 
         # Check fast validation cache first
@@ -371,7 +380,13 @@ class CacheManager:
             'file', 'directory', or None if the path is not in the cache
         """
         # Special static paths
-        if path == "/" or path in ["/playlists", "/liked_songs", "/albums"]:
+        if path == "/":
+            return "directory"
+
+        if path in TOP_LEVEL_PATHS:
+            category = path.lstrip("/")
+            if category in TOP_LEVEL_CATEGORIES:
+                self.path_types[path] = "directory"
             return "directory"
 
         # Check in-memory path_types first for speed
@@ -935,10 +950,7 @@ class CacheManager:
             return attrs
 
         # For special file paths like /playlists/playlist_name, check the appropriate registry
-        if (
-            parent_dir in ["/playlists", "/albums", "/liked_songs"]
-            and len(path.split("/")) == 3
-        ):
+        if parent_dir in TOP_LEVEL_PATHS and len(path.split("/")) == 3:
             # This might be a playlist/album entry - create minimal attrs for directories
             if self.is_valid_path(path):
                 # Create basic attributes for a directory
