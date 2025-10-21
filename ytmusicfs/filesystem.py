@@ -2,6 +2,12 @@
 
 from fuse import FUSE, Operations, FuseOSError
 from typing import Dict, Any, Optional, List
+from ytmusicfs.constants import (
+    DIRECTORY_PLAYLIST_TYPES,
+    ROOT_DIRECTORY_ENTRIES,
+    TOP_LEVEL_CATEGORIES,
+    TOP_LEVEL_PATHS,
+)
 from ytmusicfs.cache import CacheManager
 from ytmusicfs.client import YouTubeMusicClient
 from ytmusicfs.content_fetcher import ContentFetcher
@@ -136,55 +142,33 @@ class YouTubeMusicFS(Operations):
         # Register exact path handlers
         self.router.register(
             "/",
-            lambda: [
-                ".",
-                "..",
-                "playlists",
-                "liked_songs",
-                "albums",
-            ],
+            lambda: [".", ".."] + list(ROOT_DIRECTORY_ENTRIES),
         )
 
-        # Use the unified playlist handling for all playlist types
-        self.router.register(
-            "/playlists",
-            lambda: self.fetcher.readdir_playlist_by_type("playlist", "/playlists"),
-        )
-        self.router.register(
-            "/liked_songs",
-            lambda: self.fetcher.readdir_playlist_by_type(
-                "liked_songs", "/liked_songs"
-            ),
-        )
-        self.router.register(
-            "/albums",
-            lambda: self.fetcher.readdir_playlist_by_type("album", "/albums"),
-        )
-
-        # Register dynamic handlers with wildcard capture
-        # Use a unified approach for content fetching since all are just different playlist types
-        self.router.register_dynamic(
-            "/playlists/*",
-            lambda path, playlist_name: [".", ".."]
-            + self.fetcher.fetch_playlist_content(
-                self._get_playlist_id_from_name(playlist_name, "playlist"),
+        for category_name, playlist_type in TOP_LEVEL_CATEGORIES.items():
+            path = f"/{category_name}"
+            self.router.register(
                 path,
-            ),
-        )
-        self.router.register_dynamic(
-            "/albums/*",
-            lambda path, album_name: [".", ".."]
-            + self.fetcher.fetch_playlist_content(
-                self._get_playlist_id_from_name(album_name, "album"),
-                path,
-            ),
-        )
+                lambda path=path, playlist_type=playlist_type: self.fetcher.readdir_playlist_by_type(
+                    playlist_type,
+                    path,
+                ),
+            )
 
-        # Initialize path validation with common static paths
+            if playlist_type in DIRECTORY_PLAYLIST_TYPES:
+                self.router.register_dynamic(
+                    f"{path}/*",
+                    lambda path, item_name, playlist_type=playlist_type: [".", ".."]
+                    + self.fetcher.fetch_playlist_content(
+                        self._get_playlist_id_from_name(item_name, playlist_type),
+                        path,
+                    ),
+                )
+
+            self.cache.mark_valid(path, is_directory=True)
+
+        # Initialize path validation for the root directory
         self.cache.mark_valid("/", is_directory=True)
-        self.cache.mark_valid("/playlists", is_directory=True)
-        self.cache.mark_valid("/liked_songs", is_directory=True)
-        self.cache.mark_valid("/albums", is_directory=True)
 
         self.logger.info("YTMusicFS initialized successfully")
         self.logger.debug(
@@ -299,18 +283,12 @@ class YouTubeMusicFS(Operations):
 
         # Priority 1: Check fixed paths directly
         if path == "/":
-            return [".", "..", "playlists", "liked_songs", "albums"]
+            return [".", ".."] + list(ROOT_DIRECTORY_ENTRIES)
 
-        if path in ["/playlists", "/albums", "/liked_songs"]:
-            # Make a direct call to the appropriate content function
-            if path == "/playlists":
-                return self.fetcher.readdir_playlist_by_type("playlist", "/playlists")
-            elif path == "/albums":
-                return self.fetcher.readdir_playlist_by_type("album", "/albums")
-            elif path == "/liked_songs":
-                return self.fetcher.readdir_playlist_by_type(
-                    "liked_songs", "/liked_songs"
-                )
+        if path in TOP_LEVEL_PATHS:
+            category_name = path.lstrip("/")
+            playlist_type = TOP_LEVEL_CATEGORIES[category_name]
+            return self.fetcher.readdir_playlist_by_type(playlist_type, path)
 
         # Priority 2: Check if we have a cached directory listing
         cache_key = f"{path}_listing_with_attrs"
@@ -481,7 +459,7 @@ class YouTubeMusicFS(Operations):
             return attrs
 
         # CASE 2: Top-level directories
-        if path in ["/playlists", "/albums", "/liked_songs"]:
+        if path in TOP_LEVEL_PATHS:
             attrs.update(
                 {
                     "st_mode": stat.S_IFDIR | 0o555,
@@ -519,7 +497,12 @@ class YouTubeMusicFS(Operations):
                 self.logger.debug(f"Rejecting invalid level 2 path in getattr: {path}")
                 raise FuseOSError(errno.ENOENT)
 
-            if category in ["playlists", "albums"]:
+            if category in TOP_LEVEL_CATEGORIES:
+                playlist_type = TOP_LEVEL_CATEGORIES[category]
+            else:
+                playlist_type = None
+
+            if playlist_type in DIRECTORY_PLAYLIST_TYPES:
                 # This is likely a directory
                 attrs.update(
                     {
