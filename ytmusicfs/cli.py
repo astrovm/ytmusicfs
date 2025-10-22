@@ -24,7 +24,8 @@ def setup_logging(args: argparse.Namespace) -> logging.Logger:
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
     handlers = [logging.StreamHandler(sys.stdout)]
-    if not args.foreground:
+    foreground = getattr(args, "foreground", False)
+    if not foreground:
         log_path = Path.home() / ".local" / "share" / "ytmusicfs" / "logs"
         log_path.mkdir(parents=True, exist_ok=True)
         log_file = log_path / "ytmusicfs.log"
