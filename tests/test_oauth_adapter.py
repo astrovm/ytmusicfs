@@ -99,9 +99,9 @@ class TestYTMusicOAuthAdapter(unittest.TestCase):
         self.assertEqual(auth_data["access_token"], "new-token")
         self.assertEqual(auth_data["expires_in"], 1800)
         self.assertEqual(auth_data["expires_at"], 1000 + 1800)
-        self.assertEqual(auth_data["authorization"], "Bearer new-token")
-        self.assertEqual(auth_data["Authorization"], "Bearer new-token")
         self.assertEqual(auth_data["token_type"], "Bearer")
+        self.assertNotIn("authorization", auth_data)
+        self.assertNotIn("Authorization", auth_data)
 
     def test_raises_when_refresh_unavailable(self):
         with TemporaryDirectory() as tmpdir:
