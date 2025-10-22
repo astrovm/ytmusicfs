@@ -18,18 +18,27 @@ class DummyResponse:
 
 def test_apply_server_client_version_updates_client(monkeypatch) -> None:
     version = "1.2345.678"
+    visitor = "visitor"
     response = DummyResponse(
-        f"ytcfg.set({{\"INNERTUBE_CLIENT_VERSION\": \"{version}\", \"VISITOR_DATA\": \"visitor\"}});"
+        f"ytcfg.set({{\"INNERTUBE_CLIENT_VERSION\": \"{version}\", \"VISITOR_DATA\": \"{visitor}\"}});"
     )
 
     class DummyYTMusic:
         def __init__(self) -> None:
-            self.context = {"context": {"client": {"clientVersion": "initial"}}}
+            self.context = {
+                "context": {"client": {"clientVersion": "initial", "visitorData": "initial"}}
+            }
             self._auth_headers = CaseInsensitiveDict(
-                {"X-YouTube-Client-Version": "initial"}
+                {
+                    "X-YouTube-Client-Version": "initial",
+                    "X-Goog-Visitor-Id": "initial",
+                }
             )
             self.__dict__["base_headers"] = CaseInsensitiveDict(
-                {"X-YouTube-Client-Version": "initial"}
+                {
+                    "X-YouTube-Client-Version": "initial",
+                    "X-Goog-Visitor-Id": "initial",
+                }
             )
             self.calls: list[tuple[str, bool]] = []
 
@@ -47,10 +56,13 @@ def test_apply_server_client_version_updates_client(monkeypatch) -> None:
 
     assert applied_version == version
     assert dummy.context["context"]["client"]["clientVersion"] == version
+    assert dummy.context["context"]["client"]["visitorData"] == visitor
     assert dummy._auth_headers["X-YouTube-Client-Version"] == version
+    assert dummy._auth_headers["X-Goog-Visitor-Id"] == visitor
     assert (
         dummy.__dict__["base_headers"]["X-YouTube-Client-Version"] == version
     )
+    assert dummy.__dict__["base_headers"]["X-Goog-Visitor-Id"] == visitor
     assert dummy.calls == [("https://music.youtube.com", True)]
 
 
@@ -105,6 +117,83 @@ def test_oauth_adapter_applies_server_version(monkeypatch, tmp_path: Path) -> No
 
     assert isinstance(adapter.ytmusic, DummyYTMusic)
     assert call_count == 1
+
+
+def test_oauth_adapter_synchronizes_visitor_data(monkeypatch, tmp_path: Path) -> None:
+    version = "2.468.0"
+    visitor = "visitor-data"
+    response = DummyResponse(
+        "ytcfg.set({\"INNERTUBE_CLIENT_VERSION\": \"%s\", \"VISITOR_DATA\": \"%s\"});"
+        % (version, visitor)
+    )
+
+    def passthrough_apply(ytmusic, logger=None):
+        return apply_server_client_version(ytmusic, logger=logger)
+
+    monkeypatch.setattr(oauth_adapter, "apply_server_client_version", passthrough_apply)
+
+    class DummyConfigManager:
+        def __init__(self, auth_file, logger=None, **_kwargs):
+            self.auth_file = Path(auth_file)
+
+        def get_credentials(self):
+            return ("id", "secret")
+
+    monkeypatch.setattr(oauth_adapter, "ConfigManager", DummyConfigManager)
+
+    class DummyOAuthCredentials:
+        def __init__(self, client_id, client_secret):
+            self.client_id = client_id
+            self.client_secret = client_secret
+
+    monkeypatch.setattr(oauth_adapter, "OAuthCredentials", DummyOAuthCredentials)
+
+    class DummyYTMusic:
+        def __init__(self, *args, **kwargs):
+            self.context = {
+                "context": {"client": {"clientVersion": "initial", "visitorData": "initial"}}
+            }
+            self._auth_headers = CaseInsensitiveDict(
+                {
+                    "X-YouTube-Client-Version": "initial",
+                    "X-Goog-Visitor-Id": "initial",
+                }
+            )
+            self.__dict__["base_headers"] = CaseInsensitiveDict(
+                {
+                    "X-YouTube-Client-Version": "initial",
+                    "X-Goog-Visitor-Id": "initial",
+                }
+            )
+
+        def _send_get_request(self, url: str, params=None, use_base_headers: bool = False):
+            return response
+
+        def get_library_playlists(self, limit: int):
+            self.limit = limit
+            return []
+
+        @property
+        def headers(self):
+            return self.__dict__["base_headers"]
+
+    monkeypatch.setattr(oauth_adapter, "YTMusic", DummyYTMusic)
+
+    auth_file = tmp_path / "oauth.json"
+    auth_file.write_text("{}")
+
+    adapter = oauth_adapter.YTMusicOAuthAdapter(
+        auth_file=str(auth_file),
+        client_id="client",
+        client_secret="secret",
+        logger=logging.getLogger("test-adapter-visitor"),
+    )
+
+    client_context = adapter.ytmusic.context["context"]["client"]
+    assert client_context["clientVersion"] == version
+    assert client_context["visitorData"] == visitor
+    assert adapter.ytmusic._auth_headers["X-Goog-Visitor-Id"] == visitor
+    assert adapter.ytmusic.__dict__["base_headers"]["X-Goog-Visitor-Id"] == visitor
 
 
 def test_oauth_setup_cli_applies_server_version(monkeypatch, tmp_path: Path) -> None:
