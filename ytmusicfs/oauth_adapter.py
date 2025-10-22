@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 
-from typing import Optional, Any
-from ytmusicapi import YTMusic, OAuthCredentials
-from ytmusicfs.config import ConfigManager
 import json
 import logging
 import os
+import re
 import time
+from typing import Any, Optional, Tuple
+
+from ytmusicapi import OAuthCredentials, YTMusic
+from ytmusicapi.helpers import YTM_DOMAIN
+
+from ytmusicfs.config import ConfigManager
 
 
 class YTMusicOAuthAdapter:
@@ -83,6 +87,9 @@ class YTMusicOAuthAdapter:
                     oauth_credentials=oauth_credentials,
                 )
 
+                # Ensure the client context uses a valid web client identifier.
+                self._update_client_context()
+
                 # Test connection with a lightweight call
                 self.ytmusic.get_library_playlists(limit=1)
                 self.logger.info(
@@ -101,6 +108,75 @@ class YTMusicOAuthAdapter:
                     "Retrying YTMusic initialization after refreshing OAuth token"
                 )
 
+    def _update_client_context(self) -> None:
+        """Update the YTMusic client context with the live web client metadata."""
+
+        if self.ytmusic is None:
+            return
+
+        client_info = self._fetch_web_client_context()
+        if not client_info:
+            return
+
+        client_version, client_name = client_info
+
+        context_root = getattr(self.ytmusic, "context", None)
+        if not isinstance(context_root, dict):
+            return
+
+        context_container = context_root.setdefault("context", {})
+        client_context = context_container.setdefault("client", {})
+
+        updated_fields = []
+
+        if client_version and client_context.get("clientVersion") != client_version:
+            client_context["clientVersion"] = client_version
+            updated_fields.append(f"version={client_version}")
+
+        if client_name and client_context.get("clientName") != client_name:
+            client_context["clientName"] = client_name
+            updated_fields.append(f"name={client_name}")
+
+        if updated_fields:
+            self.logger.debug(
+                "Updated YTMusic client context (%s)", ", ".join(updated_fields)
+            )
+
+    _YTCFG_REGEX = re.compile(r"ytcfg\\.set\\s*\\(\\s*({.+?})\\s*\\)\\s*;")
+
+    def _fetch_web_client_context(
+        self,
+    ) -> Optional[Tuple[Optional[str], Optional[str]]]:
+        """Fetch the current web client metadata from the YouTube Music homepage."""
+
+        if self.ytmusic is None:
+            return None
+
+        try:
+            response = self.ytmusic._send_get_request(  # type: ignore[attr-defined]
+                YTM_DOMAIN, use_base_headers=True
+            )
+        except Exception as exc:  # pragma: no cover - network failure safeguard
+            self.logger.debug(
+                "Unable to fetch web client metadata for OAuth initialization: %s",
+                exc,
+            )
+            return None
+
+        matches = self._YTCFG_REGEX.findall(response.text)
+        for raw_cfg in matches:
+            try:
+                config = json.loads(raw_cfg)
+            except json.JSONDecodeError:
+                continue
+
+            version = config.get("INNERTUBE_CLIENT_VERSION")
+            name = config.get("INNERTUBE_CLIENT_NAME")
+            if version or name:
+                return version, name
+
+        return None
+
     def _create_oauth_credentials(self) -> OAuthCredentials:
         """Create an OAuthCredentials instance using known client credentials."""
 
@@ -111,7 +187,9 @@ class YTMusicOAuthAdapter:
             )
 
         self.logger.debug("Created OAuth credentials object")
-        return OAuthCredentials(client_id=self.client_id, client_secret=self.client_secret)
+        return OAuthCredentials(
+            client_id=self.client_id, client_secret=self.client_secret
+        )
 
     def _sanitize_oauth_file(self) -> None:
         """Remove legacy authorization headers from the OAuth auth file."""
@@ -195,9 +273,7 @@ class YTMusicOAuthAdapter:
             return False
 
         token_type = (
-            refreshed.get("token_type")
-            or oauth_data.get("token_type")
-            or "Bearer"
+            refreshed.get("token_type") or oauth_data.get("token_type") or "Bearer"
         )
         oauth_data["token_type"] = token_type
         oauth_data["access_token"] = access_token
