@@ -220,38 +220,52 @@ class TestContentFetcher(unittest.TestCase):
             },
         ]
 
-        # Configure cache mock to return directory listing
-        # When there is a cached listing, the method returns those entries
-        self.cache.get_directory_listing_with_attrs.return_value = {
-            ".": {"is_dir": True},
-            "..": {"is_dir": True},
-            "my_playlist": {"is_dir": True},
-            "another_playlist": {"is_dir": True},
-        }
+        self.cache.get_directory_listing_with_attrs.side_effect = [None, None, None]
 
-        # Test playlists directory
-        result = self.fetcher.readdir_playlist_by_type("playlist", "/playlists")
+        with patch.object(
+            self.fetcher, "_cache_directory_listing_with_attrs"
+        ) as mock_cache_directory:
+            # Test playlists using default directory resolution
+            result = self.fetcher.readdir_playlist_by_type("playlist")
 
-        # The result will contain at least ".", "..", and should include the playlists
-        self.assertIn(".", result)
-        self.assertIn("..", result)
-        self.assertIn("my_playlist", result)
-        self.assertIn("another_playlist", result)
+            self.assertEqual(result, [".", "..", "my_playlist", "another_playlist"])
+            mock_cache_directory.assert_called_with(
+                "/playlists",
+                [
+                    {"filename": "my_playlist", "is_directory": True},
+                    {"filename": "another_playlist", "is_directory": True},
+                ],
+            )
+            self.assertEqual(
+                self.cache.set_refresh_metadata.call_args_list[0][0][0],
+                "/playlists_listing",
+            )
 
-        # Configure cache mock for albums
-        self.cache.get_directory_listing_with_attrs.return_value = {
-            ".": {"is_dir": True},
-            "..": {"is_dir": True},
-            "my_album": {"is_dir": True},
-        }
+            mock_cache_directory.reset_mock()
+            self.cache.set_refresh_metadata.reset_mock()
 
-        # Test albums directory
-        result = self.fetcher.readdir_playlist_by_type("album", "/albums")
+            # Test albums using the shared caching logic
+            result = self.fetcher.readdir_playlist_by_type("album")
 
-        # The result will contain at least ".", "..", and should include the album
-        self.assertIn(".", result)
-        self.assertIn("..", result)
-        self.assertIn("my_album", result)
+            self.assertEqual(result, [".", "..", "my_album"])
+            mock_cache_directory.assert_called_with(
+                "/albums",
+                [{"filename": "my_album", "is_directory": True}],
+            )
+            self.assertEqual(
+                self.cache.set_refresh_metadata.call_args_list[0][0][0],
+                "/albums_listing",
+            )
+
+        with patch.object(
+            self.fetcher, "refresh_content", return_value=[{"filename": "track.m4a"}]
+        ) as mock_refresh:
+            result = self.fetcher.readdir_playlist_by_type("liked_songs")
+
+            self.assertEqual(result, [".", "..", "track.m4a"])
+            mock_refresh.assert_called_once()
+            called_cache_key = mock_refresh.call_args[0][0]
+            self.assertEqual(called_cache_key, "/liked_songs_processed")
 
     def test_get_playlist_id_from_name(self):
         """Test retrieving playlist ID from its name."""
