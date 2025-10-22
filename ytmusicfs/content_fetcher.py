@@ -221,15 +221,28 @@ class ContentFetcher:
         self, playlist_type: str = None, directory_path: str = None
     ) -> List[str]:
         """List playlists/albums/liked_songs instantly using cached data."""
+        type_config = {
+            "playlist": {
+                "default_directory": "/playlists",
+                "registry_filter": lambda entry: entry["type"] == "playlist",
+            },
+            "album": {
+                "default_directory": "/albums",
+                "registry_filter": lambda entry: entry["type"] == "album",
+            },
+            "liked_songs": {
+                "default_directory": "/liked_songs",
+                "registry_filter": lambda entry: entry["type"] == "liked_songs",
+            },
+        }
+
+        config = type_config.get(playlist_type)
+        if not config:
+            self.logger.error(f"Invalid playlist type: {playlist_type}")
+            return [".", ".."]
+
         if not directory_path:
-            directory_path = {
-                "playlist": "/playlists",
-                "album": "/albums",
-                "liked_songs": "/liked_songs",
-            }.get(playlist_type, "")
-            if not directory_path:
-                self.logger.error(f"Invalid playlist type: {playlist_type}")
-                return [".", ".."]
+            directory_path = config["default_directory"]
 
         cache_key = f"{directory_path}_listing"
         cached_listing = self.cache.get_directory_listing_with_attrs(directory_path)
@@ -237,10 +250,12 @@ class ContentFetcher:
             self.logger.debug(f"Instant cache hit for {directory_path}")
             return [".", ".."] + list(cached_listing.keys())
 
+        matching_entries = list(
+            filter(config["registry_filter"], self.PLAYLIST_REGISTRY)
+        )
+
         if playlist_type == "liked_songs":
-            entry = next(
-                (p for p in self.PLAYLIST_REGISTRY if p["type"] == "liked_songs"), None
-            )
+            entry = matching_entries[0] if matching_entries else None
             if not entry:
                 self.logger.error("Liked songs not found")
                 return [".", ".."]
@@ -254,17 +269,17 @@ class ContentFetcher:
             return [".", ".."] + [track["filename"] for track in tracks]
 
         # For playlists and albums, list directories
-        entries = [p for p in self.PLAYLIST_REGISTRY if p["type"] == playlist_type]
-        if not entries:
+        if not matching_entries:
             self.logger.warning(f"No {playlist_type} entries found")
             return [".", ".."]
 
         processed_entries = [
-            {"filename": e["name"], "is_directory": True} for e in entries
+            {"filename": entry["name"], "is_directory": True}
+            for entry in matching_entries
         ]
         self._cache_directory_listing_with_attrs(directory_path, processed_entries)
         self.cache.set_refresh_metadata(cache_key, time.time(), "fresh")
-        return [".", ".."] + [e["name"] for e in entries]
+        return [".", ".."] + [entry["name"] for entry in matching_entries]
 
     def _cache_directory_listing_with_attrs(
         self, dir_path: str, processed_tracks: List[Dict[str, Any]]
