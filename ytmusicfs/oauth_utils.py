@@ -11,7 +11,9 @@ from ytmusicapi import YTMusic
 from ytmusicapi.constants import YTM_DOMAIN
 
 INNERTUBE_VERSION_KEY = "INNERTUBE_CLIENT_VERSION"
+VISITOR_DATA_KEY = "VISITOR_DATA"
 CLIENT_VERSION_HEADER = "X-YouTube-Client-Version"
+VISITOR_ID_HEADER = "X-Goog-Visitor-Id"
 _YTCFG_PATTERN = re.compile(r"ytcfg\.set\s*\(\s*(\{.*?\})\s*\)\s*;?", re.DOTALL)
 
 
@@ -39,20 +41,51 @@ def apply_server_client_version(
             continue
 
         version = ytcfg.get(INNERTUBE_VERSION_KEY)
+        visitor_data = ytcfg.get(VISITOR_DATA_KEY)
+
         if not version:
             continue
 
-        ytmusic.context["context"]["client"]["clientVersion"] = version
+        context = getattr(ytmusic, "context", {})
+        client_context = None
+
+        if isinstance(context, dict):
+            nested_context = context.get("context")
+            if isinstance(nested_context, dict):
+                client_context = nested_context.get("client")
+                if client_context is None:
+                    client_context = {}
+                    nested_context["client"] = client_context
+            if client_context is None:
+                direct_client = context.get("client")
+                if isinstance(direct_client, dict):
+                    client_context = direct_client
+                elif direct_client is None:
+                    client_context = {}
+                    context["client"] = client_context
+
+        if isinstance(client_context, dict):
+            client_context["clientVersion"] = version
+            if visitor_data is not None:
+                client_context["visitorData"] = visitor_data
+
+        headers_updated = False
 
         if hasattr(ytmusic, "_auth_headers"):
             try:
                 ytmusic._auth_headers[CLIENT_VERSION_HEADER] = version  # type: ignore[attr-defined]
+                if visitor_data is not None:
+                    ytmusic._auth_headers[VISITOR_ID_HEADER] = visitor_data  # type: ignore[attr-defined]
+                headers_updated = True
             except Exception:  # noqa: BLE001 - best-effort update
                 log.debug("Unable to update OAuth headers with client version", exc_info=True)
 
         cached_headers = getattr(ytmusic, "__dict__", {}).get("base_headers")
         if cached_headers is not None:
             cached_headers[CLIENT_VERSION_HEADER] = version
+            if visitor_data is not None:
+                cached_headers[VISITOR_ID_HEADER] = visitor_data
+            headers_updated = True
         else:
             try:
                 headers = ytmusic.headers
@@ -63,8 +96,13 @@ def apply_server_client_version(
                 )
             else:
                 headers[CLIENT_VERSION_HEADER] = version
+                if visitor_data is not None:
+                    headers[VISITOR_ID_HEADER] = visitor_data
+                headers_updated = True
 
         log.debug("Discovered YouTube Music client version: %s", version)
+        if visitor_data is not None and headers_updated:
+            log.debug("Synchronized YouTube Music visitor data: %s", visitor_data)
         return version
 
     log.debug(
