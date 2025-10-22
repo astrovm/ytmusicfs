@@ -19,7 +19,12 @@ class DummyOAuthCredentials:
 
     def refresh_token(self, refresh_token):
         DummyOAuthCredentials.refresh_calls.append(refresh_token)
-        return {"access_token": "new-token", "expires_in": 1800}
+        return {
+            "access_token": "new-token",
+            "expires_in": 1800,
+            "token_type": "Bearer",
+            "scope": "https://www.googleapis.com/auth/youtube.readonly",
+        }
 
 
 class DummyYTMusic:
@@ -59,6 +64,8 @@ class TestYTMusicOAuthAdapter(unittest.TestCase):
             "expires_at": 0,
             "token_type": "Bearer",
             "scope": "https://www.googleapis.com/auth/youtube.readonly",
+            "authorization": "Bearer old-token",
+            "Authorization": "Bearer old-token",
         }
         auth_file.write_text(json.dumps(oauth_payload))
 
@@ -92,6 +99,9 @@ class TestYTMusicOAuthAdapter(unittest.TestCase):
         self.assertEqual(auth_data["access_token"], "new-token")
         self.assertEqual(auth_data["expires_in"], 1800)
         self.assertEqual(auth_data["expires_at"], 1000 + 1800)
+        self.assertEqual(auth_data["authorization"], "Bearer new-token")
+        self.assertEqual(auth_data["Authorization"], "Bearer new-token")
+        self.assertEqual(auth_data["token_type"], "Bearer")
 
     def test_raises_when_refresh_unavailable(self):
         with TemporaryDirectory() as tmpdir:

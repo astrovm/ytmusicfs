@@ -153,10 +153,24 @@ class YTMusicOAuthAdapter:
             self.logger.error("Refresh response did not include a new access_token")
             return False
 
+        token_type = (
+            refreshed.get("token_type")
+            or oauth_data.get("token_type")
+            or "Bearer"
+        )
+        oauth_data["token_type"] = token_type
         oauth_data["access_token"] = access_token
+
+        authorization_value = f"{token_type} {access_token}".strip()
+        oauth_data["authorization"] = authorization_value
+        if "Authorization" in oauth_data:
+            oauth_data["Authorization"] = authorization_value
 
         if "refresh_token" in refreshed and refreshed["refresh_token"]:
             oauth_data["refresh_token"] = refreshed["refresh_token"]
+
+        if "scope" in refreshed and refreshed["scope"]:
+            oauth_data["scope"] = refreshed["scope"]
 
         expires_in = refreshed.get("expires_in")
         if expires_in is not None:
