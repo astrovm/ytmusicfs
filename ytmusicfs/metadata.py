@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
-import os
 import errno
+import os
+from typing import Any, Dict, Optional
 
 
 class MetadataManager:
@@ -44,6 +45,56 @@ class MetadataManager:
         """
         self.content_fetcher = content_fetcher
 
+    def _cache_video_id(self, path: str, video_id: str) -> None:
+        """Store a discovered video ID in memory and persistent caches."""
+
+        with self.video_id_cache_lock:
+            self.video_id_cache[path] = video_id
+        self.cache.set(f"video_id:{path}", video_id)
+
+    def _find_video_id_in_cache(
+        self, cache_key: str, filename: str, path: str
+    ) -> Optional[str]:
+        """Search cached track listings for a matching filename."""
+
+        tracks = self.cache.get(cache_key)
+        if not tracks:
+            return None
+
+        for track in tracks:
+            if isinstance(track, dict) and track.get("filename") == filename:
+                video_id = track.get("videoId")
+                if video_id:
+                    self.logger.debug(
+                        f"Found video ID {video_id} for {filename} in {cache_key}"
+                    )
+                    self._cache_video_id(path, video_id)
+                    return video_id
+
+        return None
+
+    def _refresh_playlist_entry(self, playlist_entry: Dict[str, Any], dir_path: str) -> bool:
+        """Refresh playlist cache for the provided entry if possible."""
+
+        playlist_id = playlist_entry.get("id")
+        if not playlist_id:
+            self.logger.warning(
+                f"Cannot refresh playlist cache for {dir_path} without an ID"
+            )
+            return False
+
+        try:
+            self.content_fetcher.fetch_playlist_content(
+                playlist_id, dir_path, force_refresh=True
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self.logger.error(
+                f"Failed to refresh playlist cache for {dir_path}: {exc}"
+            )
+            return False
+
+        return True
+
     def get_video_id(self, path):
         """
         Get the video ID for a file path using cached data.
@@ -77,8 +128,7 @@ class MetadataManager:
             self.logger.debug(
                 f"Found video ID {video_id} in persistent cache for {path}"
             )
-            with self.video_id_cache_lock:
-                self.video_id_cache[path] = video_id
+            self._cache_video_id(path, video_id)
             return video_id
 
         dir_path = os.path.dirname(path)
@@ -90,10 +140,7 @@ class MetadataManager:
         if file_attrs and "videoId" in file_attrs:
             video_id = file_attrs["videoId"]
             self.logger.debug(f"Found video ID {video_id} in parent directory cache")
-            with self.video_id_cache_lock:
-                self.video_id_cache[path] = video_id
-            # Save to persistent cache
-            self.cache.set(cache_key, video_id)
+            self._cache_video_id(path, video_id)
             return video_id
 
         # If we don't have a content fetcher, we can't go further
@@ -109,23 +156,14 @@ class MetadataManager:
         playlist_entry = self.content_fetcher.get_playlist_entry_from_path(dir_path)
 
         if playlist_entry:
-            # Use a consistent cache key pattern for all playlist types
-            cache_key = f"{dir_path}_processed"
-            self.logger.debug(f"Using cache key {cache_key} for {path}")
+            playlist_cache_key = f"{dir_path}_processed"
+            self.logger.debug(f"Using cache key {playlist_cache_key} for {path}")
 
-            # Try to get the track data from the cache
-            tracks = self.cache.get(cache_key)
-            if tracks:
-                for track in tracks:
-                    if isinstance(track, dict) and track.get("filename") == filename:
-                        video_id = track.get("videoId")
-                        if video_id:
-                            # Cache for future use
-                            with self.video_id_cache_lock:
-                                self.video_id_cache[path] = video_id
-                            # Save to persistent cache
-                            self.cache.set(f"video_id:{path}", video_id)
-                            return video_id
+            video_id = self._find_video_id_in_cache(
+                playlist_cache_key, filename, path
+            )
+            if video_id:
+                return video_id
 
         # If we didn't find the video ID, try to fetch the directory contents
         # This would usually be done by the filesystem readdir method
@@ -134,19 +172,13 @@ class MetadataManager:
 
         # Try again with the unified approach after potential refresh
         if playlist_entry:
-            cache_key = f"{dir_path}_processed"
-            tracks = self.cache.get(cache_key)
-            if tracks:
-                for track in tracks:
-                    if isinstance(track, dict) and track.get("filename") == filename:
-                        video_id = track.get("videoId")
-                        if video_id:
-                            # Cache for future use
-                            with self.video_id_cache_lock:
-                                self.video_id_cache[path] = video_id
-                            # Save to persistent cache
-                            self.cache.set(f"video_id:{path}", video_id)
-                            return video_id
+            refreshed = self._refresh_playlist_entry(playlist_entry, dir_path)
+            if refreshed:
+                video_id = self._find_video_id_in_cache(
+                    playlist_cache_key, filename, path
+                )
+                if video_id:
+                    return video_id
 
         self.logger.error(f"Could not find video ID for {filename} in {dir_path}")
         raise OSError(errno.ENOENT, "Video ID not found")
