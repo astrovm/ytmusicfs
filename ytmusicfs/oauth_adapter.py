@@ -57,6 +57,10 @@ class YTMusicOAuthAdapter:
                 "Client ID and secret not provided. Token refresh may not work."
             )
 
+        self.logger.debug(
+            "Initializing YTMusic client with auth file %s", self.config.auth_file
+        )
+
         # Initialize YTMusic with OAuth
         self._initialize_ytmusic()
 
@@ -88,8 +92,42 @@ class YTMusicOAuthAdapter:
             )
 
         except Exception as e:
-            self.logger.error(f"Failed to initialize YTMusic with OAuth: {e}")
+            self._log_oauth_error(e)
             raise
+
+    def _log_oauth_error(self, error: Exception) -> None:
+        """Log detailed information about OAuth initialization failures."""
+        details = [f"{error.__class__.__name__}: {error}"]
+
+        cause = getattr(error, "__cause__", None)
+        if cause is not None:
+            details.append(f"Caused by {cause.__class__.__name__}: {cause}")
+
+        response = getattr(error, "response", None)
+        if response is not None:
+            status = getattr(response, "status_code", "unknown")
+            reason = getattr(response, "reason", "")
+            details.append(f"HTTP response status: {status} {reason}".strip())
+
+            # Attempt to extract a meaningful payload from the response
+            payload = None
+            try:
+                payload = response.json()
+            except Exception:  # noqa: BLE001 - best effort to decode
+                text = getattr(response, "text", None)
+                if text:
+                    payload = text
+
+            if payload:
+                payload_str = str(payload)
+                if len(payload_str) > 500:
+                    payload_str = payload_str[:497] + "..."
+                details.append(f"HTTP response payload: {payload_str}")
+
+        self.logger.error(
+            "Failed to initialize YTMusic with OAuth. %s",
+            " | ".join(details),
+        )
 
     def refresh_token(self) -> bool:
         """
