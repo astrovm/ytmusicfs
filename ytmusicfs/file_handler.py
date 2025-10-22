@@ -148,6 +148,13 @@ class FileHandler:
         # Should not reach here but just in case
         raise OSError(errno.EIO, "Failed to stream content after all retries")
 
+    def _read_from_cache(self, cache_path: Path, size: int, offset: int) -> bytes:
+        """Read data directly from a cached file on disk."""
+
+        with cache_path.open("rb") as cached_file:
+            cached_file.seek(offset)
+            return cached_file.read(size)
+
     def read(self, path: str, size: int, offset: int, fh: int) -> bytes:
         """Read data from a file, fetching stream URL on-demand if needed.
 
@@ -176,26 +183,20 @@ class FileHandler:
             progress = self.downloader.get_progress(video_id)
             if progress and progress["status"] == "complete":
                 # Fully downloaded file
-                with cache_path.open("rb") as f:
-                    f.seek(offset)
-                    return f.read(size)
+                return self._read_from_cache(cache_path, size, offset)
             elif (
                 progress
                 and progress["status"] == "downloading"
                 and progress["progress"] >= offset + size
             ):
                 # Partially downloaded file with enough data
-                with cache_path.open("rb") as f:
-                    f.seek(offset)
-                    return f.read(size)
+                return self._read_from_cache(cache_path, size, offset)
 
         # If we don't have the stream URL yet (and it's not a cached file), fetch it on-demand
         if not file_info["stream_url"] or file_info["stream_url"] == "cached":
             if file_info["stream_url"] == "cached":
                 # If marked as cached, we can read directly from the file
-                with cache_path.open("rb") as f:
-                    f.seek(offset)
-                    return f.read(size)
+                return self._read_from_cache(cache_path, size, offset)
 
             # Otherwise, proceed with fetching the stream URL
             self.logger.debug(f"Fetching stream URL on-demand for {video_id}")
