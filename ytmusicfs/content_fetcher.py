@@ -76,6 +76,49 @@ class ContentFetcher:
                 return entry
         return None
 
+    def _add_registry_entries(
+        self,
+        fetch_fn: Callable[..., List[Dict[str, Any]]],
+        id_key: str,
+        type_name: str,
+        prefix: str,
+        skip_condition: Optional[Callable[[Dict[str, Any]], bool]] = None,
+        id_transform: Optional[Callable[[Dict[str, Any]], str]] = None,
+        limit: int = 1000,
+    ) -> None:
+        """Fetch and sanitize entries before appending them to the registry."""
+
+        entries = fetch_fn(limit=limit)
+        for entry in entries:
+            if skip_condition and skip_condition(entry):
+                continue
+
+            entry_id = id_transform(entry) if id_transform else entry.get(id_key)
+            if entry_id is None:
+                self.logger.debug(
+                    "Skipping %s entry without %s", type_name, id_key
+                )
+                continue
+
+            sanitized_name = self.processor.sanitize_filename(entry["title"])
+            path = f"{prefix}/{sanitized_name}"
+            self.PLAYLIST_REGISTRY.append(
+                {
+                    "name": sanitized_name,
+                    "id": entry_id,
+                    "type": type_name,
+                    "path": path,
+                }
+            )
+
+    def _should_skip_podcast_playlist(self, playlist: Dict[str, Any]) -> bool:
+        """Return True when the playlist represents a podcast feed to skip."""
+
+        if playlist.get("playlistId") == "SE":
+            self.logger.info("Skipping podcast playlist (SE) - podcasts not supported")
+            return True
+        return False
+
     def _initialize_playlist_registry(self, force_refresh: bool = False) -> None:
         """Initialize or refresh the playlist registry with all playlist types.
 
@@ -111,41 +154,21 @@ class ContentFetcher:
         )
 
         # Fetch playlists
-        playlists = self.client.get_library_playlists(
-            limit=1000
-        )  # Initial fetch for IDs
-        for p in playlists:
-            # Skip podcast playlist type (SE)
-            if p.get("playlistId") == "SE":
-                self.logger.info(
-                    "Skipping podcast playlist (SE) - podcasts not supported"
-                )
-                continue
-
-            sanitized_name = self.processor.sanitize_filename(p["title"])
-            path = f"/playlists/{sanitized_name}"
-            self.PLAYLIST_REGISTRY.append(
-                {
-                    "name": sanitized_name,
-                    "id": p["playlistId"],
-                    "type": "playlist",
-                    "path": path,
-                }
-            )
+        self._add_registry_entries(
+            fetch_fn=self.client.get_library_playlists,
+            id_key="playlistId",
+            type_name="playlist",
+            prefix="/playlists",
+            skip_condition=self._should_skip_podcast_playlist,
+        )
 
         # Fetch albums
-        albums = self.client.get_library_albums(limit=1000)  # Initial fetch for IDs
-        for a in albums:
-            sanitized_name = self.processor.sanitize_filename(a["title"])
-            path = f"/albums/{sanitized_name}"
-            self.PLAYLIST_REGISTRY.append(
-                {
-                    "name": sanitized_name,
-                    "id": a["browseId"],  # Albums use browseId as playlist ID
-                    "type": "album",
-                    "path": path,
-                }
-            )
+        self._add_registry_entries(
+            fetch_fn=self.client.get_library_albums,
+            id_key="browseId",
+            type_name="album",
+            prefix="/albums",
+        )
 
         self.logger.info(
             f"Initialized playlist registry with {len(self.PLAYLIST_REGISTRY)} entries"
