@@ -190,6 +190,30 @@ class TestContentFetcher(unittest.TestCase):
         # Verify cache operations
         self.assertEqual(self.cache.set.call_count, 1)  # Cache the result
 
+    def test_refresh_content_sets_durations_once(self):
+        self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
+        self.cache.get.return_value = []
+        self.cache.set_durations_batch = Mock()
+
+        self.processor.extract_track_info.return_value = {
+            "title": "Song 1",
+            "artist": "Artist 1",
+            "videoId": "vid1",
+            "duration_seconds": 180,
+        }
+
+        def fake_fetch(limit):
+            return [
+                {"id": "vid1", "title": "Song 1", "uploader": "Artist 1", "duration": 180}
+            ]
+
+        self.fetcher.cache_directory_callback = Mock()
+
+        tracks = self.fetcher.refresh_content("cache_key", fake_fetch, "/playlists/demo")
+
+        self.cache.set_durations_batch.assert_called_once_with({"vid1": 180})
+        self.assertEqual(len(tracks), 1)
+
     def test_readdir_playlist_by_type(self):
         """Test listing directory contents for a playlist type."""
         # Configure mock state

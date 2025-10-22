@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from typing import List, Optional, Dict, Any, Callable
+from ytmusicfs.constants import TOP_LEVEL_CATEGORIES
 from ytmusicfs.cache import CacheManager
 from ytmusicfs.processor import TrackProcessor
 from ytmusicfs.yt_dlp_utils import YTDLPUtils
@@ -195,9 +196,8 @@ class ContentFetcher:
         Returns:
             List of track filenames
         """
-        # Simple check for the podcast playlist ID "SE"
-        if playlist_id == "SE":
-            self.logger.info("Skipping podcast playlist (SE) - podcasts not supported")
+        # Skip unsupported podcast feeds
+        if self._should_skip_podcast_playlist({"playlistId": playlist_id}):
             return []
 
         # CONSISTENT CACHE KEY: Always use path_processed regardless of playlist type
@@ -221,28 +221,17 @@ class ContentFetcher:
         self, playlist_type: str = None, directory_path: str = None
     ) -> List[str]:
         """List playlists/albums/liked_songs instantly using cached data."""
-        type_config = {
-            "playlist": {
-                "default_directory": "/playlists",
-                "registry_filter": lambda entry: entry["type"] == "playlist",
-            },
-            "album": {
-                "default_directory": "/albums",
-                "registry_filter": lambda entry: entry["type"] == "album",
-            },
-            "liked_songs": {
-                "default_directory": "/liked_songs",
-                "registry_filter": lambda entry: entry["type"] == "liked_songs",
-            },
-        }
+        type_to_paths: Dict[str, List[str]] = {}
+        for category_name, category_type in TOP_LEVEL_CATEGORIES.items():
+            type_to_paths.setdefault(category_type, []).append(f"/{category_name}")
 
-        config = type_config.get(playlist_type)
-        if not config:
+        candidate_paths = type_to_paths.get(playlist_type)
+        if not candidate_paths:
             self.logger.error(f"Invalid playlist type: {playlist_type}")
             return [".", ".."]
 
         if not directory_path:
-            directory_path = config["default_directory"]
+            directory_path = candidate_paths[0]
 
         cache_key = f"{directory_path}_listing"
         cached_listing = self.cache.get_directory_listing_with_attrs(directory_path)
@@ -250,12 +239,15 @@ class ContentFetcher:
             self.logger.debug(f"Instant cache hit for {directory_path}")
             return [".", ".."] + list(cached_listing.keys())
 
-        matching_entries = list(
-            filter(config["registry_filter"], self.PLAYLIST_REGISTRY)
-        )
-
         if playlist_type == "liked_songs":
-            entry = matching_entries[0] if matching_entries else None
+            entry = next(
+                (
+                    item
+                    for item in self.PLAYLIST_REGISTRY
+                    if item["path"] == directory_path
+                ),
+                None,
+            )
             if not entry:
                 self.logger.error("Liked songs not found")
                 return [".", ".."]
@@ -269,6 +261,13 @@ class ContentFetcher:
             return [".", ".."] + [track["filename"] for track in tracks]
 
         # For playlists and albums, list directories
+        matching_entries = [
+            entry
+            for entry in self.PLAYLIST_REGISTRY
+            if entry["type"] == playlist_type
+            and entry["path"].startswith(f"{directory_path}/")
+        ]
+
         if not matching_entries:
             self.logger.warning(f"No {playlist_type} entries found")
             return [".", ".."]

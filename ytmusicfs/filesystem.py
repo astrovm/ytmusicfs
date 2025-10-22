@@ -186,10 +186,6 @@ class YouTubeMusicFS(Operations):
         """
         now = time.time()
         listing_with_attrs = {}
-        valid_filenames = set()
-
-        # Collect durations for batch processing
-        durations_batch = {}
 
         for track in processed_tracks:
             filename = track.get("filename")
@@ -198,8 +194,6 @@ class YouTubeMusicFS(Operations):
                     f"Track missing filename in processed_tracks: {track}"
                 )
                 continue
-
-            valid_filenames.add(filename)
 
             # Check if this is explicitly a directory
             is_directory = track.get("is_directory", False)
@@ -212,9 +206,6 @@ class YouTubeMusicFS(Operations):
                     "st_nlink": 2,
                     "st_size": 0,
                 }
-                # Mark as directory in cache system
-                self.cache.mark_valid(f"{dir_path}/{filename}", is_directory=True)
-                self.logger.debug(f"Cached directory: {dir_path}/{filename}")
             else:
                 attrs = {
                     "st_mode": stat.S_IFREG | 0o644,
@@ -243,31 +234,8 @@ class YouTubeMusicFS(Operations):
 
             listing_with_attrs[filename] = attrs
 
-            # Mark path as valid and store metadata with explicit is_directory flag
-            file_path = f"{dir_path}/{filename}"
-            self.cache.mark_valid(file_path, is_directory=is_directory)
-
-            # If it's a file, collect video ID to duration mapping if available
-            if not is_directory:
-                video_id = track.get("videoId")
-                if video_id and track.get("duration_seconds"):
-                    durations_batch[video_id] = track.get("duration_seconds")
-
-        # Batch update all durations at once
-        if durations_batch:
-            self.logger.debug(
-                f"Batch updating {len(durations_batch)} track durations from directory listing"
-            )
-            self.cache.set_durations_batch(durations_batch)
-
         # Cache the directory listing with attributes
         self.cache.set_directory_listing_with_attrs(dir_path, listing_with_attrs)
-
-        # Also cache the filenames separately for backward compatibility
-        self.cache.set(f"valid_files:{dir_path}", list(valid_filenames))
-
-        # Mark this directory as valid
-        self.cache.mark_valid(dir_path, is_directory=True)
 
     def readdir(self, path: str, fh: Optional[int] = None) -> List[str]:
         """Read directory contents with optimized caching.

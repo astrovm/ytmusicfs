@@ -438,6 +438,97 @@ class TestCacheManager(unittest.TestCase):
                 result["file1.txt"]["st_mode"], listing["file1.txt"]["st_mode"]
             )
 
+    def test_directory_listing_marks_children_valid(self):
+        """set_directory_listing_with_attrs should update validation metadata."""
+
+        with (
+            patch.object(CacheManager, "_load_valid_paths"),
+            patch.object(sqlite3, "connect"),
+        ):
+            cache = CacheManager(
+                thread_manager=self.mock_thread_manager,
+                cache_dir=self.temp_dir,
+                logger=self.logger,
+            )
+
+            cache.set = Mock()
+            cache.set_batch = Mock()
+
+            cache.valid_paths = set()
+            cache.path_validation_cache = {}
+            cache.path_types = {}
+            cache.directory_listings_cache = {}
+            cache.attrs_cache = {}
+
+            path = "/library"
+            listing = {
+                "track.m4a": {"st_mode": stat.S_IFREG | 0o644, "st_size": 4096},
+                "Album": {"st_mode": stat.S_IFDIR | 0o755, "st_size": 0},
+            }
+
+            cache.set_directory_listing_with_attrs(path, listing)
+
+            self.assertIn(path, cache.valid_paths)
+            self.assertIn(f"{path}/track.m4a", cache.valid_paths)
+            self.assertIn(f"{path}/Album", cache.valid_paths)
+            self.assertEqual(cache.path_types[f"{path}/track.m4a"], "file")
+            self.assertEqual(cache.path_types[f"{path}/Album"], "directory")
+            self.assertIn(path, cache.path_validation_cache)
+            self.assertIn(f"{path}/track.m4a", cache.path_validation_cache)
+            cache.set.assert_any_call("valid_files:/library", ["track.m4a", "Album"])
+
+            cache.close()
+
+    def test_get_entry_type_uses_shared_lookup(self):
+        with (
+            patch.object(CacheManager, "_load_valid_paths"),
+            patch.object(sqlite3, "connect"),
+        ):
+            cache = CacheManager(
+                thread_manager=self.mock_thread_manager,
+                cache_dir=self.temp_dir,
+                logger=self.logger,
+            )
+
+            cache.get_directory_listing_with_attrs = Mock(return_value=None)
+            cache._fetch_path_entry = Mock(return_value=("valid_dir", "directory"))
+
+            entry_type = cache.get_entry_type("/foo")
+
+            self.assertEqual(entry_type, "directory")
+            cache._fetch_path_entry.assert_called_once_with("/foo")
+            self.assertEqual(cache.path_types["/foo"], "directory")
+
+            cache.close()
+
+    def test_is_valid_path_uses_shared_lookup(self):
+        with (
+            patch.object(CacheManager, "_load_valid_paths"),
+            patch.object(sqlite3, "connect"),
+        ):
+            cache = CacheManager(
+                thread_manager=self.mock_thread_manager,
+                cache_dir=self.temp_dir,
+                logger=self.logger,
+            )
+
+            cache.valid_paths = set()
+            cache.path_types = {}
+            cache.path_validation_cache = {}
+            cache.directory_listings_cache = {}
+            cache.get_directory_listing_with_attrs = Mock(return_value=None)
+            cache.get = Mock(return_value=None)
+            cache._fetch_path_entry = Mock(return_value=("exact_path", "file"))
+
+            result = cache.is_valid_path("/foo")
+
+            self.assertTrue(result)
+            cache._fetch_path_entry.assert_called_once_with("/foo")
+            self.assertIn("/foo", cache.valid_paths)
+            self.assertEqual(cache.path_types["/foo"], "file")
+
+            cache.close()
+
     def test_directory_listing_batch_invalidation(self):
         """Test batch invalidation of directory listings."""
         # Create a CacheManager with mocked methods

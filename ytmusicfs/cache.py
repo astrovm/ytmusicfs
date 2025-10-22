@@ -2,7 +2,7 @@
 
 from cachetools import LRUCache
 from pathlib import Path
-from typing import Any, Optional, Dict, Tuple
+from typing import Any, Optional, Dict, Tuple, List
 from ytmusicfs.constants import TOP_LEVEL_CATEGORIES, TOP_LEVEL_PATHS
 import hashlib
 import json
@@ -256,6 +256,52 @@ class CacheManager:
                 f"Failed to mark path as valid: {e.__class__.__name__}: {e}"
             )
 
+    def _fetch_path_entry(
+        self, path: str
+    ) -> Optional[Tuple[str, Optional[str]]]:
+        """Fetch path metadata directly from the database.
+
+        Args:
+            path: Filesystem path to look up
+
+        Returns:
+            Tuple of (source, entry_type) if found, otherwise None.
+            ``source`` is one of ``"direct"``, ``"valid_dir"`` or ``"exact_path"``.
+            ``entry_type`` may be ``"directory"``, ``"file"`` or ``None`` when
+            the database entry lacks explicit type information.
+        """
+
+        lookups = [
+            ("direct", self.path_to_key(path)),
+            ("valid_dir", self.path_to_key(f"valid_dir:{path}")),
+            ("exact_path", self.path_to_key(f"exact_path:{path}")),
+        ]
+
+        try:
+            with self.lock:
+                for source, key in lookups:
+                    self.cursor.execute(
+                        "SELECT entry_type, entry FROM cache_entries WHERE key = ?",
+                        (key,),
+                    )
+                    row = self.cursor.fetchone()
+                    if row:
+                        entry_type, entry_value = row
+                        if entry_type:
+                            return source, entry_type
+                        if entry_value is not None:
+                            if source == "valid_dir":
+                                return source, "directory"
+                            if source == "exact_path":
+                                return source, "file"
+                            return source, None
+            return None
+        except sqlite3.Error as e:
+            self.logger.warning(
+                f"Error fetching cache entry for {path}: {e.__class__.__name__}: {e}"
+            )
+            return None
+
     def is_valid_path(self, path: str) -> bool:
         """Enhanced path validation with improved caching for better performance.
 
@@ -347,30 +393,31 @@ class CacheManager:
                 self.stats["db_hits"] += 1
                 return True
 
-        # Check special prefixed keys in database
-        for prefix in ["valid_dir:", "exact_path:"]:
-            db_key = self.path_to_key(f"{prefix}{path}")
-            try:
-                with self.lock:
-                    self.cursor.execute(
-                        "SELECT entry FROM cache_entries WHERE key = ?", (db_key,)
-                    )
-                    row = self.cursor.fetchone()
-                    if row:
-                        # Entry exists, mark as valid for future lookups
-                        is_dir = prefix == "valid_dir:"
-                        self.mark_valid(path, is_directory=is_dir)
+        # Check database entries directly when caches miss
+        entry_info = self._fetch_path_entry(path)
+        if entry_info:
+            source, entry_type = entry_info
+            is_dir: Optional[bool]
+            if entry_type:
+                is_dir = entry_type == "directory"
+            elif source == "valid_dir":
+                is_dir = True
+            elif source == "exact_path":
+                is_dir = False
+            else:
+                is_dir = None
 
-                        # Update validation cache
-                        self._set_path_validation_cache(
-                            path, True, is_directory=is_dir, ttl=300
-                        )
-                        self.stats["db_hits"] += 1
-                        return True
-            except sqlite3.Error as e:
-                self.logger.warning(
-                    f"Error checking database for {prefix}{path}: {e.__class__.__name__}: {e}"
-                )
+            self.valid_paths.add(path)
+            if entry_type:
+                self.path_types[path] = entry_type
+            elif is_dir is not None:
+                self.path_types[path] = "directory" if is_dir else "file"
+
+            self._set_path_validation_cache(
+                path, True, is_directory=is_dir, ttl=300
+            )
+            self.stats["db_hits"] += 1
+            return True
 
         # Path is not valid, cache this result too for a shorter time
         self._set_path_validation_cache(path, False, ttl=60)
@@ -400,65 +447,35 @@ class CacheManager:
         if path in self.path_types:
             return self.path_types[path]
 
-        # Check database
-        db_key = self.path_to_key(path)
-        try:
-            with self.lock:
-                self.cursor.execute(
-                    "SELECT entry_type FROM cache_entries WHERE key = ?", (db_key,)
-                )
-                row = self.cursor.fetchone()
-                if row and row[0]:
-                    # Cache in memory for future lookups
-                    self.path_types[path] = row[0]
-                    return row[0]
+        # Check database using shared helper
+        entry_info = self._fetch_path_entry(path)
+        if entry_info:
+            source, entry_type = entry_info
+            resolved_type = entry_type
+            if resolved_type is None:
+                if source == "valid_dir":
+                    resolved_type = "directory"
+                elif source == "exact_path":
+                    resolved_type = "file"
 
-                # Also check with different prefixes if not found directly
-                for prefix in ["valid_dir:", "exact_path:"]:
-                    prefixed_key = self.path_to_key(f"{prefix}{path}")
-                    self.cursor.execute(
-                        "SELECT entry_type FROM cache_entries WHERE key = ?",
-                        (prefixed_key,),
-                    )
-                    row = self.cursor.fetchone()
-                    if row and row[0]:
-                        # Cache in memory for future lookups
-                        self.path_types[path] = row[0]
-                        return row[0]
+            if resolved_type:
+                self.path_types[path] = resolved_type
+                self.stats["db_hits"] += 1
+                return resolved_type
 
-                    # Additional check for keys that exist but don't have explicit type
-                    if prefix in ["valid_dir:", "exact_path:"]:
-                        self.cursor.execute(
-                            "SELECT entry FROM cache_entries WHERE key = ?",
-                            (prefixed_key,),
-                        )
-                        row = self.cursor.fetchone()
-                        if row:
-                            entry_type = (
-                                "directory" if prefix == "valid_dir:" else "file"
-                            )
-                            # Cache in memory for future lookups
-                            self.path_types[path] = entry_type
-                            return entry_type
+        # Try to infer from directory listings
+        parent_dir = os.path.dirname(path)
+        filename = os.path.basename(path)
+        dir_listing = self.get_directory_listing_with_attrs(parent_dir)
+        if dir_listing and filename in dir_listing:
+            attr = dir_listing[filename]
+            is_dir = attr.get("st_mode", 0) & stat.S_IFDIR == stat.S_IFDIR
+            entry_type = "directory" if is_dir else "file"
+            # Cache in memory for future lookups
+            self.path_types[path] = entry_type
+            return entry_type
 
-            # Try to infer from directory listings
-            parent_dir = os.path.dirname(path)
-            filename = os.path.basename(path)
-            dir_listing = self.get_directory_listing_with_attrs(parent_dir)
-            if dir_listing and filename in dir_listing:
-                attr = dir_listing[filename]
-                is_dir = attr.get("st_mode", 0) & stat.S_IFDIR == stat.S_IFDIR
-                entry_type = "directory" if is_dir else "file"
-                # Cache in memory for future lookups
-                self.path_types[path] = entry_type
-                return entry_type
-
-            return None
-        except sqlite3.Error as e:
-            self.logger.warning(
-                f"Failed to get entry type for {path}: {e.__class__.__name__}: {e}"
-            )
-            return None
+        return None
 
     def get(self, path: str) -> Optional[Any]:
         """Get data from cache if it's still valid with improved caching.
@@ -826,12 +843,15 @@ class CacheManager:
             path: Directory path
             listing_with_attrs: Dictionary mapping filenames to their attributes
         """
-        if not listing_with_attrs:
-            self.logger.debug(f"Skipping empty directory listing for {path}")
-            return
-
         # Update both in-memory caches
         current_time = time.time()
+
+        # Always mark the directory itself as valid in memory
+        self.valid_paths.add(path)
+        self.path_types[path] = "directory"
+        self._set_path_validation_cache(
+            path, True, is_directory=True, ttl=self.cache_timeout
+        )
 
         # Update quick-access cached directory listing
         self.directory_listings_cache[path] = {
@@ -840,17 +860,19 @@ class CacheManager:
         }
 
         # Prepare batch entries for related paths - this improves validation performance
-        batch_entries = {}
+        batch_entries = {
+            f"valid_dir:{path}": {"data": True, "time": current_time}
+        }
 
-        # First ensure the directory itself is marked as valid
-        # Use set_batch later rather than calling mark_valid to reduce overhead
-        batch_entries[f"valid_dir:{path}"] = {"data": True, "time": current_time}
+        valid_children: List[str] = []
 
         # Create full path entries for each file for quick validation
         for filename, attrs in listing_with_attrs.items():
             # Skip special entries
             if filename in [".", ".."]:
                 continue
+
+            valid_children.append(filename)
 
             # Determine if this entry is a directory based on mode
             is_dir = bool(attrs.get("st_mode", 0) & stat.S_IFDIR == stat.S_IFDIR)
@@ -865,8 +887,18 @@ class CacheManager:
                 "time": current_time,
             }
 
+            # Update in-memory metadata caches for validation
+            self.valid_paths.add(child_path)
+            self.path_types[child_path] = "directory" if is_dir else "file"
+            self._set_path_validation_cache(
+                child_path, True, is_directory=is_dir, ttl=self.cache_timeout
+            )
+
             # Also update attrs cache for quick lookups
             self.attrs_cache[child_path] = attrs
+
+        # Persist filenames for backward compatibility consumers
+        self.set(f"valid_files:{path}", valid_children)
 
         # Dedicated cache key for directory listings
         cache_key = f"{path}_listing_with_attrs"
