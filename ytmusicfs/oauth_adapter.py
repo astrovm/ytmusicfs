@@ -64,6 +64,8 @@ class YTMusicOAuthAdapter:
                 "Client ID and secret not provided. Token refresh may not work."
             )
 
+        self._sanitize_oauth_file()
+
         # Initialize YTMusic with OAuth
         self._initialize_ytmusic()
 
@@ -110,6 +112,45 @@ class YTMusicOAuthAdapter:
 
         self.logger.debug("Created OAuth credentials object")
         return OAuthCredentials(client_id=self.client_id, client_secret=self.client_secret)
+
+    def _sanitize_oauth_file(self) -> None:
+        """Remove legacy authorization headers from the OAuth auth file."""
+
+        try:
+            with open(self.config.auth_file, "r", encoding="utf-8") as auth_fp:
+                oauth_data = json.load(auth_fp)
+        except FileNotFoundError:
+            self.logger.debug(
+                "OAuth auth file not found during sanitization; skipping cleanup"
+            )
+            return
+        except json.JSONDecodeError as exc:
+            self.logger.warning(
+                "OAuth auth file contains invalid JSON; skipping authorization cleanup: %s",
+                exc,
+            )
+            return
+
+        removed = False
+        for key in ("authorization", "Authorization"):
+            if key in oauth_data:
+                oauth_data.pop(key, None)
+                removed = True
+
+        if not removed:
+            return
+
+        try:
+            with open(self.config.auth_file, "w", encoding="utf-8") as auth_fp:
+                json.dump(oauth_data, auth_fp, indent=2)
+        except OSError as exc:
+            self.logger.warning(
+                "Failed to rewrite OAuth auth file during authorization cleanup: %s",
+                exc,
+            )
+            return
+
+        self.logger.debug("Removed legacy authorization headers from OAuth auth file")
 
     def _refresh_oauth_token(self) -> bool:
         """Attempt to refresh the stored OAuth access token."""
@@ -161,10 +202,13 @@ class YTMusicOAuthAdapter:
         oauth_data["token_type"] = token_type
         oauth_data["access_token"] = access_token
 
-        authorization_value = f"{token_type} {access_token}".strip()
-        oauth_data["authorization"] = authorization_value
-        if "Authorization" in oauth_data:
-            oauth_data["Authorization"] = authorization_value
+        # Remove precomputed authorization headers to let ytmusicapi classify the
+        # OAuth token correctly. Leaving these values in the auth file forces the
+        # library to treat the token as a fully-specified header payload, which
+        # breaks requests because numeric fields such as ``expires_at`` are not
+        # valid HTTP header values.
+        oauth_data.pop("authorization", None)
+        oauth_data.pop("Authorization", None)
 
         if "refresh_token" in refreshed and refreshed["refresh_token"]:
             oauth_data["refresh_token"] = refreshed["refresh_token"]
