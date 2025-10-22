@@ -20,11 +20,11 @@ classifiers = [
 keywords = ["youtube", "music", "fuse", "filesystem", "streaming", "audio"]
 requires-python = ">=3.9"
 dependencies = [
-  "cachetools==5.5.2",
+  "cachetools==6.2.1",
   "fusepy==3.0.1",
-  "requests==2.32.4",
-  "yt-dlp==2025.2.19",
-  "ytmusicapi==1.10.2",
+  "requests==2.32.5",
+  "yt-dlp==2025.10.14",
+  "ytmusicapi==1.11.1",
 ]
 
 [project.urls]
