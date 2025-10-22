@@ -1,10 +1,24 @@
 #!/usr/bin/env python3
 
-from typing import Optional, Any
-from ytmusicapi import YTMusic, OAuthCredentials
-from ytmusicfs.config import ConfigManager
 import logging
 import os
+from typing import Any, Optional
+
+from ytmusicapi import OAuthCredentials, YTMusic
+
+from ytmusicfs.config import ConfigManager
+
+
+def _mask(value: Optional[str]) -> str:
+    """Return a masked representation of sensitive credential values."""
+
+    if not value:
+        return "<missing>"
+
+    if len(value) <= 8:
+        return f"{value[0]}***{value[-1]}"
+
+    return f"{value[:4]}…{value[-4:]}"
 
 
 class YTMusicOAuthAdapter:
@@ -59,6 +73,11 @@ class YTMusicOAuthAdapter:
 
         self.logger.debug(
             "Initializing YTMusic client with auth file %s", self.config.auth_file
+        )
+        self.logger.debug(
+            "Resolved OAuth credentials for adapter: client_id=%s, client_secret=%s",
+            _mask(self.client_id),
+            _mask(self.client_secret),
         )
 
         # Initialize YTMusic with OAuth

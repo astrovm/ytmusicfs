@@ -1,13 +1,73 @@
 #!/usr/bin/env python3
 
-from ytmusicapi import setup_oauth as ytmusic_setup_oauth
-from ytmusicapi import YTMusic, OAuthCredentials
-from ytmusicfs.config import ConfigManager
 import argparse
 import json
 import logging
 import sys
+from typing import Optional
+
 import ytmusicapi
+
+from ytmusicapi import YTMusic, OAuthCredentials
+from ytmusicapi import setup_oauth as ytmusic_setup_oauth
+
+from ytmusicfs.config import ConfigManager
+
+
+def _mask(value: Optional[str]) -> str:
+    """Return a masked representation of a credential for logging."""
+
+    if not value:
+        return "<missing>"
+
+    if len(value) <= 8:
+        return f"{value[0]}***{value[-1]}"
+
+    return f"{value[:4]}…{value[-4:]}"
+
+
+def _log_oauth_error(
+    logger: logging.Logger,
+    error: Exception,
+    auth_file: str,
+    client_id: Optional[str],
+    client_secret: Optional[str],
+) -> None:
+    """Log detailed debugging information for OAuth verification failures."""
+
+    details = [f"{error.__class__.__name__}: {error}"]
+
+    cause = getattr(error, "__cause__", None)
+    if cause is not None:
+        details.append(f"Caused by {cause.__class__.__name__}: {cause}")
+
+    response = getattr(error, "response", None)
+    if response is not None:
+        status = getattr(response, "status_code", "unknown")
+        reason = getattr(response, "reason", "")
+        details.append(f"HTTP response status: {status} {reason}".strip())
+
+        payload = None
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001 - best effort to decode response
+            text = getattr(response, "text", None)
+            if text:
+                payload = text
+
+        if payload:
+            payload_str = str(payload)
+            if len(payload_str) > 500:
+                payload_str = payload_str[:497] + "..."
+            details.append(f"HTTP response payload: {payload_str}")
+
+    logger.error("OAuth verification failed. %s", " | ".join(details))
+    logger.error(
+        "OAuth troubleshooting data: auth_file=%s, client_id=%s, client_secret=%s",
+        auth_file,
+        _mask(client_id),
+        _mask(client_secret),
+    )
 
 
 def main(args=None):
@@ -88,14 +148,20 @@ def main(args=None):
     # Get client ID and secret
     client_id = args.client_id
     client_secret = args.client_secret
+    client_id_source: Optional[str] = "command-line argument" if client_id else None
+    client_secret_source: Optional[str] = "command-line argument" if client_secret else None
 
     # If not provided, try to read them from the existing token file
     if (not client_id or not client_secret) and output_file.exists():
         try:
             with open(output_file, "r") as f:
                 data = json.load(f)
-                client_id = client_id or data.get("client_id")
-                client_secret = client_secret or data.get("client_secret")
+                if not client_id and data.get("client_id"):
+                    client_id = data.get("client_id")
+                    client_id_source = f"existing OAuth file ({output_file})"
+                if not client_secret and data.get("client_secret"):
+                    client_secret = data.get("client_secret")
+                    client_secret_source = f"existing OAuth file ({output_file})"
             logger.info("Read client credentials from existing OAuth file")
         except Exception as e:
             logger.warning(f"Could not read credentials from existing file: {e}")
@@ -104,8 +170,12 @@ def main(args=None):
     if not client_id or not client_secret:
         loaded_id, loaded_secret = config.get_credentials()
         if loaded_id and loaded_secret:
-            client_id = client_id or loaded_id
-            client_secret = client_secret or loaded_secret
+            if not client_id and loaded_id:
+                client_id = loaded_id
+                client_id_source = f"credentials file ({config.credentials_file})"
+            if not client_secret and loaded_secret:
+                client_secret = loaded_secret
+                client_secret_source = f"credentials file ({config.credentials_file})"
             logger.info("Loaded client credentials from credentials file")
 
     # If still not available, prompt for them
@@ -123,10 +193,22 @@ def main(args=None):
 
         client_id = input("Enter Client ID: ")
         client_secret = input("Enter Client Secret: ")
+        if client_id:
+            client_id_source = "interactive prompt"
+        if client_secret:
+            client_secret_source = "interactive prompt"
 
     if not client_id or not client_secret:
         logger.error("Error: Client ID and Client Secret are required.")
         return 1, logger
+
+    logger.debug(
+        "Resolved OAuth credentials: client_id=%s (source=%s), client_secret=%s (source=%s)",
+        _mask(client_id),
+        client_id_source or "unknown",
+        _mask(client_secret),
+        client_secret_source or "unknown",
+    )
 
     # Check if file exists
     if output_file.exists():
@@ -179,6 +261,7 @@ def main(args=None):
 
         # Test connection
         logger.info("Testing OAuth connection...")
+        logger.debug("Testing OAuth connection with auth_file=%s", output_file)
 
         # Create a small test to verify the OAuth token works
         try:
@@ -202,6 +285,13 @@ def main(args=None):
                     logger.info(f"  {i}. {playlist['title']}")
         except Exception as e:
             logger.error(f"Error testing OAuth connection: {e}")
+            _log_oauth_error(
+                logger,
+                e,
+                auth_file=str(output_file),
+                client_id=client_id,
+                client_secret=client_secret,
+            )
             logger.error(
                 "The OAuth setup completed but there was an error testing the connection."
             )
