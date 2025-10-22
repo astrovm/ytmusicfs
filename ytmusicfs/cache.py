@@ -118,19 +118,32 @@ class CacheManager:
         # Add static commonly accessed paths to avoid repeated lookups
         self._preload_common_paths()
 
+    def _set_path_validation_cache(
+        self,
+        path: str,
+        valid: bool,
+        is_directory: Optional[bool] = None,
+        ttl: float = 300,
+    ) -> None:
+        """Store path validation details with an expiry time."""
+
+        entry = {"valid": valid, "time": time.time() + ttl}
+        if is_directory is not None:
+            entry["is_directory"] = is_directory
+        self.path_validation_cache[path] = entry
+
     def _preload_common_paths(self):
         """Preload common paths into the cache for faster access."""
         # Add root path and standard directories
         common_paths = ["/", *TOP_LEVEL_PATHS]
 
+        preload_ttl = self.cache_timeout * 2
+
         for path in common_paths:
             self.mark_valid(path, is_directory=True)
-            # Add to path validation cache with long expiry
-            self.path_validation_cache[path] = {
-                "valid": True,
-                "is_directory": True,
-                "time": time.time() + self.cache_timeout * 2,  # Double timeout
-            }
+            self._set_path_validation_cache(
+                path, True, is_directory=True, ttl=preload_ttl
+            )
             if path != "/":
                 category = path.lstrip("/")
                 if category in TOP_LEVEL_CATEGORIES:
@@ -170,7 +183,9 @@ class CacheManager:
                 f"Failed to load valid paths: {e.__class__.__name__}: {e}"
             )
 
-    def mark_valid(self, path: str, is_directory: Optional[bool] = None) -> None:
+    def mark_valid(
+        self, path: str, is_directory: Optional[bool] = None, ttl: Optional[float] = None
+    ) -> None:
         """Mark a path as valid in the cache with optimized storage.
 
         Args:
@@ -178,18 +193,20 @@ class CacheManager:
             is_directory: Flag indicating if this is a directory (None for unknown)
         """
         # Skip root as it's always valid
+        if ttl is None:
+            ttl = 300
+
         if path == "/":
+            self._set_path_validation_cache(path, True, is_directory=True, ttl=ttl)
             return
 
         # Update in-memory valid_paths set
         self.valid_paths.add(path)
 
         # Add to path validation cache with 5-minute expiry
-        self.path_validation_cache[path] = {
-            "valid": True,
-            "is_directory": is_directory,
-            "time": time.time() + 300,  # 5-minute cache
-        }
+        self._set_path_validation_cache(
+            path, True, is_directory=is_directory, ttl=ttl
+        )
 
         # Update path_types if is_directory is specified
         if is_directory is not None:
@@ -267,11 +284,12 @@ class CacheManager:
         if path in self.valid_paths:
             self.stats["hits"] += 1
             # Also update the validation cache
-            self.path_validation_cache[path] = {
-                "valid": True,
-                "is_directory": self.is_directory(path),
-                "time": time.time() + 300,  # Cache for 5 minutes
-            }
+            self._set_path_validation_cache(
+                path,
+                True,
+                is_directory=self.is_directory(path),
+                ttl=300,
+            )
             return True
 
         # For short paths, check parent validation for efficiency
@@ -291,11 +309,9 @@ class CacheManager:
                     self.mark_valid(path, is_directory=is_dir)
 
                     # Update validation cache
-                    self.path_validation_cache[path] = {
-                        "valid": True,
-                        "is_directory": is_dir,
-                        "time": time.time() + 300,  # Cache for 5 minutes
-                    }
+                    self._set_path_validation_cache(
+                        path, True, is_directory=is_dir, ttl=300
+                    )
                     self.stats["hits"] += 1
                     return True
 
@@ -312,11 +328,9 @@ class CacheManager:
                 self.mark_valid(path, is_directory=is_dir)
 
                 # Update validation cache
-                self.path_validation_cache[path] = {
-                    "valid": True,
-                    "is_directory": is_dir,
-                    "time": time.time() + 300,  # Cache for 5 minutes
-                }
+                self._set_path_validation_cache(
+                    path, True, is_directory=is_dir, ttl=300
+                )
                 self.stats["db_hits"] += 1
                 return True
 
@@ -327,11 +341,9 @@ class CacheManager:
                 self.mark_valid(path, is_directory=False)
 
                 # Update validation cache
-                self.path_validation_cache[path] = {
-                    "valid": True,
-                    "is_directory": False,
-                    "time": time.time() + 300,  # Cache for 5 minutes
-                }
+                self._set_path_validation_cache(
+                    path, True, is_directory=False, ttl=300
+                )
                 self.stats["db_hits"] += 1
                 return True
 
@@ -350,11 +362,9 @@ class CacheManager:
                         self.mark_valid(path, is_directory=is_dir)
 
                         # Update validation cache
-                        self.path_validation_cache[path] = {
-                            "valid": True,
-                            "is_directory": is_dir,
-                            "time": time.time() + 300,  # Cache for 5 minutes
-                        }
+                        self._set_path_validation_cache(
+                            path, True, is_directory=is_dir, ttl=300
+                        )
                         self.stats["db_hits"] += 1
                         return True
             except sqlite3.Error as e:
@@ -363,10 +373,7 @@ class CacheManager:
                 )
 
         # Path is not valid, cache this result too for a shorter time
-        self.path_validation_cache[path] = {
-            "valid": False,
-            "time": time.time() + 60,  # Cache negative results for 1 minute
-        }
+        self._set_path_validation_cache(path, False, ttl=60)
         self.stats["misses"] += 1
         return False
 
