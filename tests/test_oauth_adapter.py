@@ -33,6 +33,11 @@ class DummyYTMusic:
 
     def __init__(self, *_, **__):
         DummyYTMusic.init_calls += 1
+        self.context = {
+            "context": {
+                "client": {"clientName": "WEB_REMIX", "clientVersion": "1.000000"}
+            }
+        }
 
     def get_library_playlists(self, limit=1):  # pragma: no cover - small helper
         DummyYTMusic.playlist_calls += 1
@@ -53,7 +58,9 @@ class TestYTMusicOAuthAdapter(unittest.TestCase):
         DummyYTMusic.playlist_calls = 0
         self.logger = logging.getLogger("ytmusicfs-test")
 
-    def _create_auth_files(self, directory: Path, include_refresh: bool = True) -> tuple[str, str]:
+    def _create_auth_files(
+        self, directory: Path, include_refresh: bool = True
+    ) -> tuple[str, str]:
         auth_file = directory / "oauth.json"
         credentials_file = directory / "credentials.json"
 
@@ -79,9 +86,17 @@ class TestYTMusicOAuthAdapter(unittest.TestCase):
             directory = Path(tmpdir)
             auth_path, cred_path = self._create_auth_files(directory)
 
-            with patch("ytmusicfs.oauth_adapter.YTMusic", DummyYTMusic), patch(
-                "ytmusicfs.oauth_adapter.OAuthCredentials", DummyOAuthCredentials
-            ), patch("ytmusicfs.oauth_adapter.time.time", return_value=1000):
+            with (
+                patch("ytmusicfs.oauth_adapter.YTMusic", DummyYTMusic),
+                patch(
+                    "ytmusicfs.oauth_adapter.OAuthCredentials", DummyOAuthCredentials
+                ),
+                patch("ytmusicfs.oauth_adapter.time.time", return_value=1000),
+                patch(
+                    "ytmusicfs.oauth_adapter.YTMusicOAuthAdapter._fetch_web_client_context",
+                    return_value=("1.20240925.01.00", "WEB_REMIX"),
+                ),
+            ):
                 adapter = YTMusicOAuthAdapter(
                     auth_file=auth_path,
                     client_id="client",
@@ -95,6 +110,10 @@ class TestYTMusicOAuthAdapter(unittest.TestCase):
         self.assertEqual(DummyYTMusic.init_calls, 2)
         self.assertEqual(DummyYTMusic.playlist_calls, 2)
         self.assertEqual(DummyOAuthCredentials.refresh_calls, ["refresh-token"])
+        self.assertEqual(
+            adapter.ytmusic.context["context"]["client"]["clientVersion"],
+            "1.20240925.01.00",
+        )
 
         self.assertEqual(auth_data["access_token"], "new-token")
         self.assertEqual(auth_data["expires_in"], 1800)
@@ -103,13 +122,47 @@ class TestYTMusicOAuthAdapter(unittest.TestCase):
         self.assertNotIn("authorization", auth_data)
         self.assertNotIn("Authorization", auth_data)
 
+    def test_skips_context_update_when_metadata_unavailable(self):
+        with TemporaryDirectory() as tmpdir:
+            directory = Path(tmpdir)
+            auth_path, cred_path = self._create_auth_files(directory)
+
+            with (
+                patch("ytmusicfs.oauth_adapter.YTMusic", DummyYTMusic),
+                patch(
+                    "ytmusicfs.oauth_adapter.OAuthCredentials", DummyOAuthCredentials
+                ),
+                patch(
+                    "ytmusicfs.oauth_adapter.YTMusicOAuthAdapter._fetch_web_client_context",
+                    return_value=None,
+                ),
+            ):
+                adapter = YTMusicOAuthAdapter(
+                    auth_file=auth_path,
+                    client_id="client",
+                    client_secret="secret",
+                    credentials_file=cred_path,
+                    logger=self.logger,
+                )
+
+        self.assertIsInstance(adapter.ytmusic, DummyYTMusic)
+        self.assertEqual(
+            adapter.ytmusic.context["context"]["client"]["clientVersion"],
+            "1.000000",
+        )
+
     def test_raises_when_refresh_unavailable(self):
         with TemporaryDirectory() as tmpdir:
             directory = Path(tmpdir)
-            auth_path, cred_path = self._create_auth_files(directory, include_refresh=False)
+            auth_path, cred_path = self._create_auth_files(
+                directory, include_refresh=False
+            )
 
-            with patch("ytmusicfs.oauth_adapter.YTMusic", AlwaysFailingYTMusic), patch(
-                "ytmusicfs.oauth_adapter.OAuthCredentials", DummyOAuthCredentials
+            with (
+                patch("ytmusicfs.oauth_adapter.YTMusic", AlwaysFailingYTMusic),
+                patch(
+                    "ytmusicfs.oauth_adapter.OAuthCredentials", DummyOAuthCredentials
+                ),
             ):
                 with self.assertRaises(Exception):
                     YTMusicOAuthAdapter(
