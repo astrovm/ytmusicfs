@@ -50,6 +50,7 @@ class MountCommandHandler:
         self.logger = logger
         self.config = ConfigManager(
             auth_file=args.auth_file,
+            credentials_file=args.credentials_file,
             cache_dir=args.cache_dir,
             logger=logger,
         )
@@ -81,6 +82,7 @@ class MountCommandHandler:
                 auth_file=str(self.config.auth_file),
                 client_id=client_id,
                 client_secret=client_secret,
+                credentials_file=str(self.config.credentials_file),
                 cache_dir=str(self.config.cache_dir),
                 foreground=self.args.foreground,
                 browser=self.args.browser,

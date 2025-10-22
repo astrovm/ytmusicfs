@@ -28,8 +28,13 @@ class ConfigManager:
         self.config_dir.mkdir(parents=True, exist_ok=True)
 
         self.auth_file = Path(auth_file) if auth_file else self.DEFAULT_AUTH_FILE
+        default_credentials_file = (
+            self.auth_file.parent / "credentials.json"
+            if auth_file
+            else self.DEFAULT_CRED_FILE
+        )
         self.credentials_file = (
-            Path(credentials_file) if credentials_file else self.DEFAULT_CRED_FILE
+            Path(credentials_file) if credentials_file else default_credentials_file
         )
         self.cache_dir = Path(cache_dir) if cache_dir else self.DEFAULT_CACHE_DIR
         self.cache_timeout = self.DEFAULT_CACHE_TIMEOUT

@@ -34,6 +34,7 @@ class YouTubeMusicFS(Operations):
         auth_file: str,
         client_id: str = None,
         client_secret: str = None,
+        credentials_file: Optional[str] = None,
         cache_dir: Optional[str] = None,
         browser: Optional[str] = None,
     ):
@@ -43,6 +44,7 @@ class YouTubeMusicFS(Operations):
             auth_file: Path to authentication file (OAuth token)
             client_id: OAuth client ID (required for OAuth authentication)
             client_secret: OAuth client secret (required for OAuth authentication)
+            credentials_file: Path to the stored client credentials (optional)
             cache_dir: Directory for persistent cache (optional)
             browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
         """
@@ -64,6 +66,7 @@ class YouTubeMusicFS(Operations):
             auth_file=auth_file,
             client_id=client_id,
             client_secret=client_secret,
+            credentials_file=credentials_file,
             logger=self.logger,
             browser=browser,
         )
@@ -759,6 +762,7 @@ def mount_ytmusicfs(
     auth_file: str,
     client_id: str,
     client_secret: str,
+    credentials_file: Optional[str] = None,
     cache_dir: Optional[str] = None,
     foreground: bool = False,
     browser: Optional[str] = None,
@@ -770,6 +774,7 @@ def mount_ytmusicfs(
         auth_file: Path to the OAuth token file
         client_id: OAuth client ID
         client_secret: OAuth client secret
+        credentials_file: Path to the stored client credentials (optional)
         cache_dir: Directory to store cache files (default: None)
         foreground: Run in the foreground (for debugging)
         browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
@@ -790,6 +795,7 @@ def mount_ytmusicfs(
             auth_file=auth_file,
             client_id=client_id,
             client_secret=client_secret,
+            credentials_file=credentials_file,
             cache_dir=cache_dir,
             browser=browser,
         ),

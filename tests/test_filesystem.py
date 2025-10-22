@@ -49,6 +49,7 @@ class TestYouTubeMusicFS(unittest.TestCase):
                 auth_file="dummy_auth.json",
                 client_id="dummy_id",
                 client_secret="dummy_secret",
+                credentials_file="dummy_credentials.json",
                 cache_dir="/tmp/cache_test",
             )
 

@@ -152,6 +152,7 @@ class TestYouTubeMusicFSIntegration(unittest.TestCase):
                 auth_file="dummy_auth.json",
                 client_id="dummy_client_id",
                 client_secret="dummy_client_secret",
+                credentials_file="dummy_credentials.json",
                 cache_dir=str(self.cache_dir),
             )
 

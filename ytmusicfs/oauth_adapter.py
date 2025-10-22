@@ -18,6 +18,7 @@ class YTMusicOAuthAdapter:
         auth_file: str,
         client_id: Optional[str] = None,
         client_secret: Optional[str] = None,
+        credentials_file: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
         browser: Optional[str] = None,
     ):
@@ -40,7 +41,11 @@ class YTMusicOAuthAdapter:
             raise FileNotFoundError(f"Auth file not found: {auth_file}")
 
         # Initialize config manager
-        self.config = ConfigManager(auth_file=auth_file, logger=self.logger)
+        self.config = ConfigManager(
+            auth_file=auth_file,
+            credentials_file=credentials_file,
+            logger=self.logger,
+        )
 
         # Use client_id/secret if provided, otherwise use ones from config
         self.client_id = client_id
