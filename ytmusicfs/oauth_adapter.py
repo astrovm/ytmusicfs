@@ -3,8 +3,10 @@
 from typing import Optional, Any
 from ytmusicapi import YTMusic, OAuthCredentials
 from ytmusicfs.config import ConfigManager
+import json
 import logging
 import os
+import time
 
 
 class YTMusicOAuthAdapter:
@@ -67,34 +69,114 @@ class YTMusicOAuthAdapter:
 
     def _initialize_ytmusic(self) -> None:
         """Initialize the YTMusic instance with OAuth credentials."""
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                oauth_credentials = self._create_oauth_credentials()
+
+                # Initialize YTMusic with OAuth
+                self.ytmusic = YTMusic(
+                    auth=str(self.config.auth_file),
+                    oauth_credentials=oauth_credentials,
+                )
+
+                # Test connection with a lightweight call
+                self.ytmusic.get_library_playlists(limit=1)
+                self.logger.info(
+                    "Successfully authenticated with YouTube Music using OAuth"
+                )
+                return
+
+            except Exception as e:
+                self.logger.error(f"Failed to initialize YTMusic with OAuth: {e}")
+
+                should_retry = attempt == 1 and self._refresh_oauth_token()
+                if not should_retry:
+                    raise
+
+                self.logger.info(
+                    "Retrying YTMusic initialization after refreshing OAuth token"
+                )
+
+    def _create_oauth_credentials(self) -> OAuthCredentials:
+        """Create an OAuthCredentials instance using known client credentials."""
+
+        if not self.client_id or not self.client_secret:
+            self.logger.warning("Missing client_id or client_secret for OAuth")
+            raise ValueError(
+                "Client ID and Client Secret are required for OAuth authentication"
+            )
+
+        self.logger.debug("Created OAuth credentials object")
+        return OAuthCredentials(client_id=self.client_id, client_secret=self.client_secret)
+
+    def _refresh_oauth_token(self) -> bool:
+        """Attempt to refresh the stored OAuth access token."""
+
+        if not self.client_id or not self.client_secret:
+            self.logger.error(
+                "Cannot refresh OAuth token without client credentials available"
+            )
+            return False
+
         try:
-            # Create OAuth credentials object if client ID and secret are provided
-            oauth_credentials = None
-            if self.client_id and self.client_secret:
-                oauth_credentials = OAuthCredentials(
-                    client_id=self.client_id, client_secret=self.client_secret
-                )
-                self.logger.debug("Created OAuth credentials object")
+            with open(self.config.auth_file, "r", encoding="utf-8") as auth_fp:
+                oauth_data = json.load(auth_fp)
+        except FileNotFoundError:
+            self.logger.error(f"OAuth auth file not found at {self.config.auth_file}")
+            return False
+        except json.JSONDecodeError as exc:
+            self.logger.error(
+                f"OAuth auth file at {self.config.auth_file} is invalid JSON: {exc}"
+            )
+            return False
+
+        refresh_token = oauth_data.get("refresh_token")
+        if not refresh_token:
+            self.logger.error(
+                "OAuth auth file does not contain a refresh_token; cannot refresh"
+            )
+            return False
+
+        try:
+            oauth_credentials = OAuthCredentials(
+                client_id=self.client_id, client_secret=self.client_secret
+            )
+            refreshed = oauth_credentials.refresh_token(refresh_token)
+        except Exception as exc:
+            self.logger.error(f"Failed to refresh OAuth token via API: {exc}")
+            return False
+
+        access_token = refreshed.get("access_token")
+        if not access_token:
+            self.logger.error("Refresh response did not include a new access_token")
+            return False
+
+        oauth_data["access_token"] = access_token
+
+        if "refresh_token" in refreshed and refreshed["refresh_token"]:
+            oauth_data["refresh_token"] = refreshed["refresh_token"]
+
+        expires_in = refreshed.get("expires_in")
+        if expires_in is not None:
+            try:
+                expires_in_value = int(expires_in)
+            except (TypeError, ValueError):
+                expires_in_value = None
             else:
-                self.logger.warning("Missing client_id or client_secret for OAuth")
-                raise ValueError(
-                    "Client ID and Client Secret are required for OAuth authentication"
-                )
+                oauth_data["expires_in"] = expires_in_value
+                oauth_data["expires_at"] = int(time.time()) + expires_in_value
 
-            # Initialize YTMusic with OAuth
-            self.ytmusic = YTMusic(
-                auth=str(self.config.auth_file), oauth_credentials=oauth_credentials
-            )
+        try:
+            with open(self.config.auth_file, "w", encoding="utf-8") as auth_fp:
+                json.dump(oauth_data, auth_fp, indent=2)
+        except Exception as exc:
+            self.logger.error(f"Failed to update OAuth auth file: {exc}")
+            return False
 
-            # Test connection with a lightweight call
-            self.ytmusic.get_library_playlists(limit=1)
-            self.logger.info(
-                "Successfully authenticated with YouTube Music using OAuth"
-            )
-
-        except Exception as e:
-            self.logger.error(f"Failed to initialize YTMusic with OAuth: {e}")
-            raise
+        self.logger.info("Refreshed OAuth access token and updated auth file")
+        return True
 
     def refresh_token(self) -> bool:
         """
