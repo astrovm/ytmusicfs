@@ -33,6 +33,7 @@ class ConfigManager:
             if auth_file
             else self.DEFAULT_CRED_FILE
         )
+        self._credentials_overridden = credentials_file is not None
         self.credentials_file = (
             Path(credentials_file) if credentials_file else default_credentials_file
         )
@@ -45,18 +46,39 @@ class ConfigManager:
 
     def _load_credentials(self) -> None:
         """Load client credentials from file if available."""
-        if not self.credentials_file.exists():
-            self.logger.debug(f"No credentials file found at {self.credentials_file}")
-            return
+        search_paths = [self.credentials_file]
 
-        try:
-            with open(self.credentials_file, "r") as f:
-                creds = json.load(f)
-                self.client_id = creds.get("client_id")
-                self.client_secret = creds.get("client_secret")
-            self.logger.info(f"Loaded credentials from {self.credentials_file}")
-        except Exception as e:
-            self.logger.warning(f"Failed to load credentials: {e}")
+        if (
+            not self._credentials_overridden
+            and self.credentials_file != self.DEFAULT_CRED_FILE
+            and self.DEFAULT_CRED_FILE not in search_paths
+        ):
+            search_paths.append(self.DEFAULT_CRED_FILE)
+
+        for path in search_paths:
+            if not path.exists():
+                self.logger.debug(f"No credentials file found at {path}")
+                continue
+
+            try:
+                with open(path, "r") as f:
+                    creds = json.load(f)
+                    self.client_id = creds.get("client_id")
+                    self.client_secret = creds.get("client_secret")
+                self.credentials_file = path
+                if path == self.DEFAULT_CRED_FILE:
+                    self.logger.info(
+                        "Loaded credentials from legacy path; consider moving them "
+                        "next to your custom auth file for future runs."
+                    )
+                else:
+                    self.logger.info(f"Loaded credentials from {self.credentials_file}")
+                return
+            except Exception as e:
+                self.logger.warning(f"Failed to load credentials: {e}")
+                return
+
+        self.logger.debug("No credentials file found in configured or legacy locations")
 
     def save_credentials(self, client_id: str, client_secret: str) -> None:
         """Save OAuth credentials to the credentials file."""
