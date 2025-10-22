@@ -7,6 +7,7 @@ from typing import Any, Optional
 from ytmusicapi import OAuthCredentials, YTMusic
 
 from ytmusicfs.config import ConfigManager
+from ytmusicfs.oauth_utils import apply_server_client_version
 
 
 def _mask(value: Optional[str]) -> str:
@@ -103,6 +104,8 @@ class YTMusicOAuthAdapter:
             self.ytmusic = YTMusic(
                 auth=str(self.config.auth_file), oauth_credentials=oauth_credentials
             )
+
+            apply_server_client_version(self.ytmusic, logger=self.logger)
 
             # Test connection with a lightweight call
             self.ytmusic.get_library_playlists(limit=1)

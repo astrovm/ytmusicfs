@@ -8,10 +8,11 @@ from typing import Optional
 
 import ytmusicapi
 
-from ytmusicapi import YTMusic, OAuthCredentials
+from ytmusicapi import OAuthCredentials, YTMusic
 from ytmusicapi import setup_oauth as ytmusic_setup_oauth
 
 from ytmusicfs.config import ConfigManager
+from ytmusicfs.oauth_utils import apply_server_client_version
 
 
 def _mask(value: Optional[str]) -> str:
@@ -274,6 +275,8 @@ def main(args=None):
             ytmusic = YTMusic(
                 auth=str(output_file), oauth_credentials=oauth_credentials
             )
+
+            apply_server_client_version(ytmusic, logger=logger)
 
             playlists = ytmusic.get_library_playlists(limit=3)
 
