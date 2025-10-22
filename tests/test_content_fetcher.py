@@ -69,7 +69,8 @@ class TestContentFetcher(unittest.TestCase):
 
         # Configure mocks
         self.client.get_library_playlists.return_value = [
-            {"title": "My Playlist", "playlistId": "PL123"}
+            {"title": "My Playlist", "playlistId": "PL123"},
+            {"title": "Podcast Playlist", "playlistId": "SE"},
         ]
         self.client.get_library_albums.return_value = [
             {"title": "My Album", "browseId": "MPREb_456"}
@@ -91,6 +92,9 @@ class TestContentFetcher(unittest.TestCase):
         self.assertEqual(
             len(self.fetcher.PLAYLIST_REGISTRY), 3
         )  # Liked + playlist + album
+
+        self.client.get_library_playlists.assert_called_once_with(limit=1000)
+        self.client.get_library_albums.assert_called_once_with(limit=1000)
 
         # Check for liked songs entry
         liked_entry = next(
@@ -116,6 +120,17 @@ class TestContentFetcher(unittest.TestCase):
         self.assertIsNotNone(album_entry)
         self.assertEqual(album_entry["id"], "MPREb_456")
         self.assertEqual(album_entry["name"], "my_album")
+
+        # Ensure podcast playlist was skipped
+        skipped_entry = next(
+            (
+                p
+                for p in self.fetcher.PLAYLIST_REGISTRY
+                if p.get("id") == "SE"
+            ),
+            None,
+        )
+        self.assertIsNone(skipped_entry)
 
         # Verify cache was updated
         self.cache.set_refresh_metadata.assert_called_once()
