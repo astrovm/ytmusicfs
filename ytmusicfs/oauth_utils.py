@@ -49,20 +49,35 @@ def apply_server_client_version(
         context = getattr(ytmusic, "context", {})
         client_context = None
 
+        client_parent: Optional[dict[str, object]] = None
+        client_parent_key = "client"
+
         if isinstance(context, dict):
             nested_context = context.get("context")
             if isinstance(nested_context, dict):
-                client_context = nested_context.get("client")
-                if client_context is None:
-                    client_context = {}
-                    nested_context["client"] = client_context
+                nested_client = nested_context.get("client")
+                if isinstance(nested_client, dict):
+                    client_context = nested_client
+                elif nested_client is None:
+                    client_parent = nested_context
             if client_context is None:
                 direct_client = context.get("client")
                 if isinstance(direct_client, dict):
                     client_context = direct_client
-                elif direct_client is None:
-                    client_context = {}
-                    context["client"] = client_context
+                elif direct_client is None and client_parent is None:
+                    client_parent = context
+
+        if isinstance(client_context, dict):
+            client_name = client_context.get("clientName")
+            if client_name and client_name not in {"WEB_REMIX", "WEB"}:
+                log.debug(
+                    "Skipping client version synchronization for unsupported client: %s",
+                    client_name,
+                )
+                return None
+        elif client_context is None and client_parent is not None:
+            client_context = {}
+            client_parent[client_parent_key] = client_context
 
         if isinstance(client_context, dict):
             client_context["clientVersion"] = version

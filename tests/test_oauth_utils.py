@@ -66,6 +66,58 @@ def test_apply_server_client_version_updates_client(monkeypatch) -> None:
     assert dummy.calls == [("https://music.youtube.com", True)]
 
 
+def test_apply_server_client_version_skips_non_web_clients(monkeypatch) -> None:
+    version = "9.8765.4321"
+    response = DummyResponse(
+        f"ytcfg.set({{\"INNERTUBE_CLIENT_VERSION\": \"{version}\"}});"
+    )
+
+    class DummyYTMusic:
+        def __init__(self) -> None:
+            self.context = {
+                "context": {
+                    "client": {
+                        "clientName": "ANDROID_MUSIC",
+                        "clientVersion": "initial",
+                    }
+                }
+            }
+            self._auth_headers = CaseInsensitiveDict(
+                {
+                    "X-YouTube-Client-Version": "initial",
+                    "X-Goog-Visitor-Id": "initial",
+                }
+            )
+            self.__dict__["base_headers"] = CaseInsensitiveDict(
+                {
+                    "X-YouTube-Client-Version": "initial",
+                    "X-Goog-Visitor-Id": "initial",
+                }
+            )
+
+        def _send_get_request(self, url: str, params=None, use_base_headers: bool = False):
+            return response
+
+        @property
+        def headers(self):
+            return self.__dict__["base_headers"]
+
+    dummy = DummyYTMusic()
+
+    applied_version = apply_server_client_version(dummy)  # type: ignore[arg-type]
+
+    assert applied_version is None
+    client_context = dummy.context["context"]["client"]
+    assert client_context["clientVersion"] == "initial"
+    assert "visitorData" not in client_context
+    assert dummy._auth_headers["X-YouTube-Client-Version"] == "initial"
+    assert dummy._auth_headers["X-Goog-Visitor-Id"] == "initial"
+    assert (
+        dummy.__dict__["base_headers"]["X-YouTube-Client-Version"] == "initial"
+    )
+    assert dummy.__dict__["base_headers"]["X-Goog-Visitor-Id"] == "initial"
+
+
 def test_oauth_adapter_applies_server_version(monkeypatch, tmp_path: Path) -> None:
     call_count = 0
 
