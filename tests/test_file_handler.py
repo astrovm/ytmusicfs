@@ -378,6 +378,36 @@ class TestFileHandler(unittest.TestCase):
             cookies={"CONSENT": "YES+"},
         )
 
+    @patch("ytmusicfs.file_handler.requests.get")
+    def test_stream_content_preserves_lowercase_user_agent(self, mock_requests_get):
+        """Lowercase user-agent headers must not be replaced by defaults."""
+
+        mock_response = Mock()
+        mock_response.status_code = 206
+        mock_response.iter_content.return_value = [b"a" * 32]
+
+        mock_context = MagicMock()
+        mock_context.__enter__.return_value = mock_response
+        mock_context.__exit__.return_value = None
+        mock_requests_get.return_value = mock_context
+
+        data = self.file_handler._stream_content(
+            "https://example.com/audio.m4a",
+            offset=0,
+            size=16,
+            auth_headers={"user-agent": "Real UA"},
+            cookies=None,
+        )
+
+        self.assertEqual(data, b"a" * 16)
+
+        mock_requests_get.assert_called_once()
+        sent_headers = mock_requests_get.call_args.kwargs["headers"]
+
+        self.assertIn("user-agent", sent_headers)
+        self.assertEqual(sent_headers["user-agent"], "Real UA")
+        self.assertNotIn("User-Agent", sent_headers)
+
     def test_release_file(self):
         """Test releasing (closing) a file handle."""
         # Set up mock data
