@@ -2,7 +2,7 @@
 
 """Utility helpers for working with HTTP request metadata."""
 
-from typing import Mapping, Optional, Dict, Any
+from typing import Mapping, Optional, Dict, Any, Tuple
 
 
 _HEADER_BLOCKLIST = {"host", "content-length"}
@@ -51,4 +51,45 @@ def sanitize_cookies(
         sanitized[str(key)] = str(value)
 
     return sanitized or None
+
+
+def merge_cookie_sources(
+    headers: Dict[str, str], cookies: Optional[Dict[str, str]]
+) -> Tuple[Dict[str, str], Optional[Dict[str, str]]]:
+    """Merge cookie information from headers and mapping for ``requests``.
+
+    ``yt-dlp`` sometimes returns both a ``Cookie`` header string and an
+    accompanying cookie mapping.  ``requests`` prefers the mapping over the
+    header, so any credentials present only in the header would otherwise be
+    dropped.  This helper extracts cookies from the header, merges them with the
+    mapping (with the mapping taking precedence) and removes the redundant
+    header entry.
+    """
+
+    cookie_header_key = None
+    for key in list(headers.keys()):
+        if key.lower() == "cookie":
+            cookie_header_key = key
+            break
+
+    if cookie_header_key is None:
+        return headers, cookies
+
+    cookie_header_value = headers.pop(cookie_header_key)
+    header_cookies: Dict[str, str] = {}
+    if cookie_header_value:
+        for part in cookie_header_value.split(";"):
+            name, sep, value = part.strip().partition("=")
+            if not sep:
+                continue
+            header_cookies[name.strip()] = value.strip()
+
+    if not header_cookies:
+        return headers, cookies
+
+    merged = dict(header_cookies)
+    if cookies:
+        merged.update(cookies)
+
+    return headers, merged
 

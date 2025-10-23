@@ -3,7 +3,11 @@
 from pathlib import Path
 from typing import Optional, Any, Callable
 from ytmusicfs.downloader import Downloader
-from ytmusicfs.http_utils import sanitize_headers, sanitize_cookies
+from ytmusicfs.http_utils import (
+    sanitize_headers,
+    sanitize_cookies,
+    merge_cookie_sources,
+)
 from ytmusicfs.yt_dlp_utils import YTDLPUtils
 import errno
 import logging
@@ -119,19 +123,22 @@ class FileHandler:
         end_byte = offset + size + prefetch_size - 1
         base_headers = sanitize_headers(auth_headers)
         cookies = sanitize_cookies(cookies)
+        base_headers, cookies = merge_cookie_sources(base_headers, cookies)
 
         for attempt in range(retries):
             try:
-                headers = dict(base_headers)
-                headers["Range"] = f"bytes={offset}-{end_byte}"
+                request_headers = dict(base_headers)
+                request_headers["Range"] = f"bytes={offset}-{end_byte}"
                 self.logger.debug(f"Streaming with range: {offset}-{end_byte}")
-                with requests.get(
-                    stream_url,
-                    headers=headers,
-                    cookies=cookies,
-                    stream=True,
-                    timeout=30,
-                ) as response:
+                request_kwargs = {
+                    "headers": request_headers,
+                    "stream": True,
+                    "timeout": 30,
+                }
+                if cookies:
+                    request_kwargs["cookies"] = cookies
+
+                with requests.get(stream_url, **request_kwargs) as response:
                     if response.status_code not in (200, 206):
                         raise OSError(
                             errno.EIO, f"Stream failed: HTTP {response.status_code}"

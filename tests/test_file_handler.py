@@ -548,6 +548,46 @@ class TestFileHandler(unittest.TestCase):
         # Restore original method
         self.file_handler._stream_content = original_stream_content
 
+    @patch("ytmusicfs.file_handler.requests.get")
+    def test_stream_content_merges_cookie_header(self, mock_requests_get):
+        """Cookies present only in the header should be preserved for streaming."""
+
+        stream_url = "https://example.com/audio.m4a"
+        offset = 0
+        size = 4096
+        chunk = b"a" * (size + 100)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 206
+        mock_response.iter_content.return_value = [chunk]
+
+        mock_context = MagicMock()
+        mock_context.__enter__.return_value = mock_response
+        mock_context.__exit__.return_value = None
+        mock_requests_get.return_value = mock_context
+
+        data = self.file_handler._stream_content(
+            stream_url,
+            offset,
+            size,
+            auth_headers={
+                "Cookie": "SID=headerSid; HSID=headerHsid",
+                "User-Agent": "UnitTest",
+            },
+            cookies={"SID": "mappingSid", "CONSENT": "YES+"},
+            retries=1,
+        )
+
+        self.assertEqual(data, chunk[:size])
+
+        called_kwargs = mock_requests_get.call_args.kwargs
+        self.assertNotIn("Cookie", called_kwargs["headers"])
+        self.assertEqual(called_kwargs["headers"]["User-Agent"], "UnitTest")
+        self.assertEqual(
+            called_kwargs["cookies"],
+            {"SID": "mappingSid", "HSID": "headerHsid", "CONSENT": "YES+"},
+        )
+
     def test_read_from_cached_file(self):
         """Test reading content from a completely cached file."""
         # Set up mock data
