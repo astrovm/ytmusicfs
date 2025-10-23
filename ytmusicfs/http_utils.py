@@ -49,12 +49,24 @@ def _ensure_origin_headers(headers: Dict[str, str]) -> Dict[str, str]:
     request.
     """
 
-    headers.setdefault("Origin", _YT_ORIGIN)
-    headers.setdefault("Referer", _YT_ORIGIN + "/")
-    headers.setdefault("User-Agent", "Mozilla/5.0")
-    headers.setdefault("Accept", "*/*")
-    headers.setdefault("Accept-Language", "en-US,en;q=0.5")
-    headers.setdefault("Accept-Encoding", "identity")
+    defaults = [
+        ("Origin", _YT_ORIGIN),
+        ("Referer", _YT_ORIGIN + "/"),
+        ("User-Agent", "Mozilla/5.0"),
+        ("Accept", "*/*"),
+        ("Accept-Language", "en-US,en;q=0.5"),
+        ("Accept-Encoding", "identity"),
+    ]
+
+    existing_keys = {key.lower(): key for key in headers}
+
+    for name, value in defaults:
+        key_lower = name.lower()
+        if key_lower in existing_keys:
+            continue
+        headers[name] = value
+        existing_keys[key_lower] = name
+
     return headers
 
 
