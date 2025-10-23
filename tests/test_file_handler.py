@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import unittest
+from concurrent.futures import Future
 from unittest.mock import Mock, patch, MagicMock, call
 import logging
 import os
@@ -292,6 +293,54 @@ class TestFileHandler(unittest.TestCase):
                     auth_headers=None,
                     cookies=None,
                 )
+
+    def test_read_sanitizes_headers_and_cookies(self):
+        """Stream metadata from yt-dlp should be normalised before use."""
+
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        fh = self.file_handler.open(path, video_id)
+
+        future = Future()
+        future.set_result(
+            {
+                "status": "success",
+                "stream_url": "https://example.com/audio.m4a",
+                "http_headers": {
+                    "User-Agent": "UnitTest",
+                    "Host": "music.youtube.com",
+                    "X-Goog-AuthUser": 0,
+                    "X-YouTube-Identity-Token": None,
+                },
+                "cookies": {"CONSENT": "YES+", "BAD": None},
+            }
+        )
+        self.yt_dlp_utils.extract_stream_url_async.return_value = future
+
+        with patch.object(
+            self.file_handler, "_stream_content", return_value=b"payload"
+        ) as mock_stream:
+            result = self.file_handler.read(path, size=1024, offset=0, fh=fh)
+
+        self.assertEqual(result, b"payload")
+
+        headers = mock_stream.call_args.kwargs["auth_headers"]
+        cookies = mock_stream.call_args.kwargs["cookies"]
+
+        self.assertNotIn("Host", headers)
+        self.assertEqual(headers["User-Agent"], "UnitTest")
+        self.assertEqual(headers["X-Goog-AuthUser"], "0")
+        self.assertNotIn("X-YouTube-Identity-Token", headers)
+
+        self.assertEqual(cookies, {"CONSENT": "YES+"})
+
+        self.file_handler.downloader.download_file.assert_called_once_with(
+            video_id,
+            "https://example.com/audio.m4a",
+            path,
+            headers=headers,
+            cookies={"CONSENT": "YES+"},
+        )
 
     def test_release_file(self):
         """Test releasing (closing) a file handle."""
