@@ -50,16 +50,21 @@ class YouTubeMusicFS(Operations):
         self.logger.debug("YTDLPUtils initialized with ThreadManager")
 
         # Initialize the authentication adapter first
-        oauth_adapter = YTMusicAuthAdapter(
+        auth_adapter = YTMusicAuthAdapter(
             auth_file=auth_file,
             logger=self.logger,
         )
 
         # Initialize the client component with the authentication adapter
         self.client = YouTubeMusicClient(
-            oauth_adapter=oauth_adapter,
+            auth_adapter=auth_adapter,
             logger=self.logger,
         )
+
+        # Store the adapter reference for downstream consumers/tests
+        self.auth_adapter = auth_adapter
+        # Backwards compatibility with older attribute name used in tests
+        self.oauth_adapter = auth_adapter
 
         # Initialize the cache component
         self.cache = CacheManager(
