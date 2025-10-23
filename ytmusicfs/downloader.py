@@ -8,7 +8,7 @@ import requests
 import tempfile
 import time
 
-from ytmusicfs.http_utils import sanitize_headers, sanitize_cookies
+from ytmusicfs.http_utils import sanitize_headers, sanitize_cookies, merge_cookie_sources
 
 
 class Downloader:
@@ -148,6 +148,7 @@ class Downloader:
 
         base_headers = sanitize_headers(headers)
         cookies_data = sanitize_cookies(cookies)
+        base_headers, cookies_data = merge_cookie_sources(base_headers, cookies_data)
 
         for attempt in range(retries):
             try:
@@ -157,9 +158,11 @@ class Downloader:
                     request_headers["Range"] = f"bytes={downloaded}-"
 
                 # Verify the stream URL is still valid
-                head_response = requests.head(
-                    stream_url, headers=request_headers, cookies=cookies_data, timeout=10
-                )
+                head_kwargs = {"headers": request_headers, "timeout": 10}
+                if cookies_data:
+                    head_kwargs["cookies"] = cookies_data
+
+                head_response = requests.head(stream_url, **head_kwargs)
                 if head_response.status_code not in (200, 206):
                     raise Exception(
                         f"Stream URL check failed: HTTP {head_response.status_code}"
@@ -187,13 +190,16 @@ class Downloader:
                     )
 
                 # Download the file
-                with requests.get(
-                    stream_url,
-                    headers=dict(request_headers),
-                    cookies=cookies_data,
-                    stream=True,
-                    timeout=30,
-                ) as response:
+                get_headers = dict(request_headers)
+                get_kwargs = {
+                    "headers": get_headers,
+                    "stream": True,
+                    "timeout": 30,
+                }
+                if cookies_data:
+                    get_kwargs["cookies"] = cookies_data
+
+                with requests.get(stream_url, **get_kwargs) as response:
                     if response.status_code not in (200, 206):
                         raise Exception(f"HTTP {response.status_code}")
 
