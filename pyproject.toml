@@ -18,7 +18,7 @@ classifiers = [
   "Topic :: System :: Filesystems",
 ]
 keywords = ["youtube", "music", "fuse", "filesystem", "streaming", "audio"]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
   "cachetools==6.2.1",
   "fusepy==3.0.1",
