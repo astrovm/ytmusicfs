@@ -327,7 +327,12 @@ class CacheManager:
                 return True
 
         # Check special prefixed keys in database
-        for prefix in ["valid_dir:", "exact_path:"]:
+        # Prefer explicit file entries over directory hints when both exist.
+        # It's common for callers to mark a path as "unknown" first (which
+        # stores both prefixes without an entry type) and later update it with a
+        # concrete type. Checking the file prefix first avoids incorrectly
+        # treating media files as directories when both records exist.
+        for prefix in ["exact_path:", "valid_dir:"]:
             db_key = self.path_to_key(f"{prefix}{path}")
             try:
                 with self.lock:
@@ -392,17 +397,17 @@ class CacheManager:
                     return row[0]
 
                 # Also check with different prefixes if not found directly
-                for prefix in ["valid_dir:", "exact_path:"]:
+                for prefix in ["exact_path:", "valid_dir:"]:
                     prefixed_key = self.path_to_key(f"{prefix}{path}")
                     self.cursor.execute(
                         "SELECT entry_type FROM cache_entries WHERE key = ?",
                         (prefixed_key,),
                     )
-                    row = self.cursor.fetchone()
-                    if row and row[0]:
+                    entry_type_row = self.cursor.fetchone()
+                    if entry_type_row and entry_type_row[0]:
                         # Cache in memory for future lookups
-                        self.path_types[path] = row[0]
-                        return row[0]
+                        self.path_types[path] = entry_type_row[0]
+                        return entry_type_row[0]
 
                     # Additional check for keys that exist but don't have explicit type
                     if prefix in ["valid_dir:", "exact_path:"]:
@@ -410,14 +415,21 @@ class CacheManager:
                             "SELECT entry FROM cache_entries WHERE key = ?",
                             (prefixed_key,),
                         )
-                        row = self.cursor.fetchone()
-                        if row:
-                            entry_type = (
+                        entry_row = self.cursor.fetchone()
+                        if entry_row:
+                            # Skip inference if we only stored a placeholder with an
+                            # unknown type. This allows a later explicit record to set
+                            # the correct classification instead of defaulting to the
+                            # prefix assumption.
+                            if entry_type_row and entry_type_row[0] is None:
+                                continue
+
+                            inferred_type = (
                                 "directory" if prefix == "valid_dir:" else "file"
                             )
                             # Cache in memory for future lookups
-                            self.path_types[path] = entry_type
-                            return entry_type
+                            self.path_types[path] = inferred_type
+                            return inferred_type
 
             # Try to infer from directory listings
             parent_dir = os.path.dirname(path)
