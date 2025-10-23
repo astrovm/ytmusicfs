@@ -22,7 +22,7 @@ class TestYouTubeMusicFS(unittest.TestCase):
         with (
             patch("ytmusicfs.filesystem.ThreadManager") as mock_thread_manager,
             patch("ytmusicfs.filesystem.YTDLPUtils") as mock_yt_dlp_utils,
-            patch("ytmusicfs.filesystem.YTMusicOAuthAdapter") as mock_oauth_adapter,
+            patch("ytmusicfs.filesystem.YTMusicAuthAdapter") as mock_auth_adapter,
             patch("ytmusicfs.filesystem.YouTubeMusicClient") as mock_client,
             patch("ytmusicfs.filesystem.TrackProcessor") as mock_processor,
             patch("ytmusicfs.filesystem.CacheManager") as mock_cache,
@@ -35,7 +35,7 @@ class TestYouTubeMusicFS(unittest.TestCase):
             # Set up the mocks
             self.mock_thread_manager = mock_thread_manager.return_value
             self.mock_yt_dlp_utils = mock_yt_dlp_utils.return_value
-            self.mock_oauth_adapter = mock_oauth_adapter.return_value
+            self.mock_auth_adapter = mock_auth_adapter.return_value
             self.mock_client = mock_client.return_value
             self.mock_processor = mock_processor.return_value
             self.mock_cache = mock_cache.return_value
@@ -47,15 +47,13 @@ class TestYouTubeMusicFS(unittest.TestCase):
             # Create the instance to test
             self.fs = YouTubeMusicFS(
                 auth_file="dummy_auth.json",
-                client_id="dummy_id",
-                client_secret="dummy_secret",
                 cache_dir="/tmp/cache_test",
             )
 
             # Make sure the internal attributes are set to our mocks
             self.fs.thread_manager = self.mock_thread_manager
             self.fs.yt_dlp_utils = self.mock_yt_dlp_utils
-            self.fs.oauth_adapter = self.mock_oauth_adapter
+            self.fs.oauth_adapter = self.mock_auth_adapter
             self.fs.client = self.mock_client
             self.fs.processor = self.mock_processor
             self.fs.cache = self.mock_cache

@@ -1,14 +1,14 @@
 # Repository Guidelines
 
 ## Project Structure & Modules
-- `ytmusicfs/`: Core package (CLI, filesystem, cache, OAuth, downloader).
+- `ytmusicfs/`: Core package (CLI, filesystem, cache, auth, downloader).
 - `tests/`: Pytest suite covering routing, filesystem, cache, and integrations.
 - Root configs: `pyproject.toml` (packaging, Black/Isort), `pytest.ini`, `.editorconfig`.
 - Extras: `.github/` (CI/issue templates), `.devcontainer/` (VS Code dev), `build/` (artifacts).
 
 ## Build, Test, and Development Commands
 - Install (editable + dev): `pip install -e .[dev]`
-- Run CLI locally: `ytmusicfs --version`, `ytmusicfs oauth ...`, `ytmusicfs mount -m ~/Music/ytmusic`
+- Run CLI locally: `ytmusicfs --version`, `ytmusicfs browser`, `ytmusicfs mount -m ~/Music/ytmusic`
 - Tests (verbose): `pytest`
 - Coverage: `pytest --cov=ytmusicfs`
 - Lint/format (check): `black --check . && isort --check-only . && flake8 ytmusicfs tests`
@@ -35,7 +35,7 @@
 - Pass CI: formatting, lint, and tests must be green.
 
 ## Security & Configuration Tips
-- Never commit credentials, OAuth tokens, or cookies.
-- Auth files: `~/.config/ytmusicfs/oauth.json` and `credentials.json` (created via `ytmusicfs oauth`).
+- Never commit credentials, browser headers, or cookies.
+- Auth file: `~/.config/ytmusicfs/browser.json` (created via `ytmusicfs browser`).
 - Cache: `~/.cache/ytmusicfs`; Logs: `~/.local/share/ytmusicfs/logs`.
 - Use `--foreground` and `--debug` when diagnosing mount issues.

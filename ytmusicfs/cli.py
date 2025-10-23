@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Optional
 from ytmusicfs import __version__
 from ytmusicfs.config import ConfigManager
 from ytmusicfs.filesystem import mount_ytmusicfs
-from ytmusicfs.oauth_setup import main as oauth_setup
+from ytmusicfs.browser_setup import main as browser_setup
 import argparse
 import logging
 import sys
@@ -66,12 +66,7 @@ class MountCommandHandler:
 
         if not self.config.auth_file.exists():
             self.logger.error(f"Authentication file not found: {self.config.auth_file}")
-            self.logger.error("Run 'ytmusicfs oauth' to set up authentication.")
-            return 1
-
-        client_id, client_secret = self._get_credentials()
-        if not client_id or not client_secret:
-            self.logger.error("Client ID and Client Secret required.")
+            self.logger.error("Run 'ytmusicfs browser' to set up authentication.")
             return 1
 
         try:
@@ -79,8 +74,6 @@ class MountCommandHandler:
             mount_ytmusicfs(
                 mount_point=str(mount_point),
                 auth_file=str(self.config.auth_file),
-                client_id=client_id,
-                client_secret=client_secret,
                 cache_dir=str(self.config.cache_dir),
                 foreground=self.args.foreground,
                 browser=self.args.browser,
@@ -89,19 +82,6 @@ class MountCommandHandler:
         except Exception as e:
             self.logger.error(f"Mount failed: {e}")
             return 1
-
-    def _get_credentials(self) -> Tuple[Optional[str], Optional[str]]:
-        """Retrieve or extract client credentials.
-
-        Returns:
-            Tuple of (client_id, client_secret).
-        """
-        client_id, client_secret = self.args.client_id, self.args.client_secret
-        if not client_id or not client_secret:
-            client_id, client_secret = self.config.get_credentials()
-            if client_id and client_secret:
-                self.logger.info("Using credentials from config")
-        return client_id, client_secret
 
 
 def main() -> int:
@@ -119,10 +99,11 @@ def main() -> int:
     mount_parser.add_argument(
         "--mount-point", "-m", required=True, help="Mount point directory"
     )
-    mount_parser.add_argument("--auth-file", "-a", help="OAuth token file path")
-    mount_parser.add_argument("--credentials-file", help="Client credentials file path")
-    mount_parser.add_argument("--client-id", "-i", help="OAuth client ID")
-    mount_parser.add_argument("--client-secret", "-s", help="OAuth client secret")
+    mount_parser.add_argument(
+        "--auth-file",
+        "-a",
+        help="Browser authentication header file path",
+    )
     mount_parser.add_argument("--cache-dir", "-c", help="Cache directory")
     mount_parser.add_argument(
         "--foreground", "-f", action="store_true", help="Run in foreground"
@@ -139,40 +120,35 @@ def main() -> int:
         func=lambda args: MountCommandHandler(args, setup_logging(args)).execute()
     )
 
-    # OAuth command
-    oauth_parser = subparsers.add_parser("oauth", help="Set up OAuth authentication")
-    oauth_parser.add_argument("--client-id", "-i", help="OAuth Client ID")
-    oauth_parser.add_argument("--client-secret", "-s", help="OAuth Client Secret")
-    oauth_parser.add_argument("--auth-file", "-a", help="OAuth token file path")
-    oauth_parser.add_argument("--credentials-file", "-c", help="Credentials file path")
-    oauth_parser.add_argument("--open-browser", "-b", action="store_true", default=True)
-    oauth_parser.add_argument(
-        "--no-open-browser", action="store_false", dest="open_browser"
+    # Browser command
+    browser_parser = subparsers.add_parser(
+        "browser", help="Set up browser-based authentication"
     )
-    oauth_parser.add_argument(
+    browser_parser.add_argument(
+        "--auth-file",
+        "-a",
+        help="Output path for the browser header file",
+    )
+    browser_parser.add_argument(
+        "--headers-file",
+        help="Read raw request headers from this file instead of prompting",
+    )
+    browser_parser.add_argument(
         "--debug", "-d", action="store_true", help="Enable debug output"
     )
-    oauth_parser.set_defaults(
-        func=lambda args: oauth_with_logger(args, setup_logging(args))
+    browser_parser.set_defaults(
+        func=lambda args: browser_with_logger(args, setup_logging(args))
     )
 
     args = parser.parse_args()
     return args.func(args)
 
 
-def oauth_with_logger(args, logger):
-    """Wrapper function to pass the logger to the oauth_setup function.
+def browser_with_logger(args, logger):
+    """Pass the shared logger through to the browser auth helper."""
 
-    Args:
-        args: Command line arguments
-        logger: Logger instance
-
-    Returns:
-        Exit code
-    """
     args.logger = logger
-    result, _ = oauth_setup(args)
-    return result
+    return browser_setup(args)
 
 
 if __name__ == "__main__":

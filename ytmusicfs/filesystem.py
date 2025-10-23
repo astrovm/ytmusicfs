@@ -7,7 +7,7 @@ from ytmusicfs.client import YouTubeMusicClient
 from ytmusicfs.content_fetcher import ContentFetcher
 from ytmusicfs.file_handler import FileHandler
 from ytmusicfs.metadata import MetadataManager
-from ytmusicfs.oauth_adapter import YTMusicOAuthAdapter
+from ytmusicfs.auth_adapter import YTMusicAuthAdapter
 from ytmusicfs.path_router import PathRouter
 from ytmusicfs.processor import TrackProcessor
 from ytmusicfs.thread_manager import ThreadManager
@@ -26,17 +26,13 @@ class YouTubeMusicFS(Operations):
     def __init__(
         self,
         auth_file: str,
-        client_id: str = None,
-        client_secret: str = None,
         cache_dir: Optional[str] = None,
         browser: Optional[str] = None,
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
         Args:
-            auth_file: Path to authentication file (OAuth token)
-            client_id: OAuth client ID (required for OAuth authentication)
-            client_secret: OAuth client secret (required for OAuth authentication)
+            auth_file: Path to authentication file containing browser headers
             cache_dir: Directory for persistent cache (optional)
             browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
         """
@@ -53,16 +49,13 @@ class YouTubeMusicFS(Operations):
         )
         self.logger.debug("YTDLPUtils initialized with ThreadManager")
 
-        # Initialize the OAuth adapter first
-        oauth_adapter = YTMusicOAuthAdapter(
+        # Initialize the authentication adapter first
+        oauth_adapter = YTMusicAuthAdapter(
             auth_file=auth_file,
-            client_id=client_id,
-            client_secret=client_secret,
             logger=self.logger,
-            browser=browser,
         )
 
-        # Initialize the client component with the OAuth adapter
+        # Initialize the client component with the authentication adapter
         self.client = YouTubeMusicClient(
             oauth_adapter=oauth_adapter,
             logger=self.logger,
@@ -110,8 +103,6 @@ class YouTubeMusicFS(Operations):
 
         # Store parameters for future reference
         self.auth_file = auth_file
-        self.client_id = client_id
-        self.client_secret = client_secret
         self.request_cooldown = 1.0  # Default to 1 second cooldown
 
         # Debounce mechanism for repeated requests - use ThreadManager for locks
@@ -806,8 +797,6 @@ class YouTubeMusicFS(Operations):
 def mount_ytmusicfs(
     mount_point: str,
     auth_file: str,
-    client_id: str,
-    client_secret: str,
     cache_dir: Optional[str] = None,
     foreground: bool = False,
     browser: Optional[str] = None,
@@ -816,9 +805,7 @@ def mount_ytmusicfs(
 
     Args:
         mount_point: Directory where the filesystem will be mounted
-        auth_file: Path to the OAuth token file
-        client_id: OAuth client ID
-        client_secret: OAuth client secret
+        auth_file: Path to the browser headers authentication file
         cache_dir: Directory to store cache files (default: None)
         foreground: Run in the foreground (for debugging)
         browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
@@ -837,8 +824,6 @@ def mount_ytmusicfs(
     FUSE(
         YouTubeMusicFS(
             auth_file=auth_file,
-            client_id=client_id,
-            client_secret=client_secret,
             cache_dir=cache_dir,
             browser=browser,
         ),
