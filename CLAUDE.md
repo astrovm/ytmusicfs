@@ -46,8 +46,8 @@ flake8 ytmusicfs/
 
 ### Running the Application
 ```bash
-# Set up OAuth authentication
-ytmusicfs oauth --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET
+# Capture browser authentication headers
+ytmusicfs browser
 
 # Mount the filesystem
 ytmusicfs mount --mount-point ~/Music/ytmusic
@@ -69,7 +69,7 @@ YTMusicFS follows a modular architecture with clear separation of concerns:
 ### Core Components
 
 1. **cli.py**: Command-line interface and entry point
-   - Handles argument parsing for `mount` and `oauth` commands
+   - Handles argument parsing for `mount` and `browser` commands
    - Sets up logging configuration
    - Manages filesystem mounting process
 
@@ -80,13 +80,13 @@ YTMusicFS follows a modular architecture with clear separation of concerns:
 
 3. **client.py**: YouTube Music API client
    - Wraps ytmusicapi calls
-   - Handles authentication through OAuth adapter
+   - Receives an instantiated auth adapter
    - Provides methods for fetching playlists, albums, liked songs
 
-4. **oauth_adapter.py**: OAuth authentication wrapper
-   - Extends ytmusicapi with OAuth2 support
-   - Handles token refresh and browser cookie integration
-   - Manages authentication state
+4. **auth_adapter.py**: Browser authentication wrapper
+   - Loads headers captured from an authenticated browser session
+   - Instantiates `ytmusicapi.YTMusic`
+   - Provides transparent access to the API surface
 
 ### Data Processing Layer
 
@@ -133,8 +133,8 @@ YTMusicFS follows a modular architecture with clear separation of concerns:
     - Provides thread-safe primitives
 
 13. **config.py**: Configuration management
-    - Handles default paths and credentials
-    - Manages OAuth token and cache directories
+    - Handles default paths for auth and cache data
+    - Manages browser header file location and cache directories
 
 ## Key Design Patterns
 
@@ -154,9 +154,9 @@ YTMusicFS follows a modular architecture with clear separation of concerns:
 - Graceful degradation when services are unavailable
 
 ### Authentication Flow
-- OAuth2 with refresh token support
-- Browser cookie integration for premium features
-- Fallback to standard quality without cookies
+- Browser header capture via the `ytmusicfs browser` helper
+- Stored headers reused to instantiate `ytmusicapi.YTMusic`
+- Optional yt-dlp browser cookies unlock premium-quality streams
 
 ## Development Tips
 

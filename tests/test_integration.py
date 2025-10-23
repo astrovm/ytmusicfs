@@ -23,7 +23,7 @@ from ytmusicfs.thread_manager import ThreadManager
 from ytmusicfs.file_handler import FileHandler
 from ytmusicfs.content_fetcher import ContentFetcher
 from ytmusicfs.path_router import PathRouter
-from ytmusicfs.oauth_adapter import YTMusicOAuthAdapter
+from ytmusicfs.auth_adapter import YTMusicAuthAdapter
 from ytmusicfs.client import YouTubeMusicClient
 from ytmusicfs.processor import TrackProcessor
 from ytmusicfs.yt_dlp_utils import YTDLPUtils
@@ -32,9 +32,9 @@ from ytmusicfs.yt_dlp_utils import YTDLPUtils
 class TestYouTubeMusicFSIntegration(unittest.TestCase):
     """Integration tests for YouTubeMusicFS system."""
 
-    @patch("ytmusicfs.oauth_adapter.YTMusicOAuthAdapter.__init__", return_value=None)
-    @patch("ytmusicfs.oauth_adapter.os.path.exists", return_value=True)
-    def setUp(self, mock_path_exists, mock_oauth_init):
+    @patch("ytmusicfs.auth_adapter.YTMusicAuthAdapter.__init__", return_value=None)
+    @patch("ytmusicfs.auth_adapter.Path.exists", return_value=True)
+    def setUp(self, mock_path_exists, mock_auth_init):
         """Set up test fixtures before each test method."""
         # Create a temporary directory for testing
         self.temp_dir = tempfile.mkdtemp()
@@ -50,7 +50,7 @@ class TestYouTubeMusicFSIntegration(unittest.TestCase):
         self.thread_manager = ThreadManager()
 
         # Mock the YTMusic API components
-        self.mock_oauth_adapter = Mock(spec=YTMusicOAuthAdapter)
+        self.mock_auth_adapter = Mock(spec=YTMusicAuthAdapter)
         self.mock_client = Mock(spec=YouTubeMusicClient)
 
         # Setup mock playlists
@@ -130,8 +130,8 @@ class TestYouTubeMusicFSIntegration(unittest.TestCase):
         # Create the instance to test with required parameters
         with (
             patch(
-                "ytmusicfs.filesystem.YTMusicOAuthAdapter",
-                return_value=self.mock_oauth_adapter,
+                "ytmusicfs.filesystem.YTMusicAuthAdapter",
+                return_value=self.mock_auth_adapter,
             ),
             patch(
                 "ytmusicfs.filesystem.YouTubeMusicClient", return_value=self.mock_client
@@ -150,15 +150,13 @@ class TestYouTubeMusicFSIntegration(unittest.TestCase):
 
             self.fs = YouTubeMusicFS(
                 auth_file="dummy_auth.json",
-                client_id="dummy_client_id",
-                client_secret="dummy_client_secret",
                 cache_dir=str(self.cache_dir),
             )
 
         # Explicitly set components to our mocks
         self.fs.thread_manager = self.thread_manager
         self.fs.client = self.mock_client
-        self.fs.oauth_adapter = self.mock_oauth_adapter
+        self.fs.oauth_adapter = self.mock_auth_adapter
         self.fs.cache = self.cache
         self.fs.router = self.router
         self.fs.fetcher = self.content_fetcher

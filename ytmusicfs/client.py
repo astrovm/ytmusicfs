@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from typing import Dict, Optional, List
-from ytmusicfs.oauth_adapter import YTMusicOAuthAdapter
+from ytmusicfs.auth_adapter import YTMusicAuthAdapter
 import logging
 
 
@@ -14,18 +14,18 @@ class YouTubeMusicClient:
 
     def __init__(
         self,
-        oauth_adapter: YTMusicOAuthAdapter,
+        auth_adapter: YTMusicAuthAdapter,
         logger: Optional[logging.Logger] = None,
     ):
         """Initialize the YouTube Music API client.
 
         Args:
-            oauth_adapter: Configured YTMusicOAuthAdapter instance for authentication.
+            auth_adapter: Configured YTMusicAuthAdapter instance for authentication.
             logger: Optional logger instance; defaults to a new logger if None.
         """
         self.logger = logger or logging.getLogger("YouTubeMusicClient")
-        self.ytmusic = oauth_adapter
-        self.logger.info("YouTubeMusicClient initialized with OAuth adapter")
+        self.ytmusic = auth_adapter
+        self.logger.info("YouTubeMusicClient initialized with browser auth")
 
     def get_library_playlists(self, limit: int = 100) -> List[Dict]:
         """Fetch playlists from the user's library.

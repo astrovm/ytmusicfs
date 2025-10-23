@@ -9,7 +9,7 @@ YTMusicFS mounts your YouTube Music library as a standard filesystem, allowing y
 - **Filesystem Interface**: Access your YouTube Music library through a standard filesystem
 - **Traditional Player Support**: Play songs with any audio player that can read files
 - **Complete Library Access**: Browse playlists, liked songs, and albums
-- **Persistent Authentication**: Uses OAuth for reliable, long-lasting sessions
+- **Persistent Authentication**: Uses your browser session headers for long-lasting access
 - **Disk Caching**: Caches metadata and audio to improve browsing performance and enable offline playback of previously streamed songs
 - **On-Demand Streaming**: Streams audio directly from YouTube Music servers
 - **Smart Auto-Refresh**: Automatically refreshes your library cache every hour using an intelligent merging approach that preserves existing data and only updates what has changed
@@ -20,7 +20,7 @@ YTMusicFS mounts your YouTube Music library as a standard filesystem, allowing y
 - Python 3.9+
 - FUSE (Filesystem in Userspace)
 - YouTube Music account
-- Google Cloud Console account (for OAuth credentials)
+- Ability to copy request headers from an authenticated YouTube Music browser session
 - yt-dlp (for audio streaming)
 
 ## Installation
@@ -55,37 +55,25 @@ sudo pacman -S fuse2 python
 
 ## Authentication Setup
 
-YTMusicFS uses OAuth for authentication, which provides better reliability and longer session lifetimes.
+YTMusicFS reuses the same browser headers that the official YouTube Music site
+uses.  Grab the headers once and they typically remain valid for up to two
+years.
 
-### Step 1: Get OAuth Credentials
+1. Sign in to [https://music.youtube.com](https://music.youtube.com) in your
+   preferred browser.
+2. Open the browser developer tools and switch to the **Network** tab.
+3. Reload the page, then filter for requests containing `/browse` and select any
+   authenticated `POST` entry.
+4. Copy the entire **Request headers** section starting from `accept: */*`.
+5. Run the helper to store those headers for YTMusicFS:
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select an existing one
-3. Enable the YouTube Data API v3:
-   - Go to "APIs & Services" > "Library"
-   - Search for "YouTube Data API v3"
-   - Click "Enable"
-4. Create OAuth credentials:
-   - Go to "APIs & Services" > "Credentials"
-   - Click "Create Credentials" > "OAuth client ID"
-   - Application type: "TV and Limited Input devices"
-   - Name: "YTMusicFS" (or any name you prefer)
-   - Note your Client ID and Client Secret
+   ```bash
+   ytmusicfs browser
+   ```
 
-### Step 2: Generate OAuth Token
-
-Run the setup utility with your OAuth credentials:
-
-```bash
-ytmusicfs oauth --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET
-```
-
-This will:
-
-1. Open a browser window for you to authorize the application
-2. Generate and store two files:
-   - An OAuth token in `~/.config/ytmusicfs/oauth.json`
-   - Your client credentials in `~/.config/ytmusicfs/credentials.json`
+   Paste the copied headers when prompted, or supply them via
+   `--headers-file` to automate the step.  The command writes
+   `browser.json` (by default to `~/.config/ytmusicfs/browser.json`).
 
 ## Usage
 
@@ -100,7 +88,7 @@ ytmusicfs <command> [options]
 Available commands:
 
 - `mount`: Mount YouTube Music as a filesystem
-- `oauth`: Set up OAuth authentication
+- `browser`: Parse browser headers for authentication
 
 ### Mount the Filesystem
 
@@ -116,9 +104,8 @@ Or with custom options:
 ```bash
 ytmusicfs mount \
   --mount-point ~/Music/ytmusic \
-  --auth-file /path/to/oauth.json \
-  --credentials-file /path/to/credentials.json \
-  --cache-timeout 600 \
+  --auth-file /path/to/browser.json \
+  --cache-dir ~/.cache/ytmusicfs \
   --foreground \
   --debug
 ```
@@ -170,9 +157,7 @@ fusermount -u ~/Music/ytmusic
 
 ```
 usage: ytmusicfs mount [-h] --mount-point MOUNT_POINT [--auth-file AUTH_FILE]
-                       [--credentials-file CREDENTIALS_FILE] [--client-id CLIENT_ID]
-                       [--client-secret CLIENT_SECRET] [--cache-dir CACHE_DIR]
-                       [--cache-timeout CACHE_TIMEOUT] [--foreground] [--debug]
+                       [--cache-dir CACHE_DIR] [--foreground] [--debug]
                        [--browser BROWSER]
 
 Mount YouTube Music as a filesystem
@@ -181,58 +166,32 @@ Options:
   -h, --help            Show this help message and exit
   --mount-point, -m MOUNT_POINT
                         Directory where the filesystem will be mounted
-
-Authentication Options:
   --auth-file, -a AUTH_FILE
-                        Path to the OAuth token file
-                        (default: ~/.config/ytmusicfs/oauth.json)
-  --credentials-file CREDENTIALS_FILE
-                        Path to the client credentials file
-                        (default: same directory as auth-file with name 'credentials.json')
-  --client-id, -i CLIENT_ID
-                        OAuth client ID (required for OAuth authentication)
-  --client-secret, -s CLIENT_SECRET
-                        OAuth client secret (required for OAuth authentication)
-
-Cache Options:
+                        Path to the browser authentication file
+                        (default: ~/.config/ytmusicfs/browser.json)
   --cache-dir, -c CACHE_DIR
                         Directory to store cache files
                         (default: ~/.cache/ytmusicfs)
-  --cache-timeout, -t CACHE_TIMEOUT
-                        Cache timeout in seconds (default: 300)
-
-Operational Options:
   --foreground, -f      Run in the foreground (for debugging)
   --debug, -d           Enable debug logging
-  --browser, -b BROWSER Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave').
-                        If not specified, no browser cookies will be used
+  --browser, -b BROWSER Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
 ```
 
-### ytmusicfs oauth
+### ytmusicfs browser
 
 ```
-usage: ytmusicfs oauth [-h] [--client-id CLIENT_ID]
-                     [--client-secret CLIENT_SECRET]
-                     [--auth-file AUTH_FILE] [--credentials-file CREDENTIALS_FILE]
-                     [--open-browser] [--no-open-browser] [--debug]
+usage: ytmusicfs browser [-h] [--auth-file AUTH_FILE] [--headers-file HEADERS_FILE]
+                         [--debug]
 
-Set up OAuth authentication for YTMusicFS
+Set up browser authentication for YTMusicFS
 
 Options:
   -h, --help            Show this help message and exit
-  --client-id, -i CLIENT_ID
-                        OAuth Client ID from Google Cloud Console
-  --client-secret, -s CLIENT_SECRET
-                        OAuth Client Secret from Google Cloud Console
   --auth-file, -a AUTH_FILE
-                        Path to the OAuth token file
-                        (default: ~/.config/ytmusicfs/oauth.json)
-  --credentials-file, -c CREDENTIALS_FILE
-                        Output file for the client credentials
-                        (default: same directory as auth-file with name 'credentials.json')
-  --open-browser, -b    Automatically open the browser for authentication
-  --no-open-browser     Do not automatically open the browser for authentication
-  --debug, -d           Enable debug output
+                        Output path for the generated browser header JSON
+  --headers-file HEADERS_FILE
+                        Read raw request headers from this file
+  --debug, -d           Enable debug logging
 ```
 
 ## Limitations
@@ -245,9 +204,12 @@ Options:
 
 ### Authentication Issues
 
-- Ensure your OAuth token is valid and refresh tokens are working
-- Try regenerating your token with `ytmusicfs oauth`
-- Check if your Google Cloud project has YouTube Data API enabled
+- Verify that `browser.json` still matches an active browser session (log in to
+  https://music.youtube.com and regenerate headers if needed).
+- Re-run `ytmusicfs browser` to refresh the stored headers when your browser
+  session changes or expires.
+- Confirm that the authentication file path passed to `ytmusicfs mount`
+  matches the location printed by the setup command.
 
 ### Playback Issues
 
@@ -257,5 +219,5 @@ Options:
 
 ### Performance Issues
 
-- Increase cache timeout with `--cache-timeout` for better performance
-- Reduce network calls by browsing directories fully before playing
+  - Keep the cache directory on a fast disk for quicker metadata lookups
+  - Reduce network calls by browsing directories fully before playing
