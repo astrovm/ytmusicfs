@@ -45,6 +45,8 @@ class Downloader:
         video_id: str,
         stream_url: str,
         path: str,
+        headers: Optional[dict] = None,
+        cookies: Optional[dict] = None,
         retries: int = 3,
         chunk_size: int = 8192,
     ) -> bool:
@@ -54,6 +56,8 @@ class Downloader:
             video_id: YouTube video ID.
             stream_url: URL to download from (not cached).
             path: Filesystem path for size updates.
+            headers: Authentication headers required for the request.
+            cookies: Cookies required for the request.
             retries: Number of retry attempts.
             chunk_size: Size of chunks to download.
 
@@ -86,6 +90,8 @@ class Downloader:
             video_id,
             stream_url,
             path,
+            headers,
+            cookies,
             retries,
             chunk_size,
         )
@@ -96,6 +102,8 @@ class Downloader:
         video_id: str,
         stream_url: str,
         path: str,
+        headers: Optional[dict] = None,
+        cookies: Optional[dict] = None,
         retries: int = 3,
         chunk_size: int = 8192,
     ) -> bool:
@@ -105,6 +113,8 @@ class Downloader:
             video_id: YouTube video ID.
             stream_url: URL to download from (not cached).
             path: Filesystem path for size updates.
+            headers: Authentication headers required for the request.
+            cookies: Cookies required for the request.
             retries: Number of retry attempts.
             chunk_size: Size of chunks to download.
 
@@ -134,13 +144,20 @@ class Downloader:
         # Check existing file size for potential resume
         downloaded = audio_path.stat().st_size if audio_path.exists() else 0
 
+        base_headers = dict(headers or {})
+        cookies_data = dict(cookies) if isinstance(cookies, dict) else cookies
+
         for attempt in range(retries):
             try:
                 # Add range header if resuming download
-                headers = {"Range": f"bytes={downloaded}-"} if downloaded else {}
+                request_headers = dict(base_headers)
+                if downloaded:
+                    request_headers["Range"] = f"bytes={downloaded}-"
 
                 # Verify the stream URL is still valid
-                head_response = requests.head(stream_url, headers=headers, timeout=10)
+                head_response = requests.head(
+                    stream_url, headers=request_headers, cookies=cookies_data, timeout=10
+                )
                 if head_response.status_code not in (200, 206):
                     raise Exception(
                         f"Stream URL check failed: HTTP {head_response.status_code}"
@@ -169,7 +186,11 @@ class Downloader:
 
                 # Download the file
                 with requests.get(
-                    stream_url, headers=headers, stream=True, timeout=30
+                    stream_url,
+                    headers=dict(request_headers),
+                    cookies=cookies_data,
+                    stream=True,
+                    timeout=30,
                 ) as response:
                     if response.status_code not in (200, 206):
                         raise Exception(f"HTTP {response.status_code}")

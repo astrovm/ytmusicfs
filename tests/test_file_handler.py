@@ -87,6 +87,8 @@ class TestFileHandler(unittest.TestCase):
         self.assertEqual(
             self.file_handler.open_files[file_handle]["stream_url"], expected_stream_url
         )
+        self.assertIsNone(self.file_handler.open_files[file_handle]["headers"])
+        self.assertIsNone(self.file_handler.open_files[file_handle]["cookies"])
         self.assertEqual(self.file_handler.path_to_fh[path], file_handle)
 
         # Verify other required fields are present
@@ -124,6 +126,8 @@ class TestFileHandler(unittest.TestCase):
             "stream_url": None,
             "offset": 0,
             "cache_path": cache_path,
+            "headers": None,
+            "cookies": None,
             "status": "ready",
             "error": None,
             "path": path,
@@ -185,6 +189,8 @@ class TestFileHandler(unittest.TestCase):
             "stream_url": stream_url,
             "offset": 0,
             "cache_path": cache_path,
+            "headers": None,
+            "cookies": None,
             "status": "ready",
             "error": None,
             "path": path,
@@ -210,7 +216,11 @@ class TestFileHandler(unittest.TestCase):
 
                 # Verify _stream_content was called with the right arguments
                 self.file_handler._stream_content.assert_called_once_with(
-                    stream_url, offset, size
+                    stream_url,
+                    offset,
+                    size,
+                    auth_headers=None,
+                    cookies=None,
                 )
 
     @patch("ytmusicfs.file_handler.requests.get")
@@ -249,6 +259,8 @@ class TestFileHandler(unittest.TestCase):
             "stream_url": stream_url,
             "offset": 0,
             "cache_path": cache_path,
+            "headers": None,
+            "cookies": None,
             "status": "ready",
             "error": None,
             "path": path,
@@ -274,7 +286,11 @@ class TestFileHandler(unittest.TestCase):
 
                 # Verify _stream_content was called with the right arguments
                 self.file_handler._stream_content.assert_called_once_with(
-                    stream_url, offset, size
+                    stream_url,
+                    offset,
+                    size,
+                    auth_headers=None,
+                    cookies=None,
                 )
 
     def test_release_file(self):
@@ -297,6 +313,8 @@ class TestFileHandler(unittest.TestCase):
             "stream_url": stream_url,
             "offset": 1024,
             "cache_path": cache_path,
+            "headers": None,
+            "cookies": None,
             "status": "ready",
             "error": None,
             "path": path,
@@ -364,7 +382,9 @@ class TestFileHandler(unittest.TestCase):
         # Create a patched version of _stream_content that handles status codes correctly
         original_stream_content = self.file_handler._stream_content
 
-        def patched_stream_content(url, off, sz, retries=3):
+        def patched_stream_content(
+            url, off, sz, auth_headers=None, cookies=None, retries=3
+        ):
             # Mock the behavior we want for this test
             for attempt in range(retries):
                 try:
@@ -428,7 +448,9 @@ class TestFileHandler(unittest.TestCase):
         # Create a patched version of _stream_content that handles status codes as errors
         original_stream_content = self.file_handler._stream_content
 
-        def patched_stream_content(url, off, sz, retries=3):
+        def patched_stream_content(
+            url, off, sz, auth_headers=None, cookies=None, retries=3
+        ):
             # Ensure the mock is called the expected number of times
             responses = [mock_response_fail] * retries
 
@@ -504,6 +526,8 @@ class TestFileHandler(unittest.TestCase):
             "stream_url": "cached",  # This indicates a cached file
             "offset": 0,
             "cache_path": cache_path,
+            "headers": None,
+            "cookies": None,
             "status": "ready",
             "error": None,
             "path": path,

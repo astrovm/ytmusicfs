@@ -135,7 +135,31 @@ class YTDLPUtils:
 
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            result = {"stream_url": info["url"]}
+            http_headers = info.get("http_headers") or {}
+            http_headers = dict(http_headers)
+            result = {"stream_url": info["url"], "http_headers": http_headers}
+
+            cookies = info.get("cookies")
+            if cookies:
+                cookie_dict = None
+                try:
+                    cookie_dict = {cookie.name: cookie.value for cookie in cookies}
+                except Exception:
+                    if isinstance(cookies, dict):
+                        cookie_dict = dict(cookies)
+                    elif isinstance(cookies, (list, tuple)):
+                        try:
+                            cookie_dict = {
+                                cookie["name"]: cookie["value"]
+                                for cookie in cookies
+                                if isinstance(cookie, dict)
+                                and "name" in cookie
+                                and "value" in cookie
+                            }
+                        except Exception:
+                            cookie_dict = None
+                if cookie_dict:
+                    result["cookies"] = cookie_dict
 
             # Extract and include duration if available
             if "duration" in info and info["duration"] is not None:

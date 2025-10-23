@@ -78,6 +78,8 @@ class FileHandler:
                 "cache_path": str(cache_path),
                 "video_id": video_id,
                 "stream_url": "cached" if self._check_cached_audio(video_id) else None,
+                "headers": None,
+                "cookies": None,
                 "status": "ready",
                 "error": None,
                 "path": path,
@@ -89,7 +91,13 @@ class FileHandler:
         return fh
 
     def _stream_content(
-        self, stream_url: str, offset: int, size: int, retries: int = 3
+        self,
+        stream_url: str,
+        offset: int,
+        size: int,
+        auth_headers: Optional[dict] = None,
+        cookies: Optional[dict] = None,
+        retries: int = 3,
     ) -> bytes:
         """Stream content directly from URL when file is not yet cached.
 
@@ -108,13 +116,19 @@ class FileHandler:
 
         # Calculate end byte (inclusive) according to HTTP range spec
         end_byte = offset + size + prefetch_size - 1
-        headers = {"Range": f"bytes={offset}-{end_byte}"}
+        base_headers = dict(auth_headers or {})
 
         for attempt in range(retries):
             try:
+                headers = dict(base_headers)
+                headers["Range"] = f"bytes={offset}-{end_byte}"
                 self.logger.debug(f"Streaming with range: {offset}-{end_byte}")
                 with requests.get(
-                    stream_url, headers=headers, stream=True, timeout=30
+                    stream_url,
+                    headers=headers,
+                    cookies=cookies,
+                    stream=True,
+                    timeout=30,
                 ) as response:
                     if response.status_code not in (200, 206):
                         raise OSError(
@@ -230,8 +244,14 @@ class FileHandler:
                     raise OSError(errno.EIO, error_msg)
 
                 stream_url = result["stream_url"]
+                auth_headers = dict(result.get("http_headers", {}))
+                cookies = result.get("cookies")
+                if isinstance(cookies, dict):
+                    cookies = dict(cookies)
                 with self.file_handle_lock:
                     file_info["stream_url"] = stream_url
+                    file_info["headers"] = auth_headers
+                    file_info["cookies"] = cookies
 
                 # Extract and cache duration if available in the result
                 if "duration" in result and self.cache:
@@ -241,7 +261,9 @@ class FileHandler:
                     self.cache.set_durations_batch({video_id: duration})
 
                 # Always start download in background
-                self.downloader.download_file(video_id, stream_url, path)
+                self.downloader.download_file(
+                    video_id, stream_url, path, headers=auth_headers, cookies=cookies
+                )
             except Exception as e:
                 error_msg = str(e)
                 self.logger.error(
@@ -261,7 +283,13 @@ class FileHandler:
         # 1. No cache file exists yet, or
         # 2. Download is in progress but hasn't reached the requested offset yet
         self.logger.debug(f"Streaming from URL for {video_id} at offset {offset}")
-        return self._stream_content(file_info["stream_url"], offset, size)
+        return self._stream_content(
+            file_info["stream_url"],
+            offset,
+            size,
+            auth_headers=file_info.get("headers"),
+            cookies=file_info.get("cookies"),
+        )
 
     def release(self, path: str, fh: int) -> int:
         """Release (close) a file handle but allow downloads to continue.
