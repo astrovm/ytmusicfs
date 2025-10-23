@@ -3,11 +3,7 @@
 from pathlib import Path
 from typing import Optional, Any, Callable
 from ytmusicfs.downloader import Downloader
-from ytmusicfs.http_utils import (
-    sanitize_headers,
-    sanitize_cookies,
-    merge_cookie_sources,
-)
+from ytmusicfs.http_utils import ensure_headers_and_cookies
 from ytmusicfs.yt_dlp_utils import YTDLPUtils
 import errno
 import logging
@@ -121,9 +117,8 @@ class FileHandler:
 
         # Calculate end byte (inclusive) according to HTTP range spec
         end_byte = offset + size + prefetch_size - 1
-        base_headers = sanitize_headers(auth_headers)
-        cookies = sanitize_cookies(cookies)
-        base_headers, cookies = merge_cookie_sources(base_headers, cookies)
+        header_source = dict(auth_headers) if auth_headers else {}
+        base_headers, cookies = ensure_headers_and_cookies(header_source, cookies)
 
         for attempt in range(retries):
             try:
@@ -253,14 +248,16 @@ class FileHandler:
                     raise OSError(errno.EIO, error_msg)
 
                 stream_url = result["stream_url"]
-                auth_headers = sanitize_headers(result.get("http_headers", {}))
                 cookies = result.get("cookies")
                 if isinstance(cookies, dict):
                     cookies = dict(cookies)
-                cookies = sanitize_cookies(cookies)
+                raw_headers = dict(result.get("http_headers") or {})
+                auth_headers, cookies = ensure_headers_and_cookies(
+                    dict(raw_headers), cookies
+                )
                 with self.file_handle_lock:
                     file_info["stream_url"] = stream_url
-                    file_info["headers"] = auth_headers
+                    file_info["headers"] = raw_headers
                     file_info["cookies"] = cookies
 
                 # Extract and cache duration if available in the result

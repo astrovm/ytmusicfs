@@ -8,7 +8,7 @@ import requests
 import tempfile
 import time
 
-from ytmusicfs.http_utils import sanitize_headers, sanitize_cookies, merge_cookie_sources
+from ytmusicfs.http_utils import ensure_headers_and_cookies
 
 
 class Downloader:
@@ -146,9 +146,7 @@ class Downloader:
         # Check existing file size for potential resume
         downloaded = audio_path.stat().st_size if audio_path.exists() else 0
 
-        base_headers = sanitize_headers(headers)
-        cookies_data = sanitize_cookies(cookies)
-        base_headers, cookies_data = merge_cookie_sources(base_headers, cookies_data)
+        base_headers, cookies_data = ensure_headers_and_cookies(headers, cookies)
 
         for attempt in range(retries):
             try:
