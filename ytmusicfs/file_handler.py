@@ -257,7 +257,12 @@ class FileHandler:
                 )
                 with self.file_handle_lock:
                     file_info["stream_url"] = stream_url
-                    file_info["headers"] = raw_headers
+                    # Persist the fully-prepared headers so subsequent reads
+                    # reuse the computed authentication metadata (e.g.
+                    # SAPISIDHASH).  Storing the raw yt-dlp headers caused
+                    # follow-up streaming requests to miss the Authorization
+                    # header which in turn triggered HTTP 403 responses.
+                    file_info["headers"] = auth_headers
                     file_info["cookies"] = cookies
 
                 # Extract and cache duration if available in the result

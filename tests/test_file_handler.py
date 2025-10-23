@@ -224,6 +224,42 @@ class TestFileHandler(unittest.TestCase):
                     cookies=None,
                 )
 
+    def test_read_persists_sanitized_headers(self):
+        """Ensure prepared headers (with Authorization) are cached for reuse."""
+
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "dQw4w9WgXcQ"
+        fh = self.file_handler.open(path, video_id)
+
+        future = Future()
+        future.set_result(
+            {
+                "status": "success",
+                "stream_url": "https://example.com/stream.m4a",
+                "http_headers": {"Cookie": "SAPISID=abc123"},
+                "cookies": {"SAPISID": "abc123", "foo": "bar"},
+            }
+        )
+        self.file_handler.yt_dlp_utils.extract_stream_url_async.return_value = future
+        self.file_handler.downloader.download_file.return_value = True
+
+        with patch.object(
+            self.file_handler, "_stream_content", return_value=b"payload"
+        ) as mock_stream:
+            data = self.file_handler.read(path, size=1024, offset=0, fh=fh)
+
+        self.assertEqual(data, b"payload")
+        file_info = self.file_handler.open_files[fh]
+        self.assertIn("Authorization", file_info["headers"])
+        self.assertEqual(file_info["cookies"], {"SAPISID": "abc123", "foo": "bar"})
+        mock_stream.assert_called_once_with(
+            "https://example.com/stream.m4a",
+            0,
+            1024,
+            auth_headers=file_info["headers"],
+            cookies=file_info["cookies"],
+        )
+
     @patch("ytmusicfs.file_handler.requests.get")
     def test_read_file_with_offset(self, mock_requests_get):
         """Test reading content from a file with an offset."""
