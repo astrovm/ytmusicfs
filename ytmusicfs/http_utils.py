@@ -15,6 +15,14 @@ _YT_ORIGIN = "https://music.youtube.com"
 _HEADER_BLOCKLIST = {"host", "content-length"}
 
 
+def _is_sapisidhash(value: Optional[str]) -> bool:
+    """Return ``True`` when *value* looks like a SAPISID-derived signature."""
+
+    if not value:
+        return False
+    return value.strip().lower().startswith("sapisidhash ")
+
+
 def sanitize_headers(headers: Optional[Mapping[str, Any]]) -> Dict[str, str]:
     """Return a copy of *headers* safe for use with ``requests``.
 
@@ -146,10 +154,14 @@ def merge_cookie_sources(
 
     if cookie_header_key is None:
         headers = _ensure_origin_headers(headers)
-        if cookies and existing_auth_key is None:
+        auth_value = headers[existing_auth_key] if existing_auth_key else None
+        if cookies and (
+            existing_auth_key is None or _is_sapisidhash(auth_value)
+        ):
             auth_header = _build_sapisidhash(cookies, headers["Origin"])
             if auth_header:
-                headers["Authorization"] = auth_header
+                target_key = existing_auth_key or "Authorization"
+                headers[target_key] = auth_header
         return headers, cookies
 
     cookie_header_value = headers.pop(cookie_header_key)
@@ -167,6 +179,7 @@ def merge_cookie_sources(
             (key for key in headers.keys() if key.lower() == "authorization"),
             None,
         )
+    auth_value = headers[existing_auth_key] if existing_auth_key else None
 
     merged = dict(header_cookies)
     if cookies:
@@ -177,10 +190,13 @@ def merge_cookie_sources(
     else:
         auth_source = merged
 
-    if auth_source and existing_auth_key is None:
+    if auth_source and (
+        existing_auth_key is None or _is_sapisidhash(auth_value)
+    ):
         auth_header = _build_sapisidhash(auth_source, headers["Origin"])
         if auth_header:
-            headers["Authorization"] = auth_header
+            target_key = existing_auth_key or "Authorization"
+            headers[target_key] = auth_header
 
     cookie_result: Optional[Dict[str, str]]
     if merged:
