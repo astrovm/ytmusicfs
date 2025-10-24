@@ -133,6 +133,11 @@ def merge_cookie_sources(
     header entry.
     """
 
+    existing_auth_key = next(
+        (key for key in headers.keys() if key.lower() == "authorization"),
+        None,
+    )
+
     cookie_header_key = None
     for key in list(headers.keys()):
         if key.lower() == "cookie":
@@ -141,7 +146,7 @@ def merge_cookie_sources(
 
     if cookie_header_key is None:
         headers = _ensure_origin_headers(headers)
-        if cookies:
+        if cookies and existing_auth_key is None:
             auth_header = _build_sapisidhash(cookies, headers["Origin"])
             if auth_header:
                 headers["Authorization"] = auth_header
@@ -157,6 +162,11 @@ def merge_cookie_sources(
             header_cookies[name.strip()] = value.strip()
 
     headers = _ensure_origin_headers(headers)
+    if existing_auth_key is None:
+        existing_auth_key = next(
+            (key for key in headers.keys() if key.lower() == "authorization"),
+            None,
+        )
 
     merged = dict(header_cookies)
     if cookies:
@@ -167,7 +177,7 @@ def merge_cookie_sources(
     else:
         auth_source = merged
 
-    if auth_source:
+    if auth_source and existing_auth_key is None:
         auth_header = _build_sapisidhash(auth_source, headers["Origin"])
         if auth_header:
             headers["Authorization"] = auth_header
