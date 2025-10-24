@@ -8,6 +8,8 @@ import requests
 import tempfile
 import time
 
+from ytmusicfs.http_utils import ensure_headers_and_cookies
+
 
 class Downloader:
     """Manages downloading of audio files with resumability and progress tracking."""
@@ -45,6 +47,8 @@ class Downloader:
         video_id: str,
         stream_url: str,
         path: str,
+        headers: Optional[dict] = None,
+        cookies: Optional[dict] = None,
         retries: int = 3,
         chunk_size: int = 8192,
     ) -> bool:
@@ -54,6 +58,8 @@ class Downloader:
             video_id: YouTube video ID.
             stream_url: URL to download from (not cached).
             path: Filesystem path for size updates.
+            headers: Authentication headers required for the request.
+            cookies: Cookies required for the request.
             retries: Number of retry attempts.
             chunk_size: Size of chunks to download.
 
@@ -86,6 +92,8 @@ class Downloader:
             video_id,
             stream_url,
             path,
+            headers,
+            cookies,
             retries,
             chunk_size,
         )
@@ -96,6 +104,8 @@ class Downloader:
         video_id: str,
         stream_url: str,
         path: str,
+        headers: Optional[dict] = None,
+        cookies: Optional[dict] = None,
         retries: int = 3,
         chunk_size: int = 8192,
     ) -> bool:
@@ -105,6 +115,8 @@ class Downloader:
             video_id: YouTube video ID.
             stream_url: URL to download from (not cached).
             path: Filesystem path for size updates.
+            headers: Authentication headers required for the request.
+            cookies: Cookies required for the request.
             retries: Number of retry attempts.
             chunk_size: Size of chunks to download.
 
@@ -134,13 +146,21 @@ class Downloader:
         # Check existing file size for potential resume
         downloaded = audio_path.stat().st_size if audio_path.exists() else 0
 
+        base_headers, cookies_data = ensure_headers_and_cookies(headers, cookies)
+
         for attempt in range(retries):
             try:
                 # Add range header if resuming download
-                headers = {"Range": f"bytes={downloaded}-"} if downloaded else {}
+                request_headers = dict(base_headers)
+                if downloaded:
+                    request_headers["Range"] = f"bytes={downloaded}-"
 
                 # Verify the stream URL is still valid
-                head_response = requests.head(stream_url, headers=headers, timeout=10)
+                head_kwargs = {"headers": request_headers, "timeout": 10}
+                if cookies_data:
+                    head_kwargs["cookies"] = cookies_data
+
+                head_response = requests.head(stream_url, **head_kwargs)
                 if head_response.status_code not in (200, 206):
                     raise Exception(
                         f"Stream URL check failed: HTTP {head_response.status_code}"
@@ -168,9 +188,16 @@ class Downloader:
                     )
 
                 # Download the file
-                with requests.get(
-                    stream_url, headers=headers, stream=True, timeout=30
-                ) as response:
+                get_headers = dict(request_headers)
+                get_kwargs = {
+                    "headers": get_headers,
+                    "stream": True,
+                    "timeout": 30,
+                }
+                if cookies_data:
+                    get_kwargs["cookies"] = cookies_data
+
+                with requests.get(stream_url, **get_kwargs) as response:
                     if response.status_code not in (200, 206):
                         raise Exception(f"HTTP {response.status_code}")
 

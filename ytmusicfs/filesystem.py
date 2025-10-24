@@ -127,6 +127,7 @@ class YouTubeMusicFS(Operations):
             update_file_size_callback=self._update_file_size,
             yt_dlp_utils=self.yt_dlp_utils,
             browser=self.browser,
+            auth_file=auth_file,
         )
 
         # Register exact path handlers

@@ -17,7 +17,7 @@ YTMusicFS mounts your YouTube Music library as a standard filesystem, allowing y
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.10+
 - FUSE (Filesystem in Userspace)
 - YouTube Music account
 - Ability to copy request headers from an authenticated YouTube Music browser session
@@ -56,7 +56,7 @@ sudo pacman -S fuse2 python
 ## Authentication Setup
 
 YTMusicFS reuses the same browser headers that the official YouTube Music site
-uses.  Grab the headers once and they typically remain valid for up to two
+uses. Grab the headers once and they typically remain valid for up to two
 years.
 
 1. Sign in to [https://music.youtube.com](https://music.youtube.com) in your
@@ -72,7 +72,7 @@ years.
    ```
 
    Paste the copied headers when prompted, or supply them via
-   `--headers-file` to automate the step.  The command writes
+   `--headers-file` to automate the step. The command writes
    `browser.json` (by default to `~/.config/ytmusicfs/browser.json`).
 
 ## Usage
@@ -219,5 +219,5 @@ Options:
 
 ### Performance Issues
 
-  - Keep the cache directory on a fast disk for quicker metadata lookups
-  - Reduce network calls by browsing directories fully before playing
+- Keep the cache directory on a fast disk for quicker metadata lookups
+- Reduce network calls by browsing directories fully before playing

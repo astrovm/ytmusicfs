@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import unittest
+from concurrent.futures import Future
 from unittest.mock import Mock, patch, MagicMock, call
 import logging
 import os
@@ -87,6 +88,8 @@ class TestFileHandler(unittest.TestCase):
         self.assertEqual(
             self.file_handler.open_files[file_handle]["stream_url"], expected_stream_url
         )
+        self.assertIsNone(self.file_handler.open_files[file_handle]["headers"])
+        self.assertIsNone(self.file_handler.open_files[file_handle]["cookies"])
         self.assertEqual(self.file_handler.path_to_fh[path], file_handle)
 
         # Verify other required fields are present
@@ -124,6 +127,8 @@ class TestFileHandler(unittest.TestCase):
             "stream_url": None,
             "offset": 0,
             "cache_path": cache_path,
+            "headers": None,
+            "cookies": None,
             "status": "ready",
             "error": None,
             "path": path,
@@ -185,6 +190,8 @@ class TestFileHandler(unittest.TestCase):
             "stream_url": stream_url,
             "offset": 0,
             "cache_path": cache_path,
+            "headers": None,
+            "cookies": None,
             "status": "ready",
             "error": None,
             "path": path,
@@ -210,8 +217,48 @@ class TestFileHandler(unittest.TestCase):
 
                 # Verify _stream_content was called with the right arguments
                 self.file_handler._stream_content.assert_called_once_with(
-                    stream_url, offset, size
+                    stream_url,
+                    offset,
+                    size,
+                    auth_headers=None,
+                    cookies=None,
                 )
+
+    def test_read_persists_sanitized_headers(self):
+        """Ensure prepared headers (with Authorization) are cached for reuse."""
+
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "dQw4w9WgXcQ"
+        fh = self.file_handler.open(path, video_id)
+
+        future = Future()
+        future.set_result(
+            {
+                "status": "success",
+                "stream_url": "https://example.com/stream.m4a",
+                "http_headers": {"Cookie": "SAPISID=abc123"},
+                "cookies": {"SAPISID": "abc123", "foo": "bar"},
+            }
+        )
+        self.file_handler.yt_dlp_utils.extract_stream_url_async.return_value = future
+        self.file_handler.downloader.download_file.return_value = True
+
+        with patch.object(
+            self.file_handler, "_stream_content", return_value=b"payload"
+        ) as mock_stream:
+            data = self.file_handler.read(path, size=1024, offset=0, fh=fh)
+
+        self.assertEqual(data, b"payload")
+        file_info = self.file_handler.open_files[fh]
+        self.assertIn("Authorization", file_info["headers"])
+        self.assertEqual(file_info["cookies"], {"SAPISID": "abc123", "foo": "bar"})
+        mock_stream.assert_called_once_with(
+            "https://example.com/stream.m4a",
+            0,
+            1024,
+            auth_headers=file_info["headers"],
+            cookies=file_info["cookies"],
+        )
 
     @patch("ytmusicfs.file_handler.requests.get")
     def test_read_file_with_offset(self, mock_requests_get):
@@ -249,6 +296,8 @@ class TestFileHandler(unittest.TestCase):
             "stream_url": stream_url,
             "offset": 0,
             "cache_path": cache_path,
+            "headers": None,
+            "cookies": None,
             "status": "ready",
             "error": None,
             "path": path,
@@ -274,8 +323,90 @@ class TestFileHandler(unittest.TestCase):
 
                 # Verify _stream_content was called with the right arguments
                 self.file_handler._stream_content.assert_called_once_with(
-                    stream_url, offset, size
+                    stream_url,
+                    offset,
+                    size,
+                    auth_headers=None,
+                    cookies=None,
                 )
+
+    def test_read_sanitizes_headers_and_cookies(self):
+        """Stream metadata from yt-dlp should be normalised before use."""
+
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        fh = self.file_handler.open(path, video_id)
+
+        future = Future()
+        future.set_result(
+            {
+                "status": "success",
+                "stream_url": "https://example.com/audio.m4a",
+                "http_headers": {
+                    "User-Agent": "UnitTest",
+                    "Host": "music.youtube.com",
+                    "X-Goog-AuthUser": 0,
+                    "X-YouTube-Identity-Token": None,
+                },
+                "cookies": {"CONSENT": "YES+", "BAD": None},
+            }
+        )
+        self.yt_dlp_utils.extract_stream_url_async.return_value = future
+
+        with patch.object(
+            self.file_handler, "_stream_content", return_value=b"payload"
+        ) as mock_stream:
+            result = self.file_handler.read(path, size=1024, offset=0, fh=fh)
+
+        self.assertEqual(result, b"payload")
+
+        headers = mock_stream.call_args.kwargs["auth_headers"]
+        cookies = mock_stream.call_args.kwargs["cookies"]
+
+        self.assertNotIn("Host", headers)
+        self.assertEqual(headers["User-Agent"], "UnitTest")
+        self.assertEqual(headers["X-Goog-AuthUser"], "0")
+        self.assertNotIn("X-YouTube-Identity-Token", headers)
+
+        self.assertEqual(cookies, {"CONSENT": "YES+"})
+
+        self.file_handler.downloader.download_file.assert_called_once_with(
+            video_id,
+            "https://example.com/audio.m4a",
+            path,
+            headers=headers,
+            cookies={"CONSENT": "YES+"},
+        )
+
+    @patch("ytmusicfs.file_handler.requests.get")
+    def test_stream_content_preserves_lowercase_user_agent(self, mock_requests_get):
+        """Lowercase user-agent headers must not be replaced by defaults."""
+
+        mock_response = Mock()
+        mock_response.status_code = 206
+        mock_response.iter_content.return_value = [b"a" * 32]
+
+        mock_context = MagicMock()
+        mock_context.__enter__.return_value = mock_response
+        mock_context.__exit__.return_value = None
+        mock_requests_get.return_value = mock_context
+
+        data = self.file_handler._stream_content(
+            "https://example.com/audio.m4a",
+            offset=0,
+            size=16,
+            auth_headers={"user-agent": "Real UA"},
+            cookies=None,
+        )
+
+        self.assertEqual(data, b"a" * 16)
+
+        mock_requests_get.assert_called_once()
+        sent_headers = mock_requests_get.call_args.kwargs["headers"]
+
+        self.assertIn("user-agent", sent_headers)
+        self.assertEqual(sent_headers["user-agent"], "Real UA")
+        self.assertNotIn("User-Agent", sent_headers)
 
     def test_release_file(self):
         """Test releasing (closing) a file handle."""
@@ -297,6 +428,8 @@ class TestFileHandler(unittest.TestCase):
             "stream_url": stream_url,
             "offset": 1024,
             "cache_path": cache_path,
+            "headers": None,
+            "cookies": None,
             "status": "ready",
             "error": None,
             "path": path,
@@ -364,7 +497,9 @@ class TestFileHandler(unittest.TestCase):
         # Create a patched version of _stream_content that handles status codes correctly
         original_stream_content = self.file_handler._stream_content
 
-        def patched_stream_content(url, off, sz, retries=3):
+        def patched_stream_content(
+            url, off, sz, auth_headers=None, cookies=None, retries=3
+        ):
             # Mock the behavior we want for this test
             for attempt in range(retries):
                 try:
@@ -428,7 +563,9 @@ class TestFileHandler(unittest.TestCase):
         # Create a patched version of _stream_content that handles status codes as errors
         original_stream_content = self.file_handler._stream_content
 
-        def patched_stream_content(url, off, sz, retries=3):
+        def patched_stream_content(
+            url, off, sz, auth_headers=None, cookies=None, retries=3
+        ):
             # Ensure the mock is called the expected number of times
             responses = [mock_response_fail] * retries
 
@@ -477,6 +614,46 @@ class TestFileHandler(unittest.TestCase):
         # Restore original method
         self.file_handler._stream_content = original_stream_content
 
+    @patch("ytmusicfs.file_handler.requests.get")
+    def test_stream_content_merges_cookie_header(self, mock_requests_get):
+        """Cookies present only in the header should be preserved for streaming."""
+
+        stream_url = "https://example.com/audio.m4a"
+        offset = 0
+        size = 4096
+        chunk = b"a" * (size + 100)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 206
+        mock_response.iter_content.return_value = [chunk]
+
+        mock_context = MagicMock()
+        mock_context.__enter__.return_value = mock_response
+        mock_context.__exit__.return_value = None
+        mock_requests_get.return_value = mock_context
+
+        data = self.file_handler._stream_content(
+            stream_url,
+            offset,
+            size,
+            auth_headers={
+                "Cookie": "SID=headerSid; HSID=headerHsid",
+                "User-Agent": "UnitTest",
+            },
+            cookies={"SID": "mappingSid", "CONSENT": "YES+"},
+            retries=1,
+        )
+
+        self.assertEqual(data, chunk[:size])
+
+        called_kwargs = mock_requests_get.call_args.kwargs
+        self.assertNotIn("Cookie", called_kwargs["headers"])
+        self.assertEqual(called_kwargs["headers"]["User-Agent"], "UnitTest")
+        self.assertEqual(
+            called_kwargs["cookies"],
+            {"SID": "mappingSid", "HSID": "headerHsid", "CONSENT": "YES+"},
+        )
+
     def test_read_from_cached_file(self):
         """Test reading content from a completely cached file."""
         # Set up mock data
@@ -504,6 +681,8 @@ class TestFileHandler(unittest.TestCase):
             "stream_url": "cached",  # This indicates a cached file
             "offset": 0,
             "cache_path": cache_path,
+            "headers": None,
+            "cookies": None,
             "status": "ready",
             "error": None,
             "path": path,
