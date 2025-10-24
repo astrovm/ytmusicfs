@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
-from typing import Optional, Any, Callable
+from typing import Optional, Any, Callable, Dict, Tuple
 from ytmusicfs.downloader import Downloader
 from ytmusicfs.http_utils import ensure_headers_and_cookies
 from ytmusicfs.yt_dlp_utils import YTDLPUtils
 import errno
+import json
 import logging
 import requests
 import threading
@@ -24,6 +25,7 @@ class FileHandler:
         update_file_size_callback: Callable[[str, int], None],
         yt_dlp_utils: YTDLPUtils,
         browser: Optional[str] = None,
+        auth_file: Optional[str] = None,
     ):
         """Initialize the FileHandler.
 
@@ -35,6 +37,7 @@ class FileHandler:
             update_file_size_callback: Callback to update file size in filesystem cache
             yt_dlp_utils: YTDLPUtils instance for YouTube interaction
             browser: Browser to use for cookies (e.g., 'chrome', 'firefox')
+            auth_file: Path to persisted browser headers for fallback auth
         """
         self.cache_dir = cache_dir
         self.browser = browser
@@ -43,6 +46,7 @@ class FileHandler:
         self.update_file_size_callback = update_file_size_callback
         self.thread_manager = thread_manager
         self.yt_dlp_utils = yt_dlp_utils
+        self.browser_auth = self._load_browser_auth(auth_file)
 
         # File handling state
         self.open_files = {}  # {fh: {'stream_url': str, 'video_id': str, ...}}
@@ -56,6 +60,78 @@ class FileHandler:
         self.downloader = Downloader(
             thread_manager, cache_dir, logger, update_file_size_callback
         )
+
+    def _load_browser_auth(
+        self, auth_file: Optional[str]
+    ) -> Optional[Dict[str, Optional[Dict[str, str]]]]:
+        """Load sanitized headers/cookies from the auth file for fallback streaming."""
+
+        if not auth_file:
+            return None
+
+        path = Path(auth_file)
+        try:
+            raw_data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            self.logger.debug("Auth fallback skipped; file not found: %s", path)
+            return None
+        except Exception as exc:
+            self.logger.warning(
+                "Failed to parse auth headers from %s: %s", path, exc
+            )
+            return None
+
+        cookie_entry = raw_data.pop("cookie", None)
+        cookie_map: Optional[Dict[str, str]]
+
+        if isinstance(cookie_entry, str):
+            cookie_map = {}
+            for part in cookie_entry.split(";"):
+                name, sep, value = part.strip().partition("=")
+                if not sep:
+                    continue
+                cookie_map[name] = value
+        elif isinstance(cookie_entry, dict):
+            cookie_map = {str(k): str(v) for k, v in cookie_entry.items()}
+        else:
+            cookie_map = None
+
+        header_map = {str(k): str(v) for k, v in raw_data.items()}
+        sapisid_keys = list(cookie_map.keys())[:5] if cookie_map else []
+        self.logger.debug(
+            "Loaded auth fallback headers=%s cookies=%s (from %s)",
+            list(header_map.keys()),
+            sapisid_keys,
+            path,
+        )
+        return {"headers": header_map, "cookies": cookie_map}
+
+    @staticmethod
+    def _has_sapisid(cookies: Optional[Dict[str, str]]) -> bool:
+        if not cookies:
+            return False
+        return any(
+            key in cookies
+            for key in ("SAPISID", "__Secure-3PAPISID", "__Secure-3PSID")
+        )
+
+    @staticmethod
+    def _summarize_auth(
+        headers: Optional[Dict[str, str]],
+        cookies: Optional[Dict[str, str]],
+    ) -> Tuple[str, bool, list]:
+        preview = headers.get("Authorization") if headers else None
+        if preview:
+            if preview.startswith("SAPISIDHASH"):
+                label = "SAPISIDHASH"
+            else:
+                label = preview.split(" ", 1)[0]
+        else:
+            label = "none"
+
+        cookie_keys = sorted(cookies.keys()) if cookies else []
+        sapisid_present = FileHandler._has_sapisid(cookies)
+        return label, sapisid_present, cookie_keys
 
     def open(self, path: str, video_id: str) -> int:
         """Open a file and return a file handle.
@@ -207,7 +283,7 @@ class FileHandler:
                     f.seek(offset)
                     return f.read(size)
 
-        # If we don't have the stream URL yet (and it's not a cached file), fetch it on-demand
+        # If we still lack a stream URL (and it's not cached), fetch it on-demand
         if not file_info["stream_url"] or file_info["stream_url"] == "cached":
             if file_info["stream_url"] == "cached":
                 # If marked as cached, we can read directly from the file
@@ -248,12 +324,71 @@ class FileHandler:
                     raise OSError(errno.EIO, error_msg)
 
                 stream_url = result["stream_url"]
+                self.logger.debug(
+                    "yt-dlp stream url for %s: %s...",
+                    video_id,
+                    stream_url[:60],
+                )
                 cookies = result.get("cookies")
                 if isinstance(cookies, dict):
                     cookies = dict(cookies)
+                elif isinstance(cookies, (list, tuple)):
+                    candidate: Dict[str, str] = {}
+                    for item in cookies:
+                        if hasattr(item, "name") and hasattr(item, "value"):
+                            candidate[str(item.name)] = str(item.value)
+                        elif isinstance(item, dict):
+                            name = item.get("name") or item.get("key")
+                            value = item.get("value")
+                            if name and value is not None:
+                                candidate[str(name)] = str(value)
+                    cookies = candidate or None
                 raw_headers = dict(result.get("http_headers") or {})
+                if raw_headers:
+                    self.logger.debug(
+                        "yt-dlp headers for %s: %s",
+                        video_id,
+                        list(raw_headers.keys()),
+                    )
+                if "Cookie" in raw_headers or "cookie" in raw_headers:
+                    cookie_preview = raw_headers.get("Cookie") or raw_headers.get(
+                        "cookie"
+                    )
+                    self.logger.debug(
+                        "yt-dlp cookie header for %s: %s",
+                        video_id,
+                        cookie_preview[:120] if cookie_preview else "empty",
+                    )
                 auth_headers, cookies = ensure_headers_and_cookies(
                     dict(raw_headers), cookies
+                )
+                if (
+                    (not auth_headers or "Authorization" not in auth_headers)
+                    or not self._has_sapisid(cookies)
+                ) and self.browser_auth:
+                    self.logger.debug(
+                        "Falling back to auth file headers for %s", video_id
+                    )
+                    base_headers = dict(self.browser_auth["headers"])
+                    base_cookies = (
+                        dict(self.browser_auth["cookies"])
+                        if self.browser_auth.get("cookies")
+                        else None
+                    )
+                    fallback_headers, fallback_cookies = ensure_headers_and_cookies(
+                        base_headers, base_cookies
+                    )
+                    auth_headers = fallback_headers
+                    cookies = fallback_cookies
+                auth_header_label, sapisid_present, cookie_keys = self._summarize_auth(
+                    auth_headers, cookies
+                )
+                self.logger.debug(
+                    "Prepared auth for %s: header=%s sapisid=%s cookies=%s",
+                    video_id,
+                    auth_header_label,
+                    sapisid_present,
+                    cookie_keys[:10],
                 )
                 with self.file_handle_lock:
                     file_info["stream_url"] = stream_url
