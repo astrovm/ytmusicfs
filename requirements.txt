@@ -1,5 +1,5 @@
 cachetools==7.0.1
 fusepy==3.0.1
-requests==2.32.5
+requests==2.33.0
 yt-dlp==2026.2.21
 ytmusicapi==1.11.5
