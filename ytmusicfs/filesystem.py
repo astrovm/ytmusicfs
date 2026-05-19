@@ -203,9 +203,6 @@ class YouTubeMusicFS(Operations):
         listing_with_attrs = {}
         valid_filenames = set()
 
-        # Collect durations for batch processing
-        durations_batch = {}
-
         for track in processed_tracks:
             filename = track.get("filename")
             if not filename:
@@ -261,19 +258,6 @@ class YouTubeMusicFS(Operations):
             # Mark path as valid and store metadata with explicit is_directory flag
             file_path = f"{dir_path}/{filename}"
             self.cache.mark_valid(file_path, is_directory=is_directory)
-
-            # If it's a file, collect video ID to duration mapping if available
-            if not is_directory:
-                video_id = track.get("videoId")
-                if video_id and track.get("duration_seconds"):
-                    durations_batch[video_id] = track.get("duration_seconds")
-
-        # Batch update all durations at once
-        if durations_batch:
-            self.logger.debug(
-                f"Batch updating {len(durations_batch)} track durations from directory listing"
-            )
-            self.cache.set_durations_batch(durations_batch)
 
         # Cache the directory listing with attributes
         self.cache.set_directory_listing_with_attrs(dir_path, listing_with_attrs)
@@ -599,6 +583,9 @@ class YouTubeMusicFS(Operations):
 
             return attrs
         except Exception as e:
+            if isinstance(e, FuseOSError) and getattr(e, "errno", None) == errno.ENOENT:
+                self.logger.debug(f"getattr miss for {path}: {e}")
+                raise
             self.logger.error(f"Error in getattr for {path}: {e}")
             self.logger.error(traceback.format_exc())
             raise FuseOSError(errno.ENOENT)
@@ -767,6 +754,12 @@ class YouTubeMusicFS(Operations):
             path: Mount point path
         """
         self.logger.info("Destroying YTMusicFS instance")
+
+        if hasattr(self, "yt_dlp_utils") and self.yt_dlp_utils is not None:
+            try:
+                self.yt_dlp_utils.cleanup()
+            except Exception as e:
+                self.logger.error(f"Error cleaning up yt-dlp resources: {e}")
 
         # Shutdown thread pool via ThreadManager
         if hasattr(self, "thread_manager") and self.thread_manager is not None:

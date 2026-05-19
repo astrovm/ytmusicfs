@@ -281,6 +281,12 @@ class FileHandler:
                 with cache_path.open("rb") as f:
                     f.seek(offset)
                     return f.read(size)
+            elif self._check_cached_audio(video_id):
+                with self.file_handle_lock:
+                    file_info["stream_url"] = "cached"
+                with cache_path.open("rb") as f:
+                    f.seek(offset)
+                    return f.read(size)
 
         # If we still lack a stream URL (and it's not cached), fetch it on-demand
         if not file_info["stream_url"] or file_info["stream_url"] == "cached":

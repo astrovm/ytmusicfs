@@ -710,6 +710,41 @@ class TestFileHandler(unittest.TestCase):
         # Clean up the test file
         os.remove(cache_path)
 
+    def test_read_switches_to_cache_when_download_completed(self):
+        """An open streaming handle should use the cache once the download finishes."""
+        path = "/playlists/my_playlist/song.m4a"
+        file_handle = 1
+        video_id = "dQw4w9WgXcQ"
+        cache_path = os.path.join(self.temp_dir, "audio", f"{video_id}.m4a")
+        test_content = b"cached audio data"
+
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        with open(cache_path, "wb") as f:
+            f.write(test_content)
+
+        initialized_event = threading.Event()
+        initialized_event.set()
+        self.file_handler.open_files[file_handle] = {
+            "video_id": video_id,
+            "stream_url": "https://example.com/audio.m4a",
+            "cache_path": cache_path,
+            "headers": None,
+            "cookies": None,
+            "status": "ready",
+            "error": None,
+            "path": path,
+            "initialized_event": initialized_event,
+        }
+        self.file_handler.downloader.get_progress.return_value = None
+        self.file_handler._check_cached_audio.return_value = True
+
+        data = self.file_handler.read(path, len(test_content), 0, file_handle)
+
+        self.assertEqual(data, test_content)
+        self.assertEqual(
+            self.file_handler.open_files[file_handle]["stream_url"], "cached"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from ytmusicfs.yt_dlp_utils import YTDLPUtils
@@ -30,6 +31,40 @@ class TestYTDLPUtils(unittest.TestCase):
         )
         self.assertIn("node", opts["js_runtimes"])
         self.assertIn("deno", opts["js_runtimes"])
+
+    @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
+    def test_reuses_cached_browser_cookie_file(self, mock_youtube_dl):
+        first_info = {
+            "url": "https://example.com/one.m4a",
+            "http_headers": {},
+        }
+        second_info = {
+            "url": "https://example.com/two.m4a",
+            "http_headers": {},
+        }
+
+        first_ydl = MagicMock()
+        first_ydl.extract_info.return_value = first_info
+        second_ydl = MagicMock()
+        second_ydl.extract_info.return_value = second_info
+        mock_youtube_dl.return_value.__enter__.side_effect = [first_ydl, second_ydl]
+
+        utils = YTDLPUtils()
+        utils.extract_stream_url("one", browser="brave")
+        utils.extract_stream_url("two", browser="brave")
+
+        first_opts = mock_youtube_dl.call_args_list[0].args[0]
+        second_opts = mock_youtube_dl.call_args_list[1].args[0]
+        self.assertEqual(first_opts["cookiesfrombrowser"], ("brave",))
+        self.assertNotIn("cookiesfrombrowser", second_opts)
+        self.assertIn("cookiefile", second_opts)
+        first_ydl.cookiejar.save.assert_called_once()
+
+        cookie_file = second_opts["cookiefile"]
+        self.assertTrue(utils._browser_cookie_files)
+        utils.cleanup()
+        self.assertFalse(utils._browser_cookie_files)
+        self.assertFalse(Path(cookie_file).exists())
 
 
 if __name__ == "__main__":

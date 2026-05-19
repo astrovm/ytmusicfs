@@ -2,7 +2,10 @@
 
 import logging
 import re
+import tempfile
+import threading
 from concurrent.futures import Future
+from pathlib import Path
 
 from yt_dlp import YoutubeDL
 
@@ -34,7 +37,52 @@ class YTDLPUtils:
         """
         self.thread_manager = thread_manager
         self.logger = logger or logging.getLogger("YTDLPUtils")
+        self._browser_cookie_files = {}
+        self._cookie_lock = threading.Lock()
         self.logger.debug("YTDLPUtils initialized")
+
+    def _add_cookie_options(self, ydl_opts, browser):
+        if not browser:
+            return
+
+        with self._cookie_lock:
+            cookie_file = self._browser_cookie_files.get(browser)
+            if cookie_file and Path(cookie_file).exists():
+                ydl_opts["cookiefile"] = cookie_file
+                return
+
+        ydl_opts["cookiesfrombrowser"] = (browser,)
+
+    def _cache_browser_cookies(self, browser, ydl):
+        if not browser:
+            return
+
+        cookiejar = getattr(ydl, "cookiejar", None)
+        if not cookiejar or not hasattr(cookiejar, "save"):
+            return
+
+        with self._cookie_lock:
+            cookie_file = self._browser_cookie_files.get(browser)
+            if not cookie_file:
+                tmp = tempfile.NamedTemporaryFile(
+                    prefix=f"ytmusicfs-{browser}-", suffix=".cookies", delete=False
+                )
+                cookie_file = tmp.name
+                tmp.close()
+                self._browser_cookie_files[browser] = cookie_file
+
+        cookiejar.save(cookie_file, ignore_discard=True, ignore_expires=True)
+
+    def cleanup(self):
+        with self._cookie_lock:
+            cookie_files = list(self._browser_cookie_files.values())
+            self._browser_cookie_files.clear()
+
+        for cookie_file in cookie_files:
+            try:
+                Path(cookie_file).unlink(missing_ok=True)
+            except OSError as exc:
+                self.logger.debug("Failed to remove temporary cookie file: %s", exc)
 
     def extract_playlist_content(self, playlist_id, limit=10000, browser=None):
         """
@@ -65,11 +113,11 @@ class YTDLPUtils:
                     "extract_flat": True,
                     "ignoreerrors": True,
                 }
-                if browser:
-                    redirect_opts["cookiesfrombrowser"] = (browser,)
+                self._add_cookie_options(redirect_opts, browser)
 
                 with YoutubeDL(redirect_opts) as ydl:
                     info = ydl.extract_info(url, download=False, process=False)
+                    self._cache_browser_cookies(browser, ydl)
 
                     # Check if we got a redirect
                     if info and info.get("_type") == "url" and "url" in info:
@@ -102,12 +150,12 @@ class YTDLPUtils:
             "playlistend": limit,
             "extractor_args": {"youtubetab": {"skip": ["authcheck"]}},
         }
-        if browser:
-            ydl_opts["cookiesfrombrowser"] = (browser,)
+        self._add_cookie_options(ydl_opts, browser)
 
         try:
             with YoutubeDL(ydl_opts) as ydl:
                 result = ydl.extract_info(url, download=False)
+                self._cache_browser_cookies(browser, ydl)
                 if not result or "entries" not in result:
                     self.logger.warning(
                         f"No tracks found for {'album' if is_album else 'playlist'} ID: {playlist_id}"
@@ -142,11 +190,11 @@ class YTDLPUtils:
                 name: dict(config) for name, config in YT_DLP_JS_RUNTIMES.items()
             },
         }
-        if browser:
-            ydl_opts["cookiesfrombrowser"] = (browser,)
+        self._add_cookie_options(ydl_opts, browser)
 
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
+            self._cache_browser_cookies(browser, ydl)
             http_headers = info.get("http_headers") or {}
             http_headers = dict(http_headers)
             result = {"stream_url": info["url"], "http_headers": http_headers}
