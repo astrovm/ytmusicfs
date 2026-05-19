@@ -50,6 +50,11 @@ pipx ensurepath
 
 Restart your shell after `pipx ensurepath` if `ytmusicfs` is not found.
 
+High quality YouTube Music extraction needs one supported JavaScript runtime on
+the `ytmusicfs` process `PATH`: `node`, `bun`, `deno`, or `quickjs`. Use your
+preferred install method; it does not need to come from the system package
+manager.
+
 ### Install YTMusicFS
 
 Install YTMusicFS as an isolated command-line app:
@@ -132,7 +137,11 @@ ytmusicfs mount --mount-point ~/Music/ytmusic --browser brave
 
 Supported browsers include: chrome, firefox, brave, and others supported by yt-dlp.
 
-The `--browser` option allows YouTube Premium subscribers to access higher quality audio streams (up to 256kbps) and private playlists by using your browser's cookies for authentication. Without this option, audio will stream at standard quality, even for Premium subscribers, and private playlists will not be accessible.
+The `--browser` option allows YouTube Premium subscribers to access higher
+quality audio streams (up to 256kbps) and private playlists by using your
+browser's cookies for authentication. Without `--browser`, audio will stream at
+standard quality, even for Premium subscribers, and private playlists will not
+be accessible.
 
 ### Browse and Play Music
 

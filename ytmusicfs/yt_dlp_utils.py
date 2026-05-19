@@ -6,6 +6,14 @@ from concurrent.futures import Future
 
 from yt_dlp import YoutubeDL
 
+YOUTUBE_MUSIC_AUDIO_FORMAT = "141/140/bestaudio[ext=m4a]"
+YT_DLP_JS_RUNTIMES = {
+    "deno": {},
+    "node": {},
+    "bun": {},
+    "quickjs": {},
+}
+
 
 class YTDLPUtils:
     """
@@ -128,8 +136,11 @@ class YTDLPUtils:
         """
         url = f"https://music.youtube.com/watch?v={video_id}"
         ydl_opts = {
-            "format": "141/bestaudio[ext=m4a]",
+            "format": YOUTUBE_MUSIC_AUDIO_FORMAT,
             "extractor_args": {"youtube": {"formats": ["missing_pot"]}},
+            "js_runtimes": {
+                name: dict(config) for name, config in YT_DLP_JS_RUNTIMES.items()
+            },
         }
         if browser:
             ydl_opts["cookiesfrombrowser"] = (browser,)
