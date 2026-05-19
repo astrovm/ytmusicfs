@@ -1,11 +1,13 @@
 # Repository Guidelines
 
 ## Project Overview
+
 - `ytmusicfs` is a Python FUSE filesystem for browsing and streaming YouTube Music as local files.
 - It captures YouTube Music browser auth, reads library data through `ytmusicapi`, and streams audio through `yt-dlp`.
 - Keep behavior practical for media players: stable paths, predictable metadata, cached listings, and graceful failures.
 
 ## Approach
+
 - Read before editing. Test before declaring done.
 - Prefer small edits over rewrites.
 - Reproduce before fixing runtime or external issues.
@@ -13,11 +15,13 @@
 - Use the simplest working solution. No over-engineering, speculative features, or single-use abstractions.
 
 ## Output
+
 - Code first. Explain only non-obvious logic.
 - No filler, boilerplate, or out-of-scope suggestions.
 - Use plain hyphens and straight quotes only. No decorative Unicode. Keep code output copy-paste safe.
 
 ## Project Structure & Modules
+
 - `ytmusicfs/`: Core package.
   - `cli.py`: CLI entry point, argument parsing, logging, mount orchestration.
   - `filesystem.py`: Main FUSE implementation and filesystem operations.
@@ -36,8 +40,10 @@
 - Extras: `.github/`, `.devcontainer/`, `build/`.
 
 ## Build, Test, and Development Commands
-- Install editable: `pip install -e .`
-- Install editable with dev deps: `pip install -e .[dev]`
+
+- Install local app: `pipx install .`
+- Upgrade after pulling changes: `pipx upgrade ytmusicfs`
+- Reinstall local app after package metadata or entry point changes: `pipx reinstall ytmusicfs`
 - Check CLI: `ytmusicfs --version`
 - Capture browser auth: `ytmusicfs browser`
 - Mount: `ytmusicfs mount --mount-point ~/Music/ytmusic`
@@ -51,9 +57,10 @@
 - Coverage: `pytest --cov=ytmusicfs`
 - Lint/format check: `black --check . && isort --check-only . && flake8 ytmusicfs tests`
 - Auto-format: `black . && isort .`
-- Build wheel/sdist: `python -m build` after `pip install build`
+- Build wheel/sdist: `python -m build` when the build backend is available in the active environment.
 
 ## Coding Style & Naming
+
 - Python 3.10+ project; prefer type hints and explicit return types.
 - Formatter: Black, line length 88.
 - Imports: Isort with `profile = black`.
@@ -69,6 +76,7 @@
 - Do not preserve feature flags for shipped features or abstractions that serve a single caller.
 
 ## Architecture Notes
+
 - Components communicate through narrow interfaces; avoid reaching into another component's internals.
 - `YouTubeMusicFS` coordinates routing, metadata, content fetches, cache, and file handling.
 - Cache is shared for consistency across directory listings, file attributes, metadata, and path validation.
@@ -78,6 +86,7 @@
 - Prefer graceful degradation when YouTube Music, auth, or stream extraction is unavailable.
 
 ## Common Development Tasks
+
 - Adding filesystem paths:
   1. Register the route in `filesystem.py`.
   2. Add fetch/transform logic in `content_fetcher.py` or `processor.py` as needed.
@@ -93,6 +102,7 @@
   - Preserve cache invalidation rules and timestamps.
 
 ## Debugging
+
 - Read code before explaining.
 - Prove findings with direct evidence: failing test, reproduced run, or concrete probe.
 - State what you found, where, and the fix.
@@ -100,6 +110,7 @@
 - For runtime or external failures, reproduce first when possible.
 
 ## Verification
+
 - Smallest proof first, then broader checks.
 - Use the standard toolchain.
 - Default checks: format, lint with warnings as errors, and tests.
@@ -108,6 +119,7 @@
 - Fix every issue encountered. Do not ignore failures as pre-existing.
 
 ## Testing Guidelines
+
 - Framework: Pytest.
 - Discovery: files `test_*.py`, classes `Test*`, functions `test_*`.
 - Add tests alongside the changed behavior in `tests/`.
@@ -117,6 +129,7 @@
 - A failing test is blocking. Fix it before moving on.
 
 ## Commit & Pull Request Guidelines
+
 - Commits: imperative, concise, scoped to one change.
 - Example: `Refactor logging setup in cli.py`
 - Reference issues when relevant, e.g. `Fixes #123`.
@@ -130,6 +143,7 @@
 - Commit messages must be in English.
 
 ## Security & Configuration
+
 - Never commit credentials, browser headers, cookies, or local auth captures.
 - Auth file: `~/.config/ytmusicfs/browser.json`.
 - Cache: `~/.cache/ytmusicfs`.
