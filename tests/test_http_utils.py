@@ -44,9 +44,7 @@ def test_refreshes_sapisidhash_when_stale(monkeypatch):
 
     fixed_timestamp = 1_700_000_000
 
-    monkeypatch.setattr(
-        "ytmusicfs.http_utils.time.time", lambda: fixed_timestamp
-    )
+    monkeypatch.setattr("ytmusicfs.http_utils.time.time", lambda: fixed_timestamp)
 
     merged_headers, merged_cookies = ensure_headers_and_cookies(headers, cookies)
 

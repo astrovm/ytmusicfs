@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 
-from pathlib import Path
-from typing import Callable, Optional, Any
 import logging
 import os
-import requests
 import tempfile
 import time
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+import requests
 
 from ytmusicfs.http_utils import ensure_headers_and_cookies
 
@@ -68,7 +69,6 @@ class Downloader:
         """
         audio_path = self.cache_dir / "audio" / f"{video_id}.m4a"
         audio_path.parent.mkdir(parents=True, exist_ok=True)
-        status_path = audio_path.parent / f"{video_id}.status"
 
         # Check if download is already complete with valid file
         if self._is_download_complete(video_id):

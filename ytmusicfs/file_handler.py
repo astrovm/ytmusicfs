@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 
-from pathlib import Path
-from typing import Optional, Any, Callable, Dict, Tuple
-from ytmusicfs.downloader import Downloader
-from ytmusicfs.http_utils import ensure_headers_and_cookies
-from ytmusicfs.yt_dlp_utils import YTDLPUtils
 import errno
 import json
 import logging
-import requests
 import threading
 import time
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional, Tuple
+
+import requests
+
+from ytmusicfs.downloader import Downloader
+from ytmusicfs.http_utils import ensure_headers_and_cookies
+from ytmusicfs.yt_dlp_utils import YTDLPUtils
 
 
 class FileHandler:
@@ -76,9 +78,7 @@ class FileHandler:
             self.logger.debug("Auth fallback skipped; file not found: %s", path)
             return None
         except Exception as exc:
-            self.logger.warning(
-                "Failed to parse auth headers from %s: %s", path, exc
-            )
+            self.logger.warning("Failed to parse auth headers from %s: %s", path, exc)
             return None
 
         cookie_entry = raw_data.pop("cookie", None)
@@ -111,8 +111,7 @@ class FileHandler:
         if not cookies:
             return False
         return any(
-            key in cookies
-            for key in ("SAPISID", "__Secure-3PAPISID", "__Secure-3PSID")
+            key in cookies for key in ("SAPISID", "__Secure-3PAPISID", "__Secure-3PSID")
         )
 
     @staticmethod
@@ -452,8 +451,6 @@ class FileHandler:
         with self.file_handle_lock:
             if fh not in self.open_files:
                 return 0
-
-            video_id = self.open_files[fh].get("video_id")
 
             # Don't stop the download - let it continue in the background
             # This ensures files are fully downloaded even after the handle is closed

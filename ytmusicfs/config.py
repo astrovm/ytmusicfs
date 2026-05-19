@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
+import logging
 from pathlib import Path
 from typing import Optional
-import logging
 
 
 class ConfigManager:

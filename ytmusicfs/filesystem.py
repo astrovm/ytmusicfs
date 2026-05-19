@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 
-from fuse import FUSE, Operations, FuseOSError
-from typing import Dict, Any, Optional, List
-from ytmusicfs.cache import CacheManager
-from ytmusicfs.client import YouTubeMusicClient
-from ytmusicfs.content_fetcher import ContentFetcher
-from ytmusicfs.file_handler import FileHandler
-from ytmusicfs.metadata import MetadataManager
-from ytmusicfs.auth_adapter import YTMusicAuthAdapter
-from ytmusicfs.path_router import PathRouter
-from ytmusicfs.processor import TrackProcessor
-from ytmusicfs.thread_manager import ThreadManager
-from ytmusicfs.yt_dlp_utils import YTDLPUtils
 import errno
 import logging
 import os
 import stat
 import time
 import traceback
+from typing import Any, Dict, List, Optional
+
+from fuse import FUSE, FuseOSError, Operations
+
+from ytmusicfs.auth_adapter import YTMusicAuthAdapter
+from ytmusicfs.cache import CacheManager
+from ytmusicfs.client import YouTubeMusicClient
+from ytmusicfs.content_fetcher import ContentFetcher
+from ytmusicfs.file_handler import FileHandler
+from ytmusicfs.metadata import MetadataManager
+from ytmusicfs.path_router import PathRouter
+from ytmusicfs.processor import TrackProcessor
+from ytmusicfs.thread_manager import ThreadManager
+from ytmusicfs.yt_dlp_utils import YTDLPUtils
 
 
 class YouTubeMusicFS(Operations):
@@ -509,7 +511,6 @@ class YouTubeMusicFS(Operations):
         if path.count("/") == 2:  # /category/item format
             parts = path.split("/")
             category = parts[1]
-            item_name = parts[2]
 
             # VALIDATION: First check if this is a valid path
             if not self.router.validate_path(path):
@@ -548,7 +549,6 @@ class YouTubeMusicFS(Operations):
             # For normal files, we need to set appropriate metadata
             if path.endswith(".m4a"):
                 # Audio files
-                is_audio = True
                 size = 1024 * 1024  # Default size for audio files
 
                 # Try to get a more accurate size for audio files

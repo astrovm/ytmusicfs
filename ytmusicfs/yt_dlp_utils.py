@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 
-from concurrent.futures import Future
-from yt_dlp import YoutubeDL
 import logging
 import re
+from concurrent.futures import Future
+
+from yt_dlp import YoutubeDL
 
 
 class YTDLPUtils:

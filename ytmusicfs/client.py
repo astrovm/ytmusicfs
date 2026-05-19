@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 
-from typing import Dict, Optional, List
-from ytmusicfs.auth_adapter import YTMusicAuthAdapter
 import logging
+from typing import Dict, List, Optional
+
+from ytmusicfs.auth_adapter import YTMusicAuthAdapter
 
 
 class YouTubeMusicClient:

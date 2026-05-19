@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 
-from typing import List, Optional, Dict, Any, Callable
-from ytmusicfs.cache import CacheManager
-from ytmusicfs.processor import TrackProcessor
-from ytmusicfs.yt_dlp_utils import YTDLPUtils
 import logging
 import time
 import traceback
+from typing import Any, Callable, Dict, List, Optional
+
+from ytmusicfs.cache import CacheManager
+from ytmusicfs.processor import TrackProcessor
+from ytmusicfs.yt_dlp_utils import YTDLPUtils
 
 
 class ContentFetcher:

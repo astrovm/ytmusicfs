@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
-from typing import Dict, Callable, List
-import re
 import logging
+import re
+from typing import Callable, Dict, List
 
 
 class PathRouter:

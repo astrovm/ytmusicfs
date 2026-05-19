@@ -1,31 +1,25 @@
 #!/usr/bin/env python3
 
-import unittest
-from unittest.mock import Mock, patch, MagicMock, ANY, call
 import logging
 import os
-import stat
-import time
-import threading
-import tempfile
 import shutil
-from fuse import FuseOSError
+import tempfile
+import threading
+import time
+import unittest
 from pathlib import Path
-import errno
-import json
-import requests
-from contextlib import contextmanager
+from unittest.mock import Mock, patch
+
+from ytmusicfs.auth_adapter import YTMusicAuthAdapter
+from ytmusicfs.cache import CacheManager
+from ytmusicfs.client import YouTubeMusicClient
+from ytmusicfs.content_fetcher import ContentFetcher
+from ytmusicfs.file_handler import FileHandler
 
 # Import the classes to test
 from ytmusicfs.filesystem import YouTubeMusicFS
-from ytmusicfs.cache import CacheManager
-from ytmusicfs.thread_manager import ThreadManager
-from ytmusicfs.file_handler import FileHandler
-from ytmusicfs.content_fetcher import ContentFetcher
-from ytmusicfs.path_router import PathRouter
-from ytmusicfs.auth_adapter import YTMusicAuthAdapter
-from ytmusicfs.client import YouTubeMusicClient
 from ytmusicfs.processor import TrackProcessor
+from ytmusicfs.thread_manager import ThreadManager
 from ytmusicfs.yt_dlp_utils import YTDLPUtils
 
 
@@ -343,20 +337,6 @@ class TestYouTubeMusicFSIntegration(unittest.TestCase):
             if path == playlist_path
             else {"type": "error"}
         )
-
-        # Create real return values for the mock
-        initial_listing = {
-            ".": {"is_dir": True, "st_mode": 16877},
-            "..": {"is_dir": True, "st_mode": 16877},
-            "Old Song.m4a": {"is_dir": False, "st_mode": 33188},
-        }
-
-        updated_listing = {
-            ".": {"is_dir": True, "st_mode": 16877},
-            "..": {"is_dir": True, "st_mode": 16877},
-            "Old Song.m4a": {"is_dir": False, "st_mode": 33188},
-            "New Song.m4a": {"is_dir": False, "st_mode": 33188},
-        }
 
         # Mock the readdir method directly to avoid the recursion issue
         original_readdir = self.fs.readdir

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 
 import unittest
-from unittest.mock import Mock, patch
-import logging
+from unittest.mock import Mock
 
 # Import the class to test
 from ytmusicfs.path_router import PathRouter

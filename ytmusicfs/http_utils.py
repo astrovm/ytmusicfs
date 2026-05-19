@@ -4,10 +4,9 @@
 
 from __future__ import annotations
 
-from typing import Mapping, Optional, Dict, Any, Tuple
 import hashlib
 import time
-
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 _YT_ORIGIN = "https://music.youtube.com"
 
@@ -71,11 +70,6 @@ def _ensure_origin_headers(headers: Dict[str, str]) -> Dict[str, str]:
     for name, value in defaults:
         key_lower = name.lower()
         if key_lower in existing_keys:
-            existing_name = existing_keys[key_lower]
-            if existing_name != name:
-                # Normalise to canonical casing so subsequent lookups succeed
-                headers[name] = headers.pop(existing_name)
-                existing_keys[key_lower] = name
             continue
         headers[name] = value
         existing_keys[key_lower] = name
@@ -111,9 +105,29 @@ def _build_sapisidhash(
     return f"SAPISIDHASH {timestamp}_{digest}"
 
 
-def sanitize_cookies(
-    cookies: Optional[Mapping[str, Any]]
-) -> Optional[Dict[str, str]]:
+def _set_sapisidhash_authorization(
+    headers: Dict[str, str],
+    existing_auth_key: Optional[str],
+    auth_source: Optional[Mapping[str, Any]],
+) -> None:
+    if not auth_source:
+        return
+
+    origin_key = next(key for key in headers if key.lower() == "origin")
+    auth_header = _build_sapisidhash(auth_source, headers[origin_key])
+    if not auth_header:
+        return
+
+    current_auth = headers.get(existing_auth_key) if existing_auth_key else None
+    if existing_auth_key and not _is_sapisidhash(current_auth):
+        return
+
+    if existing_auth_key and existing_auth_key != "Authorization":
+        headers.pop(existing_auth_key, None)
+    headers["Authorization"] = auth_header
+
+
+def sanitize_cookies(cookies: Optional[Mapping[str, Any]]) -> Optional[Dict[str, str]]:
     """Return cookie mapping compatible with ``requests``.
 
     ``yt-dlp`` may provide cookies with ``None`` values; ``requests`` treats
@@ -159,25 +173,7 @@ def merge_cookie_sources(
 
     if cookie_header_key is None:
         headers = _ensure_origin_headers(headers)
-        if cookies:
-            origin_key = next(key for key in headers if key.lower() == "origin")
-            auth_header = _build_sapisidhash(
-                cookies, headers[origin_key]
-            )
-            if auth_header:
-                previous_value = (
-                    headers.get(existing_auth_key) if existing_auth_key else None
-                )
-                if (
-                    existing_auth_key
-                    and previous_value
-                    and not _is_sapisidhash(previous_value)
-                    and "X-Goog-Authorization" not in headers
-                ):
-                    headers["X-Goog-Authorization"] = previous_value
-                if existing_auth_key and existing_auth_key != "Authorization":
-                    headers.pop(existing_auth_key, None)
-                headers["Authorization"] = auth_header
+        _set_sapisidhash_authorization(headers, existing_auth_key, cookies)
         return headers, cookies
 
     cookie_header_value = headers.pop(cookie_header_key)
@@ -205,23 +201,7 @@ def merge_cookie_sources(
     else:
         auth_source = cookies
 
-    if auth_source:
-        origin_key = next(key for key in headers if key.lower() == "origin")
-        auth_header = _build_sapisidhash(auth_source, headers[origin_key])
-        if auth_header:
-            previous_value = (
-                headers.get(existing_auth_key) if existing_auth_key else None
-            )
-            if (
-                existing_auth_key
-                and previous_value
-                and not _is_sapisidhash(previous_value)
-                and "X-Goog-Authorization" not in headers
-            ):
-                headers["X-Goog-Authorization"] = previous_value
-            if existing_auth_key and existing_auth_key != "Authorization":
-                headers.pop(existing_auth_key, None)
-            headers["Authorization"] = auth_header
+    _set_sapisidhash_authorization(headers, existing_auth_key, auth_source)
 
     cookie_result: Optional[Dict[str, str]]
     if merged:

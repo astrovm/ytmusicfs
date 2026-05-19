@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 
-from pathlib import Path
-from typing import Optional
-from ytmusicfs import __version__
-from ytmusicfs.config import ConfigManager
-from ytmusicfs.filesystem import mount_ytmusicfs
-from ytmusicfs.browser_setup import main as browser_setup
 import argparse
 import logging
 import sys
+from pathlib import Path
+
+from ytmusicfs import __version__
+from ytmusicfs.browser_setup import main as browser_setup
+from ytmusicfs.config import ConfigManager
+from ytmusicfs.filesystem import mount_ytmusicfs
 
 
 def setup_logging(args: argparse.Namespace) -> logging.Logger:

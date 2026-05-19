@@ -2,9 +2,9 @@
 
 """Authentication adapter for ytmusicapi using browser headers."""
 
+import logging
 from pathlib import Path
 from typing import Any, Optional
-import logging
 
 from ytmusicapi import YTMusic
 

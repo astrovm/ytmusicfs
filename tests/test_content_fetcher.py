@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 
-import unittest
-from unittest.mock import Mock, patch, MagicMock
 import logging
 import time
-from typing import Dict, List, Any
+import unittest
+from unittest.mock import Mock, patch
 
 # Import the class to test
 from ytmusicfs.content_fetcher import ContentFetcher

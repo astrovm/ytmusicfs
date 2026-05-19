@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 
-import unittest
-from unittest.mock import Mock, patch, MagicMock
 import logging
 import os
 import shutil
-import tempfile
-import time
-from pathlib import Path
-import threading
 import sqlite3
-import json
-import stat
-import random
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, Mock, patch
 
 # Import the class to test
 from ytmusicfs.cache import CacheManager
@@ -395,9 +392,9 @@ class TestCacheManager(unittest.TestCase):
             }
 
             # Mock the set_directory_listing_with_attrs to update our cache directly
-            def mock_set_dir_listing(p, l):
+            def mock_set_dir_listing(p, listing_data):
                 test_cache.directory_listings_cache[p] = {
-                    "data": l,
+                    "data": listing_data,
                     "time": time.time(),
                 }
                 test_cache.valid_paths.add(p)
@@ -737,9 +734,9 @@ class TestCacheManager(unittest.TestCase):
             }
 
             # Mock set_directory_listing_with_attrs
-            def mock_set_dir_listing(p, l):
+            def mock_set_dir_listing(p, listing_data):
                 first_cache.directory_listings_cache[p] = {
-                    "data": l,
+                    "data": listing_data,
                     "time": time.time(),
                 }
                 first_cache.valid_paths.add(p)

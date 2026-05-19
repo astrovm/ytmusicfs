@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 
-from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Optional, Callable
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import Callable, Dict, Optional
 
 
 class ThreadManager:

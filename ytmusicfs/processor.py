@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
-from typing import Dict, Optional, List, Tuple
 import logging
 import re
+from typing import Dict, List, Optional, Tuple
 
 
 class TrackProcessor:

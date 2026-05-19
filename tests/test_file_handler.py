@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 
-import unittest
-from concurrent.futures import Future
-from unittest.mock import Mock, patch, MagicMock, call
+import errno
 import logging
 import os
 import tempfile
-import time
-from pathlib import Path
 import threading
+import time
+import unittest
+from concurrent.futures import Future
+from pathlib import Path
+from unittest.mock import MagicMock, Mock, call, patch
+
 import requests
-import errno
 
 # Import the class to test
 from ytmusicfs.file_handler import FileHandler
@@ -512,10 +513,10 @@ class TestFileHandler(unittest.TestCase):
                             )
                         # For successful response, return the content
                         return resp.content[:sz]
-                except requests.exceptions.RequestException as e:
+                except requests.exceptions.RequestException as exc:
                     if attempt == retries - 1:
                         raise OSError(
-                            errno.EIO, f"Failed after {retries} attempts: {e}"
+                            errno.EIO, f"Failed after {retries} attempts: {exc}"
                         )
                     time.sleep(2**attempt)
 
@@ -579,7 +580,7 @@ class TestFileHandler(unittest.TestCase):
                             raise requests.exceptions.RequestException(
                                 f"HTTP {resp.status_code}"
                             )
-                except requests.exceptions.RequestException as e:
+                except requests.exceptions.RequestException:
                     if attempt == retries - 1:
                         raise OSError(
                             errno.EIO, f"HTTP {mock_response_fail.status_code}"

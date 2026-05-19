@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 
-import unittest
-from unittest.mock import Mock, patch, MagicMock, ANY
 import errno
 import logging
 import os
 import stat
 import time
+import unittest
+from unittest.mock import Mock, patch
+
 from fuse import FuseOSError
 
 # Import the class to test
@@ -111,14 +112,6 @@ class TestYouTubeMusicFS(unittest.TestCase):
         """Test reading the contents of a specific playlist."""
         # Configure mocks
         playlist_path = "/playlists/my_playlist"
-
-        # Mock the cache behavior for directory listing
-        cache_listing = {
-            ".": {"is_dir": True},
-            "..": {"is_dir": True},
-            "song1.m4a": {"is_dir": False},
-            "song2.m4a": {"is_dir": False},
-        }
 
         # Mock the cache get method to return None initially for the cache key
         # This is to simulate the first priority check that looks for a cached directory listing

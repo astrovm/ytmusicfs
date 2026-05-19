@@ -2,10 +2,10 @@
 
 """Browser-based authentication helper for YTMusicFS."""
 
-from pathlib import Path
-from typing import Optional
 import argparse
 import logging
+from pathlib import Path
+from typing import Optional
 
 from ytmusicapi import setup as ytmusic_setup
 

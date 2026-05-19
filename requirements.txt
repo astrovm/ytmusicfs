@@ -1,5 +1,5 @@
-cachetools==7.0.1
+cachetools==7.1.3
 fusepy==3.0.1
-requests==2.33.0
-yt-dlp==2026.2.21
-ytmusicapi==1.11.5
+requests==2.34.2
+yt-dlp==2026.3.17
+ytmusicapi==1.12.0

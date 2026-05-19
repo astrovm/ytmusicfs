@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
 
-from cachetools import LRUCache
-from pathlib import Path
-from typing import Any, Optional, Dict, Tuple
 import hashlib
 import json
 import logging
@@ -12,6 +9,10 @@ import sqlite3
 import stat
 import time
 import traceback
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+from cachetools import LRUCache
 
 
 class CacheManager:
@@ -62,36 +63,30 @@ class CacheManager:
             self.cursor = self.conn.cursor()
 
             # Create tables if they don't exist
-            self.cursor.execute(
-                """
+            self.cursor.execute("""
                 CREATE TABLE IF NOT EXISTS cache_entries (
                     key TEXT PRIMARY KEY,
                     entry TEXT,
                     entry_type TEXT CHECK(entry_type IN ('file', 'directory')),
                     metadata TEXT
                 )
-                """
-            )
+                """)
 
-            self.cursor.execute(
-                """
+            self.cursor.execute("""
                 CREATE TABLE IF NOT EXISTS hash_mappings (
                     hashed_key TEXT PRIMARY KEY,
                     original_path TEXT
                 )
-            """
-            )
+            """)
 
             # Create the new refresh_tracker table
-            self.cursor.execute(
-                """
+            self.cursor.execute("""
                 CREATE TABLE IF NOT EXISTS refresh_tracker (
                     key TEXT PRIMARY KEY,
                     last_refresh REAL,
                     status TEXT CHECK(status IN ('fresh', 'pending', 'stale'))
                 )
-                """
-            )
+                """)
             self.conn.commit()
 
         # Enhanced in-memory cache for high-frequency lookups with larger size
