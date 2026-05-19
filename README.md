@@ -21,6 +21,7 @@ YTMusicFS mounts your YouTube Music library as a standard filesystem, allowing y
 - FUSE (Filesystem in Userspace)
 - YouTube Music account
 - Ability to copy request headers from an authenticated YouTube Music browser session
+- A browser supported by yt-dlp for cookies, such as Brave, Chrome, or Firefox
 - `pipx` for isolated CLI installation
 
 ## Installation
@@ -111,37 +112,32 @@ Available commands:
 
 ### Mount the Filesystem
 
-Create a mount point (if it doesn't exist) and mount the filesystem:
+Create a mount point and mount with browser cookies. This is the normal way to
+run YTMusicFS because it enables high quality streams and private library
+access.
 
 ```bash
 mkdir -p ~/Music/ytmusic
-ytmusicfs mount --mount-point ~/Music/ytmusic
+ytmusicfs mount --mount-point ~/Music/ytmusic --browser brave
 ```
 
-Or with custom options:
+Replace `brave` with your browser if needed. Supported browsers include
+`brave`, `chrome`, `firefox`, and others supported by yt-dlp.
+
+For debugging or custom paths:
 
 ```bash
 ytmusicfs mount \
   --mount-point ~/Music/ytmusic \
+  --browser brave \
   --auth-file /path/to/browser.json \
   --cache-dir ~/.cache/ytmusicfs \
   --foreground \
   --debug
 ```
 
-You can also specify a browser for cookie retrieval:
-
-```bash
-ytmusicfs mount --mount-point ~/Music/ytmusic --browser brave
-```
-
-Supported browsers include: chrome, firefox, brave, and others supported by yt-dlp.
-
-The `--browser` option allows YouTube Premium subscribers to access higher
-quality audio streams (up to 256kbps) and private playlists by using your
-browser's cookies for authentication. Without `--browser`, audio will stream at
-standard quality, even for Premium subscribers, and private playlists will not
-be accessible.
+Running without `--browser` is only a fallback. It may miss private content and
+will not use the higher quality streams available to YouTube Premium accounts.
 
 ### Browse and Play Music
 
