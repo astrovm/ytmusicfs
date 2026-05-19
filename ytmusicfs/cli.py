@@ -64,9 +64,12 @@ class MountCommandHandler:
         mount_point = Path(self.args.mount_point)
         mount_point.mkdir(parents=True, exist_ok=True)
 
-        if not self.config.auth_file.exists():
+        if not self.args.browser and not self.config.auth_file.exists():
             self.logger.error(f"Authentication file not found: {self.config.auth_file}")
-            self.logger.error("Run 'ytmusicfs browser' to set up authentication.")
+            self.logger.error(
+                "Run with '--browser brave' or run 'ytmusicfs browser' "
+                "to set up manual authentication."
+            )
             return 1
 
         try:

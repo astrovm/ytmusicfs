@@ -55,6 +55,8 @@ class YouTubeMusicFS(Operations):
         auth_adapter = YTMusicAuthAdapter(
             auth_file=auth_file,
             logger=self.logger,
+            browser=browser,
+            yt_dlp_utils=self.yt_dlp_utils,
         )
 
         # Initialize the client component with the authentication adapter

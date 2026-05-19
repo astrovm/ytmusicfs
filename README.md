@@ -20,7 +20,7 @@ YTMusicFS mounts your YouTube Music library as a standard filesystem, allowing y
 - Python 3.10+
 - FUSE (Filesystem in Userspace)
 - YouTube Music account
-- Ability to copy request headers from an authenticated YouTube Music browser session
+- An authenticated YouTube Music browser session
 - A browser supported by yt-dlp for cookies, such as Brave, Chrome, or Firefox
 - `pipx` for isolated CLI installation
 
@@ -75,9 +75,10 @@ pipx install --force .
 
 ## Authentication Setup
 
-YTMusicFS reuses the same browser headers that the official YouTube Music site
-uses. Grab the headers once and they typically remain valid for up to two
-years.
+YTMusicFS reads cookies from your browser when you mount with `--browser`.
+Log in to YouTube Music in that browser before mounting.
+
+Manual header auth is still available if you need it:
 
 1. Sign in to [https://music.youtube.com](https://music.youtube.com) in your
    preferred browser.

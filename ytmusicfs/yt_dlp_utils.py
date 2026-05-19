@@ -73,6 +73,30 @@ class YTDLPUtils:
 
         cookiejar.save(cookie_file, ignore_discard=True, ignore_expires=True)
 
+    def extract_browser_cookies(self, browser):
+        """Return YouTube cookies from a local browser profile."""
+        if not browser:
+            return {}
+
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "cookiesfrombrowser": (browser,),
+        }
+        with YoutubeDL(ydl_opts) as ydl:
+            cookiejar = getattr(ydl, "cookiejar", None)
+            if not cookiejar:
+                return {}
+
+            cookies = {}
+            for cookie in cookiejar:
+                domain = getattr(cookie, "domain", "") or ""
+                value = getattr(cookie, "value", None)
+                if "youtube.com" not in domain or value is None:
+                    continue
+                cookies[str(cookie.name)] = str(value)
+            return cookies
+
     def cleanup(self):
         with self._cookie_lock:
             cookie_files = list(self._browser_cookie_files.values())

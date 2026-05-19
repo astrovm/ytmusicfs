@@ -2,6 +2,7 @@
 
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from ytmusicfs.yt_dlp_utils import YTDLPUtils
@@ -65,6 +66,22 @@ class TestYTDLPUtils(unittest.TestCase):
         utils.cleanup()
         self.assertFalse(utils._browser_cookie_files)
         self.assertFalse(Path(cookie_file).exists())
+
+    @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
+    def test_extract_browser_cookies_filters_youtube_domains(self, mock_youtube_dl):
+        ydl = mock_youtube_dl.return_value.__enter__.return_value
+        ydl.cookiejar = [
+            SimpleNamespace(name="SAPISID", value="abc", domain=".youtube.com"),
+            SimpleNamespace(name="SID", value="sid", domain=".music.youtube.com"),
+            SimpleNamespace(name="OTHER", value="nope", domain="example.com"),
+            SimpleNamespace(name="EMPTY", value=None, domain=".youtube.com"),
+        ]
+
+        cookies = YTDLPUtils().extract_browser_cookies("brave")
+
+        self.assertEqual(cookies, {"SAPISID": "abc", "SID": "sid"})
+        opts = mock_youtube_dl.call_args.args[0]
+        self.assertEqual(opts["cookiesfrombrowser"], ("brave",))
 
 
 if __name__ == "__main__":
