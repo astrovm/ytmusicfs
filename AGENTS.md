@@ -26,7 +26,7 @@
   - `cli.py`: CLI entry point, argument parsing, logging, mount orchestration.
   - `filesystem.py`: Main FUSE implementation and filesystem operations.
   - `client.py`: YouTube Music API wrapper.
-  - `auth_adapter.py` and `browser_setup.py`: Browser auth capture and `ytmusicapi.YTMusic` setup.
+  - `auth_adapter.py`: Browser cookie auth for `ytmusicapi.YTMusic`.
   - `content_fetcher.py`: Library retrieval, playlist registry, cache coordination.
   - `processor.py`: Filename sanitizing, path/video ID extraction, track shaping.
   - `cache.py`: SQLite persistent cache plus in-memory caches.
@@ -44,7 +44,6 @@
 - Install local app: `pipx install .`
 - Refresh local app after changes: `pipx install --force .`
 - Check CLI: `ytmusicfs --version`
-- Capture browser auth: `ytmusicfs browser`
 - Mount: `ytmusicfs mount --mount-point ~/Music/ytmusic --browser brave`
 - Debug mount with browser cookies: `ytmusicfs mount --mount-point ~/Music/ytmusic --browser brave --foreground --debug`
 - Unmount: `fusermount -u ~/Music/ytmusic`
@@ -141,8 +140,7 @@
 
 ## Security & Configuration
 
-- Never commit credentials, browser headers, cookies, or local auth captures.
-- Auth file: `~/.config/ytmusicfs/browser.json`.
+- Never commit credentials, browser cookies, or local auth captures.
 - Cache: `~/.cache/ytmusicfs`.
 - Logs: `~/.local/share/ytmusicfs/logs`.
 - Use `--foreground` and `--debug` when diagnosing mount issues.

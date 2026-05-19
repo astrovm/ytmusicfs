@@ -47,8 +47,8 @@ class TestYouTubeMusicFS(unittest.TestCase):
 
             # Create the instance to test
             self.fs = YouTubeMusicFS(
-                auth_file="dummy_auth.json",
                 cache_dir="/tmp/cache_test",
+                browser="brave",
             )
 
             # Make sure the internal attributes are set to our mocks

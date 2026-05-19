@@ -18,7 +18,6 @@ def test_browser_cookie_auth_builds_ytmusic_headers(mock_ytmusic):
     }
 
     adapter = YTMusicAuthAdapter(
-        auth_file="/missing/browser.json",
         browser="brave",
         yt_dlp_utils=ytdlp,
     )
@@ -32,25 +31,12 @@ def test_browser_cookie_auth_builds_ytmusic_headers(mock_ytmusic):
     ytdlp.extract_browser_cookies.assert_called_once_with("brave")
 
 
-@patch("ytmusicfs.auth_adapter.YTMusic")
-@patch("ytmusicfs.auth_adapter.Path.exists", return_value=True)
-def test_auth_file_used_without_browser(mock_exists, mock_ytmusic):
-    client = mock_ytmusic.return_value
-    client.get_library_playlists.return_value = [{"title": "Playlist"}]
-
-    YTMusicAuthAdapter(auth_file="/tmp/browser.json")
-
-    mock_ytmusic.assert_called_once_with(auth="/tmp/browser.json")
-
-
-@patch("ytmusicfs.auth_adapter.Path.exists", return_value=False)
-def test_browser_cookie_auth_requires_sapisid(mock_exists):
+def test_browser_cookie_auth_requires_sapisid():
     ytdlp = Mock()
     ytdlp.extract_browser_cookies.return_value = {"SID": "sid"}
 
     with pytest.raises(ValueError, match="SAPISID"):
         YTMusicAuthAdapter(
-            auth_file="/missing/browser.json",
             browser="brave",
             yt_dlp_utils=ytdlp,
         )

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import errno
-import json
 import logging
 import threading
 import time
@@ -27,7 +26,6 @@ class FileHandler:
         update_file_size_callback: Callable[[str, int], None],
         yt_dlp_utils: YTDLPUtils,
         browser: Optional[str] = None,
-        auth_file: Optional[str] = None,
     ):
         """Initialize the FileHandler.
 
@@ -39,7 +37,6 @@ class FileHandler:
             update_file_size_callback: Callback to update file size in filesystem cache
             yt_dlp_utils: YTDLPUtils instance for YouTube interaction
             browser: Browser to use for cookies (e.g., 'chrome', 'firefox')
-            auth_file: Path to persisted browser headers for fallback auth
         """
         self.cache_dir = cache_dir
         self.browser = browser
@@ -48,7 +45,6 @@ class FileHandler:
         self.update_file_size_callback = update_file_size_callback
         self.thread_manager = thread_manager
         self.yt_dlp_utils = yt_dlp_utils
-        self.browser_auth = self._load_browser_auth(auth_file)
 
         # File handling state
         self.open_files = {}  # {fh: {'stream_url': str, 'video_id': str, ...}}
@@ -62,49 +58,6 @@ class FileHandler:
         self.downloader = Downloader(
             thread_manager, cache_dir, logger, update_file_size_callback
         )
-
-    def _load_browser_auth(
-        self, auth_file: Optional[str]
-    ) -> Optional[Dict[str, Optional[Dict[str, str]]]]:
-        """Load sanitized headers/cookies from the auth file for fallback streaming."""
-
-        if not auth_file:
-            return None
-
-        path = Path(auth_file)
-        try:
-            raw_data = json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            self.logger.debug("Auth fallback skipped; file not found: %s", path)
-            return None
-        except Exception as exc:
-            self.logger.warning("Failed to parse auth headers from %s: %s", path, exc)
-            return None
-
-        cookie_entry = raw_data.pop("cookie", None)
-        cookie_map: Optional[Dict[str, str]]
-
-        if isinstance(cookie_entry, str):
-            cookie_map = {}
-            for part in cookie_entry.split(";"):
-                name, sep, value = part.strip().partition("=")
-                if not sep:
-                    continue
-                cookie_map[name] = value
-        elif isinstance(cookie_entry, dict):
-            cookie_map = {str(k): str(v) for k, v in cookie_entry.items()}
-        else:
-            cookie_map = None
-
-        header_map = {str(k): str(v) for k, v in raw_data.items()}
-        sapisid_keys = list(cookie_map.keys())[:5] if cookie_map else []
-        self.logger.debug(
-            "Loaded auth fallback headers=%s cookies=%s (from %s)",
-            list(header_map.keys()),
-            sapisid_keys,
-            path,
-        )
-        return {"headers": header_map, "cookies": cookie_map}
 
     @staticmethod
     def _has_sapisid(cookies: Optional[Dict[str, str]]) -> bool:
@@ -367,24 +320,6 @@ class FileHandler:
                 auth_headers, cookies = ensure_headers_and_cookies(
                     dict(raw_headers), cookies
                 )
-                if (
-                    (not auth_headers or "Authorization" not in auth_headers)
-                    or not self._has_sapisid(cookies)
-                ) and self.browser_auth:
-                    self.logger.debug(
-                        "Falling back to auth file headers for %s", video_id
-                    )
-                    base_headers = dict(self.browser_auth["headers"])
-                    base_cookies = (
-                        dict(self.browser_auth["cookies"])
-                        if self.browser_auth.get("cookies")
-                        else None
-                    )
-                    fallback_headers, fallback_cookies = ensure_headers_and_cookies(
-                        base_headers, base_cookies
-                    )
-                    auth_headers = fallback_headers
-                    cookies = fallback_cookies
                 auth_header_label, sapisid_present, cookie_keys = self._summarize_auth(
                     auth_headers, cookies
                 )

@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 
 from ytmusicfs import __version__
-from ytmusicfs.browser_setup import main as browser_setup
 from ytmusicfs.config import ConfigManager
 from ytmusicfs.filesystem import mount_ytmusicfs
 
@@ -49,7 +48,6 @@ class MountCommandHandler:
         self.args = args
         self.logger = logger
         self.config = ConfigManager(
-            auth_file=args.auth_file,
             cache_dir=args.cache_dir,
             logger=logger,
         )
@@ -64,19 +62,14 @@ class MountCommandHandler:
         mount_point = Path(self.args.mount_point)
         mount_point.mkdir(parents=True, exist_ok=True)
 
-        if not self.args.browser and not self.config.auth_file.exists():
-            self.logger.error(f"Authentication file not found: {self.config.auth_file}")
-            self.logger.error(
-                "Run with '--browser brave' or run 'ytmusicfs browser' "
-                "to set up manual authentication."
-            )
+        if not self.args.browser:
+            self.logger.error("Missing required browser. Use '--browser <name>'.")
             return 1
 
         try:
             self.logger.info(f"Mounting at {mount_point}")
             mount_ytmusicfs(
                 mount_point=str(mount_point),
-                auth_file=str(self.config.auth_file),
                 cache_dir=str(self.config.cache_dir),
                 foreground=self.args.foreground,
                 browser=self.args.browser,
@@ -102,11 +95,6 @@ def main() -> int:
     mount_parser.add_argument(
         "--mount-point", "-m", required=True, help="Mount point directory"
     )
-    mount_parser.add_argument(
-        "--auth-file",
-        "-a",
-        help="Browser authentication header file path",
-    )
     mount_parser.add_argument("--cache-dir", "-c", help="Cache directory")
     mount_parser.add_argument(
         "--foreground", "-f", action="store_true", help="Run in foreground"
@@ -117,41 +105,15 @@ def main() -> int:
     mount_parser.add_argument(
         "--browser",
         "-b",
+        required=True,
         help="Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')",
     )
     mount_parser.set_defaults(
         func=lambda args: MountCommandHandler(args, setup_logging(args)).execute()
     )
 
-    # Browser command
-    browser_parser = subparsers.add_parser(
-        "browser", help="Set up browser-based authentication"
-    )
-    browser_parser.add_argument(
-        "--auth-file",
-        "-a",
-        help="Output path for the browser header file",
-    )
-    browser_parser.add_argument(
-        "--headers-file",
-        help="Read raw request headers from this file instead of prompting",
-    )
-    browser_parser.add_argument(
-        "--debug", "-d", action="store_true", help="Enable debug output"
-    )
-    browser_parser.set_defaults(
-        func=lambda args: browser_with_logger(args, setup_logging(args))
-    )
-
     args = parser.parse_args()
     return args.func(args)
-
-
-def browser_with_logger(args, logger):
-    """Pass the shared logger through to the browser auth helper."""
-
-    args.logger = logger
-    return browser_setup(args)
 
 
 if __name__ == "__main__":

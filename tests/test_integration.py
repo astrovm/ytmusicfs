@@ -27,8 +27,7 @@ class TestYouTubeMusicFSIntegration(unittest.TestCase):
     """Integration tests for YouTubeMusicFS system."""
 
     @patch("ytmusicfs.auth_adapter.YTMusicAuthAdapter.__init__", return_value=None)
-    @patch("ytmusicfs.auth_adapter.Path.exists", return_value=True)
-    def setUp(self, mock_path_exists, mock_auth_init):
+    def setUp(self, mock_auth_init):
         """Set up test fixtures before each test method."""
         # Create a temporary directory for testing
         self.temp_dir = tempfile.mkdtemp()
@@ -143,8 +142,8 @@ class TestYouTubeMusicFSIntegration(unittest.TestCase):
         ):
 
             self.fs = YouTubeMusicFS(
-                auth_file="dummy_auth.json",
                 cache_dir=str(self.cache_dir),
+                browser="brave",
             )
 
         # Explicitly set components to our mocks

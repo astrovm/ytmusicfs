@@ -9,7 +9,7 @@ YTMusicFS mounts your YouTube Music library as a standard filesystem, allowing y
 - **Filesystem Interface**: Access your YouTube Music library through a standard filesystem
 - **Traditional Player Support**: Play songs with any audio player that can read files
 - **Complete Library Access**: Browse playlists, liked songs, and albums
-- **Persistent Authentication**: Uses your browser session headers for long-lasting access
+- **Persistent Authentication**: Uses your local browser cookies
 - **Disk Caching**: Caches metadata and audio to improve browsing performance and enable offline playback of previously streamed songs
 - **On-Demand Streaming**: Streams audio directly from YouTube Music servers
 - **Smart Auto-Refresh**: Automatically refreshes your library cache every hour using an intelligent merging approach that preserves existing data and only updates what has changed
@@ -78,24 +78,6 @@ pipx install --force .
 YTMusicFS reads cookies from your browser when you mount with `--browser`.
 Log in to YouTube Music in that browser before mounting.
 
-Manual header auth is still available if you need it:
-
-1. Sign in to [https://music.youtube.com](https://music.youtube.com) in your
-   preferred browser.
-2. Open the browser developer tools and switch to the **Network** tab.
-3. Reload the page, then filter for requests containing `/browse` and select any
-   authenticated `POST` entry.
-4. Copy the entire **Request headers** section starting from `accept: */*`.
-5. Run the helper to store those headers for YTMusicFS:
-
-   ```bash
-   ytmusicfs browser
-   ```
-
-   Paste the copied headers when prompted, or supply them via
-   `--headers-file` to automate the step. The command writes
-   `browser.json` (by default to `~/.config/ytmusicfs/browser.json`).
-
 ## Usage
 
 ### Command Structure
@@ -109,7 +91,6 @@ ytmusicfs <command> [options]
 Available commands:
 
 - `mount`: Mount YouTube Music as a filesystem
-- `browser`: Parse browser headers for authentication
 
 ### Mount the Filesystem
 
@@ -132,7 +113,6 @@ For debugging or custom paths:
 ytmusicfs mount \
   --mount-point ~/Music/ytmusic \
   --browser brave \
-  --auth-file /path/to/browser.json \
   --cache-dir ~/.cache/ytmusicfs \
   --foreground \
   --debug
@@ -174,9 +154,8 @@ fusermount -u ~/Music/ytmusic
 ### ytmusicfs mount
 
 ```
-usage: ytmusicfs mount [-h] --mount-point MOUNT_POINT [--auth-file AUTH_FILE]
-                       [--cache-dir CACHE_DIR] [--foreground] [--debug]
-                       [--browser BROWSER]
+usage: ytmusicfs mount [-h] --mount-point MOUNT_POINT [--cache-dir CACHE_DIR]
+                       [--foreground] [--debug] --browser BROWSER
 
 Mount YouTube Music as a filesystem
 
@@ -184,32 +163,12 @@ Options:
   -h, --help            Show this help message and exit
   --mount-point, -m MOUNT_POINT
                         Directory where the filesystem will be mounted
-  --auth-file, -a AUTH_FILE
-                        Path to the browser authentication file
-                        (default: ~/.config/ytmusicfs/browser.json)
   --cache-dir, -c CACHE_DIR
                         Directory to store cache files
                         (default: ~/.cache/ytmusicfs)
   --foreground, -f      Run in the foreground (for debugging)
   --debug, -d           Enable debug logging
   --browser, -b BROWSER Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
-```
-
-### ytmusicfs browser
-
-```
-usage: ytmusicfs browser [-h] [--auth-file AUTH_FILE] [--headers-file HEADERS_FILE]
-                         [--debug]
-
-Set up browser authentication for YTMusicFS
-
-Options:
-  -h, --help            Show this help message and exit
-  --auth-file, -a AUTH_FILE
-                        Output path for the generated browser header JSON
-  --headers-file HEADERS_FILE
-                        Read raw request headers from this file
-  --debug, -d           Enable debug logging
 ```
 
 ## Limitations
@@ -222,12 +181,8 @@ Options:
 
 ### Authentication Issues
 
-- Verify that `browser.json` still matches an active browser session (log in to
-  https://music.youtube.com and regenerate headers if needed).
-- Re-run `ytmusicfs browser` to refresh the stored headers when your browser
-  session changes or expires.
-- Confirm that the authentication file path passed to `ytmusicfs mount`
-  matches the location printed by the setup command.
+- Log in to https://music.youtube.com in the browser passed to `--browser`.
+- Keep that browser installed and available to `yt-dlp`.
 
 ### Playback Issues
 

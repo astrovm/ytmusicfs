@@ -27,14 +27,12 @@ class YouTubeMusicFS(Operations):
 
     def __init__(
         self,
-        auth_file: str,
         cache_dir: Optional[str] = None,
-        browser: Optional[str] = None,
+        browser: str = "",
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
         Args:
-            auth_file: Path to authentication file containing browser headers
             cache_dir: Directory for persistent cache (optional)
             browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
         """
@@ -53,10 +51,9 @@ class YouTubeMusicFS(Operations):
 
         # Initialize the authentication adapter first
         auth_adapter = YTMusicAuthAdapter(
-            auth_file=auth_file,
-            logger=self.logger,
             browser=browser,
             yt_dlp_utils=self.yt_dlp_utils,
+            logger=self.logger,
         )
 
         # Initialize the client component with the authentication adapter
@@ -111,7 +108,6 @@ class YouTubeMusicFS(Operations):
         )
 
         # Store parameters for future reference
-        self.auth_file = auth_file
         self.request_cooldown = 1.0  # Default to 1 second cooldown
 
         # Debounce mechanism for repeated requests - use ThreadManager for locks
@@ -131,7 +127,6 @@ class YouTubeMusicFS(Operations):
             update_file_size_callback=self._update_file_size,
             yt_dlp_utils=self.yt_dlp_utils,
             browser=self.browser,
-            auth_file=auth_file,
         )
 
         # Register exact path handlers
@@ -189,7 +184,7 @@ class YouTubeMusicFS(Operations):
 
         self.logger.info("YTMusicFS initialized successfully")
         self.logger.debug(
-            f"Using auth_file: {auth_file}, cache_dir: {self.cache.cache_dir}"
+            f"Using browser: {browser}, cache_dir: {self.cache.cache_dir}"
         )
 
     def _cache_directory_listing_with_attrs(
@@ -797,16 +792,14 @@ class YouTubeMusicFS(Operations):
 
 def mount_ytmusicfs(
     mount_point: str,
-    auth_file: str,
     cache_dir: Optional[str] = None,
     foreground: bool = False,
-    browser: Optional[str] = None,
+    browser: str = "",
 ) -> None:
     """Mount the YouTube Music filesystem.
 
     Args:
         mount_point: Directory where the filesystem will be mounted
-        auth_file: Path to the browser headers authentication file
         cache_dir: Directory to store cache files (default: None)
         foreground: Run in the foreground (for debugging)
         browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
@@ -824,7 +817,6 @@ def mount_ytmusicfs(
 
     FUSE(
         YouTubeMusicFS(
-            auth_file=auth_file,
             cache_dir=cache_dir,
             browser=browser,
         ),

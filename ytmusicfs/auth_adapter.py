@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 
-"""Authentication adapter for ytmusicapi using browser headers."""
+"""Authentication adapter for ytmusicapi using browser cookies."""
 
 import logging
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ytmusicapi import YTMusic
@@ -16,22 +15,18 @@ _YT_ORIGIN = "https://music.youtube.com"
 class YTMusicAuthAdapter:
     """Thin wrapper that instantiates :class:`ytmusicapi.YTMusic`.
 
-    The adapter is responsible for validating that the browser header file
-    exists and logging helpful diagnostics when authentication fails.  The
-    resulting :class:`YTMusic` instance exposes the complete API surface so the
-    rest of the application can continue delegating calls transparently.
+    The adapter builds fresh YouTube Music auth headers from local browser
+    cookies and validates them with a small library request.
     """
 
     def __init__(
         self,
-        auth_file: str,
+        browser: str,
+        yt_dlp_utils: Any,
         logger: Optional[logging.Logger] = None,
-        browser: Optional[str] = None,
-        yt_dlp_utils: Optional[Any] = None,
     ) -> None:
-        """Load browser authentication headers and create a YTMusic client."""
+        """Create a YTMusic client authenticated from browser cookies."""
         self.logger = logger or logging.getLogger(__name__)
-        self.auth_path = Path(auth_file)
         self.browser = browser
         self.yt_dlp_utils = yt_dlp_utils
 
@@ -46,29 +41,12 @@ class YTMusicAuthAdapter:
             raise
 
     def _create_client(self) -> YTMusic:
-        if self.browser and self.yt_dlp_utils:
-            try:
-                auth = self._build_browser_auth()
-                client = YTMusic(auth=auth)
-                self.logger.info(
-                    "Authenticated with YouTube Music using %s browser cookies",
-                    self.browser,
-                )
-                return client
-            except Exception as exc:
-                if not self.auth_path.exists():
-                    raise
-                self.logger.warning(
-                    "Browser cookie auth failed, falling back to %s: %s",
-                    self.auth_path,
-                    exc,
-                )
-
-        if not self.auth_path.exists():
-            raise FileNotFoundError(f"Auth file not found: {self.auth_path}")
-
-        client = YTMusic(auth=str(self.auth_path))
-        self.logger.info("Authenticated with YouTube Music using browser headers")
+        auth = self._build_browser_auth()
+        client = YTMusic(auth=auth)
+        self.logger.info(
+            "Authenticated with YouTube Music using %s browser cookies",
+            self.browser,
+        )
         return client
 
     def _build_browser_auth(self) -> Dict[str, str]:
