@@ -70,7 +70,7 @@ Upgrade after pulling new changes:
 
 ```bash
 git pull
-pipx upgrade ytmusicfs
+pipx install --force .
 ```
 
 ## Authentication Setup
@@ -121,9 +121,6 @@ mkdir -p ~/Music/ytmusic
 ytmusicfs mount --mount-point ~/Music/ytmusic --browser brave
 ```
 
-Replace `brave` with your browser if needed. Supported browsers include
-`brave`, `chrome`, `firefox`, and others supported by yt-dlp.
-
 For debugging or custom paths:
 
 ```bash
@@ -135,9 +132,6 @@ ytmusicfs mount \
   --foreground \
   --debug
 ```
-
-Running without `--browser` is only a fallback. It may miss private content and
-will not use the higher quality streams available to YouTube Premium accounts.
 
 ### Browse and Play Music
 
@@ -232,7 +226,7 @@ Options:
 
 ### Playback Issues
 
-- Upgrade YTMusicFS to refresh its bundled Python dependencies: `pipx upgrade ytmusicfs`
+- Refresh the local install after pulling changes: `pipx install --force .`
 - Some players may not handle streaming URLs well; try different players
 - If audio stops, the stream URL may have expired; simply restart playback
 

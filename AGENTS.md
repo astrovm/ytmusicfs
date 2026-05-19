@@ -42,22 +42,19 @@
 ## Build, Test, and Development Commands
 
 - Install local app: `pipx install .`
-- Upgrade after pulling changes: `pipx upgrade ytmusicfs`
-- Reinstall local app after package metadata or entry point changes: `pipx reinstall ytmusicfs`
+- Refresh local app after changes: `pipx install --force .`
 - Check CLI: `ytmusicfs --version`
 - Capture browser auth: `ytmusicfs browser`
-- Mount: `ytmusicfs mount --mount-point ~/Music/ytmusic`
-- Mount shorthand: `ytmusicfs mount -m ~/Music/ytmusic`
-- Debug mount: `ytmusicfs mount -m ~/Music/ytmusic --foreground --debug`
-- Mount with browser cookies for higher quality streams: `ytmusicfs mount -m ~/Music/ytmusic --browser chrome`
+- Mount: `ytmusicfs mount --mount-point ~/Music/ytmusic --browser brave`
+- Debug mount with browser cookies: `ytmusicfs mount --mount-point ~/Music/ytmusic --browser brave --foreground --debug`
 - Unmount: `fusermount -u ~/Music/ytmusic`
-- Tests: `pytest`
-- Verbose tests: `pytest -v`
-- Focused tests: `pytest -k path_router -q`
-- Coverage: `pytest --cov=ytmusicfs`
-- Lint/format check: `black --check . && isort --check-only . && flake8 ytmusicfs tests`
-- Auto-format: `black . && isort .`
-- Build wheel/sdist: `python -m build` when the build backend is available in the active environment.
+- Tests: `pipx run --spec '.[dev]' pytest -q`
+- Verbose tests: `pipx run --spec '.[dev]' pytest -v`
+- Focused tests: `pipx run --spec '.[dev]' pytest -k path_router -q`
+- Coverage: `pipx run --spec '.[dev]' pytest --cov=ytmusicfs`
+- Lint/format check: `pipx run --spec '.[dev]' black --check . && pipx run --spec '.[dev]' isort --check-only . && pipx run --spec '.[dev]' flake8 ytmusicfs tests`
+- Auto-format: `pipx run --spec '.[dev]' black . && pipx run --spec '.[dev]' isort .`
+- Build wheel/sdist: `pipx run --spec build pyproject-build`
 
 ## Coding Style & Naming
 
