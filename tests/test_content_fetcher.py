@@ -125,6 +125,81 @@ class TestContentFetcher(unittest.TestCase):
         )
         self.mock_initialize = self.patcher_initialize.start()
 
+    def test_initialize_playlist_registry_rebuilds_empty_registry_when_recent(self):
+        """A fresh timestamp must not skip rebuilding an empty in-memory registry."""
+        self.patcher_initialize.stop()
+
+        self.client.get_library_playlists.return_value = [
+            {"title": "My Playlist", "playlistId": "PL123"}
+        ]
+        self.client.get_library_albums.return_value = [
+            {"title": "My Album", "browseId": "MPREb_456"}
+        ]
+        self.cache.get_refresh_metadata.return_value = (time.time(), "fresh")
+        self.fetcher.PLAYLIST_REGISTRY = []
+
+        self.fetcher._initialize_playlist_registry()
+
+        self.assertEqual(
+            self.fetcher.get_playlist_id_from_name(
+                "my_playlist", type_filter="playlist"
+            ),
+            "PL123",
+        )
+        self.assertEqual(
+            self.fetcher.get_playlist_id_from_name("my_album", type_filter="album"),
+            "MPREb_456",
+        )
+
+        self.patcher_initialize = patch.object(
+            ContentFetcher, "_initialize_playlist_registry"
+        )
+        self.mock_initialize = self.patcher_initialize.start()
+
+    def test_initialize_playlist_registry_skips_entries_without_ids(self):
+        """Malformed library entries should not poison route lookups with None IDs."""
+        self.patcher_initialize.stop()
+
+        self.client.get_library_playlists.return_value = [
+            {"title": "Broken Playlist"},
+            {"title": "Good Playlist", "playlistId": "PL123"},
+        ]
+        self.client.get_library_albums.return_value = [
+            {"title": "Broken Album"},
+            {"title": "Good Album", "browseId": "MPREb_456"},
+        ]
+        self.cache.get_refresh_metadata.return_value = (
+            time.time() - 7200,
+            "stale",
+        )
+        self.fetcher.PLAYLIST_REGISTRY = []
+
+        self.fetcher._initialize_playlist_registry()
+
+        self.assertIsNone(
+            self.fetcher.get_playlist_id_from_name(
+                "broken_playlist", type_filter="playlist"
+            )
+        )
+        self.assertIsNone(
+            self.fetcher.get_playlist_id_from_name("broken_album", type_filter="album")
+        )
+        self.assertEqual(
+            self.fetcher.get_playlist_id_from_name(
+                "good_playlist", type_filter="playlist"
+            ),
+            "PL123",
+        )
+        self.assertEqual(
+            self.fetcher.get_playlist_id_from_name("good_album", type_filter="album"),
+            "MPREb_456",
+        )
+
+        self.patcher_initialize = patch.object(
+            ContentFetcher, "_initialize_playlist_registry"
+        )
+        self.mock_initialize = self.patcher_initialize.start()
+
     def test_fetch_playlist_content(self):
         """Test fetching playlist content with mocked yt-dlp responses."""
         # Configure the cache mock to return stale data
@@ -173,6 +248,16 @@ class TestContentFetcher(unittest.TestCase):
 
         # Verify cache operations
         self.assertEqual(self.cache.set.call_count, 1)  # Cache the result
+
+    def test_fetch_playlist_content_missing_id_uses_cache(self):
+        """Missing route IDs should degrade to cached entries instead of crashing."""
+        cached_tracks = [{"filename": "cached_song.m4a", "videoId": "vid1"}]
+        self.cache.get.return_value = cached_tracks
+
+        result = self.fetcher.fetch_playlist_content(None, "/albums/broken", limit=2)
+
+        self.assertEqual(result, ["cached_song.m4a"])
+        self.yt_dlp_utils.extract_playlist_content.assert_not_called()
 
     def test_readdir_playlist_by_type(self):
         """Test listing directory contents for a playlist type."""

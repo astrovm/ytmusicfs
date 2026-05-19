@@ -41,6 +41,7 @@ class ContentFetcher:
         self.logger = logger
         self.browser = browser
         self.yt_dlp_utils = yt_dlp_utils
+        self.PLAYLIST_REGISTRY = []
         # Preload playlist registry at startup
         self._initialize_playlist_registry()
         self.logger.info("Preloaded playlist registry at initialization")
@@ -90,6 +91,7 @@ class ContentFetcher:
 
         if (
             not force_refresh
+            and self.PLAYLIST_REGISTRY
             and last_refresh
             and (time.time() - last_refresh < refresh_interval)
         ):
@@ -116,8 +118,12 @@ class ContentFetcher:
             limit=1000
         )  # Initial fetch for IDs
         for p in playlists:
+            playlist_id = p.get("playlistId")
+            if not playlist_id:
+                self.logger.warning("Skipping playlist without playlistId: %s", p)
+                continue
             # Skip podcast playlist type (SE)
-            if p.get("playlistId") == "SE":
+            if playlist_id == "SE":
                 self.logger.info(
                     "Skipping podcast playlist (SE) - podcasts not supported"
                 )
@@ -128,7 +134,7 @@ class ContentFetcher:
             self.PLAYLIST_REGISTRY.append(
                 {
                     "name": sanitized_name,
-                    "id": p["playlistId"],
+                    "id": playlist_id,
                     "type": "playlist",
                     "path": path,
                 }
@@ -137,12 +143,16 @@ class ContentFetcher:
         # Fetch albums
         albums = self.client.get_library_albums(limit=1000)  # Initial fetch for IDs
         for a in albums:
+            album_id = a.get("browseId")
+            if not album_id:
+                self.logger.warning("Skipping album without browseId: %s", a)
+                continue
             sanitized_name = self.processor.sanitize_filename(a["title"])
             path = f"/albums/{sanitized_name}"
             self.PLAYLIST_REGISTRY.append(
                 {
                     "name": sanitized_name,
-                    "id": a["browseId"],  # Albums use browseId as playlist ID
+                    "id": album_id,  # Albums use browseId as playlist ID
                     "type": "album",
                     "path": path,
                 }
@@ -180,6 +190,14 @@ class ContentFetcher:
 
         # CONSISTENT CACHE KEY: Always use path_processed regardless of playlist type
         cache_key = f"{path}_processed"
+        if not playlist_id:
+            existing_tracks = self.cache.get(cache_key) or []
+            if existing_tracks:
+                self.logger.warning("Missing playlist ID for %s, using cache", path)
+                self._cache_directory_listing_with_attrs(path, existing_tracks)
+                return [track["filename"] for track in existing_tracks]
+            self.logger.error("Missing playlist ID for %s", path)
+            return []
 
         # Define the fetch function to be passed to refresh_content
         def fetch_tracks(lim):
