@@ -31,7 +31,13 @@ class YTMusicAuthAdapter:
             # Perform a very small request so we fail fast if the headers are
             # invalid.  `get_library_playlists` is inexpensive and available to
             # every authenticated account.
-            self.ytmusic.get_library_playlists(limit=1)
+            result = self.ytmusic.get_library_playlists(limit=1)
+            if not result:
+                raise ValueError(
+                    "YouTube Music returned an empty playlist list. "
+                    "Your browser headers may have expired. "
+                    "Run 'ytmusicfs browser' again to refresh them."
+                )
         except Exception as exc:  # pragma: no cover - defensive logging path
             self.logger.error(
                 "Failed to initialise YTMusic client with browser headers: %s",
