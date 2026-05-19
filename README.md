@@ -121,6 +121,10 @@ mkdir -p ~/Music/ytmusic
 ytmusicfs mount --mount-point ~/Music/ytmusic --browser brave
 ```
 
+`--browser brave` tells `yt-dlp` which local browser profile to read cookies
+from. Replace `brave` with your browser if needed. Supported browsers include
+`brave`, `chrome`, `firefox`, and others supported by yt-dlp.
+
 For debugging or custom paths:
 
 ```bash
