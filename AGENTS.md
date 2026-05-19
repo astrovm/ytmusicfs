@@ -5,6 +5,18 @@
 - It captures YouTube Music browser auth, reads library data through `ytmusicapi`, and streams audio through `yt-dlp`.
 - Keep behavior practical for media players: stable paths, predictable metadata, cached listings, and graceful failures.
 
+## Approach
+- Read before editing. Test before declaring done.
+- Prefer small edits over rewrites.
+- Reproduce before fixing runtime or external issues.
+- Unproven concerns are risks, not bugs. Say so if not reproduced.
+- Use the simplest working solution. No over-engineering, speculative features, or single-use abstractions.
+
+## Output
+- Code first. Explain only non-obvious logic.
+- No filler, boilerplate, or out-of-scope suggestions.
+- Use plain hyphens and straight quotes only. No decorative Unicode. Keep code output copy-paste safe.
+
 ## Project Structure & Modules
 - `ytmusicfs/`: Core package.
   - `cli.py`: CLI entry point, argument parsing, logging, mount orchestration.
@@ -49,6 +61,12 @@
 - Names: modules/functions `snake_case`, classes `PascalCase`, constants `UPPER_SNAKE_CASE`.
 - Use `logging` instead of prints. Follow `ytmusicfs/cli.py` logging setup.
 - Keep functions focused. Prefer small component-level changes over cross-cutting rewrites.
+- Remove unused imports, variables, parameters, dead branches, and dead functions from edited files.
+- Do not add error handling for impossible scenarios.
+- Keep all imports at the top of the file. Use local imports only when strictly required to break circular dependencies.
+- Code and comments must be in English. User-facing strings stay in their existing language.
+- Remove old code when introducing replacements. Do not add backward compatibility shims without explicit authorization.
+- Do not preserve feature flags for shipped features or abstractions that serve a single caller.
 
 ## Architecture Notes
 - Components communicate through narrow interfaces; avoid reaching into another component's internals.
@@ -74,12 +92,29 @@
   - Use batch cache operations where available.
   - Preserve cache invalidation rules and timestamps.
 
+## Debugging
+- Read code before explaining.
+- Prove findings with direct evidence: failing test, reproduced run, or concrete probe.
+- State what you found, where, and the fix.
+- If unclear, say so.
+- For runtime or external failures, reproduce first when possible.
+
+## Verification
+- Smallest proof first, then broader checks.
+- Use the standard toolchain.
+- Default checks: format, lint with warnings as errors, and tests.
+- Skip a check only with a stated reason.
+- Do not claim fixed, safe, ready, or done without fresh command output.
+- Fix every issue encountered. Do not ignore failures as pre-existing.
+
 ## Testing Guidelines
 - Framework: Pytest.
 - Discovery: files `test_*.py`, classes `Test*`, functions `test_*`.
 - Add tests alongside the changed behavior in `tests/`.
 - Cover critical paths: filesystem operations, path routing, cache updates, downloader behavior, auth failure modes.
 - For bug fixes, include a regression test when the failure can be reproduced without live YouTube Music access.
+- If the project has tests, run them before committing or declaring work complete. No exceptions.
+- A failing test is blocking. Fix it before moving on.
 
 ## Commit & Pull Request Guidelines
 - Commits: imperative, concise, scoped to one change.
@@ -87,6 +122,12 @@
 - Reference issues when relevant, e.g. `Fixes #123`.
 - PRs must include purpose/scope, test commands and results, risk notes, and logs/screenshots for CLI or mount behavior changes.
 - CI should pass formatting, lint, and tests before merge.
+- Ask before pushing every time, even if previously approved.
+- No batch commit and push.
+- No force push or hard reset without approval.
+- Never use `git commit --amend` unless explicitly asked.
+- Merge to `main` with a single squashed commit.
+- Commit messages must be in English.
 
 ## Security & Configuration
 - Never commit credentials, browser headers, cookies, or local auth captures.
@@ -94,3 +135,7 @@
 - Cache: `~/.cache/ytmusicfs`.
 - Logs: `~/.local/share/ytmusicfs/logs`.
 - Use `--foreground` and `--debug` when diagnosing mount issues.
+- Environment variables are only for secrets and external credentials.
+- Prefer sane defaults, zero-config behavior, and easy maintenance.
+- Hardcode sensible defaults for internal URLs, ports, and feature flags.
+- When adding a dependency, verify the actual latest version from the registry or official source. Never rely on model memory.
