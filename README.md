@@ -21,36 +21,50 @@ YTMusicFS mounts your YouTube Music library as a standard filesystem, allowing y
 - FUSE (Filesystem in Userspace)
 - YouTube Music account
 - Ability to copy request headers from an authenticated YouTube Music browser session
-- yt-dlp (for audio streaming)
+- `pipx` for isolated CLI installation
 
 ## Installation
 
-### From Source
-
-```bash
-git clone https://github.com/astrovm/ytmusicfs
-cd ytmusicfs
-pip install -e .
-```
-
-### Dependencies
+### System Dependencies
 
 On Debian/Ubuntu, install required system dependencies:
 
 ```bash
-sudo apt install libfuse-dev python3-dev
+sudo apt install fuse libfuse-dev python3-dev pipx
+pipx ensurepath
 ```
 
 On Fedora/RHEL:
 
 ```bash
-sudo dnf install fuse fuse-devel python3-devel
+sudo dnf install fuse fuse-devel python3-devel pipx
+pipx ensurepath
 ```
 
 On Arch Linux:
 
 ```bash
-sudo pacman -S fuse2 python
+sudo pacman -S fuse2 python python-pipx
+pipx ensurepath
+```
+
+Restart your shell after `pipx ensurepath` if `ytmusicfs` is not found.
+
+### Install YTMusicFS
+
+Install YTMusicFS as an isolated command-line app:
+
+```bash
+git clone https://github.com/astrovm/ytmusicfs
+cd ytmusicfs
+pipx install .
+```
+
+Upgrade after pulling new changes:
+
+```bash
+git pull
+pipx upgrade ytmusicfs
 ```
 
 ## Authentication Setup
@@ -213,7 +227,7 @@ Options:
 
 ### Playback Issues
 
-- Make sure yt-dlp is installed and up-to-date
+- Upgrade YTMusicFS to refresh its bundled Python dependencies: `pipx upgrade ytmusicfs`
 - Some players may not handle streaming URLs well; try different players
 - If audio stops, the stream URL may have expired; simply restart playback
 
