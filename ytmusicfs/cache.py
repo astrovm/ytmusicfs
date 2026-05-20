@@ -519,9 +519,6 @@ class CacheManager:
             key: The key to cache
             value: The value to cache
         """
-        if key is None:
-            return
-
         try:
             # Update memory cache
             hotcache_key = f"hotcache:{key}"
@@ -568,9 +565,6 @@ class CacheManager:
             now = time.time()
 
             for key, value in entries.items():
-                if key is None:
-                    continue
-
                 # Update memory cache
                 hotcache_key = f"hotcache:{key}"
                 cache_entry = {"data": value, "time": now}
