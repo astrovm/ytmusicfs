@@ -168,7 +168,7 @@ class TestYTDLPUtils(unittest.TestCase):
     @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
     def test_stream_extraction_requires_browser_auth(self, mock_youtube_dl):
         with self.assertRaisesRegex(ValueError, "Browser auth is required"):
-            YTDLPUtils().extract_stream_url("abc123")
+            YTDLPUtils().extract_stream_url("abc123", browser="")
 
         mock_youtube_dl.assert_not_called()
 

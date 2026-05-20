@@ -50,6 +50,7 @@ class TestContentFetcher(unittest.TestCase):
             cache=self.cache,
             logger=self.logger,
             yt_dlp_utils=self.yt_dlp_utils,
+            browser="brave",
         )
 
         # Reset mocks for clean state in each test

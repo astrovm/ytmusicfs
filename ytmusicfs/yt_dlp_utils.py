@@ -58,10 +58,18 @@ class YTDLPUtils:
 
         ydl_opts["cookiesfrombrowser"] = (browser,)
 
-    def _cache_browser_cookies(self, browser, ydl):
-        if not browser:
-            return False
+    def _stream_extraction_options(self, browser: str) -> dict:
+        ydl_opts = {
+            "format": YOUTUBE_MUSIC_AUDIO_FORMAT,
+            "extractor_args": {"youtube": {"formats": ["missing_pot"]}},
+            "js_runtimes": {
+                name: dict(config) for name, config in YT_DLP_JS_RUNTIMES.items()
+            },
+        }
+        self._add_cookie_options(ydl_opts, browser)
+        return ydl_opts
 
+    def _cache_browser_cookies(self, browser, ydl):
         cookiejar = getattr(ydl, "cookiejar", None)
         if not cookiejar or not hasattr(cookiejar, "save"):
             return False
@@ -114,14 +122,14 @@ class YTDLPUtils:
             except OSError as exc:
                 self.logger.debug("Failed to remove temporary cookie file: %s", exc)
 
-    def extract_playlist_content(self, playlist_id, limit=10000, browser=""):
+    def extract_playlist_content(self, playlist_id, limit: int, browser: str):
         """
         Fetch playlist or album content using yt-dlp, handling YouTube Music's redirects.
 
         Args:
             playlist_id (str): Playlist ID (e.g., 'PL123', 'LM') or Album ID (e.g., 'MPREb_123').
             limit (int): Maximum number of tracks to fetch (default: 10000).
-            browser (str, optional): Browser name for cookie extraction.
+            browser (str): Browser name for cookie extraction.
 
         Returns:
             list: List of track entries from yt-dlp.
@@ -201,40 +209,33 @@ class YTDLPUtils:
             self.logger.warning(f"Error extracting content: {e}")
             return []
 
-    def extract_stream_url(self, video_id, browser=""):
+    def extract_stream_url(self, video_id, browser: str):
         """
         Extract stream URL and duration for a video using yt-dlp.
 
         Args:
             video_id (str): YouTube video ID.
-            browser (str, optional): Browser name for cookie extraction.
+            browser (str): Browser name for cookie extraction.
 
         Returns:
             dict: Dictionary with stream URL and duration (if available).
         """
         url = f"https://music.youtube.com/watch?v={video_id}"
-        ydl_opts = {
-            "format": YOUTUBE_MUSIC_AUDIO_FORMAT,
-            "extractor_args": {"youtube": {"formats": ["missing_pot"]}},
-            "js_runtimes": {
-                name: dict(config) for name, config in YT_DLP_JS_RUNTIMES.items()
-            },
-        }
-        self._add_cookie_options(ydl_opts, browser)
+        ydl_opts = self._stream_extraction_options(browser)
 
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             cached_cookies = self._cache_browser_cookies(browser, ydl)
 
         result = self._stream_result_from_info(info)
-        if self._should_retry_with_cached_cookies(result, browser, cached_cookies):
+        if self._should_retry_with_cached_cookies(result, cached_cookies):
             retry_result = self._retry_stream_url_with_cached_cookies(video_id, browser)
             if retry_result:
                 return retry_result
 
         return result
 
-    def _should_retry_with_cached_cookies(self, result, browser, cached_cookies):
+    def _should_retry_with_cached_cookies(self, result, cached_cookies):
         return (
             cached_cookies
             and result.get("format_id") != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT
@@ -247,14 +248,9 @@ class YTDLPUtils:
             return None
 
         url = f"https://music.youtube.com/watch?v={video_id}"
-        ydl_opts = {
-            "format": YOUTUBE_MUSIC_AUDIO_FORMAT,
-            "extractor_args": {"youtube": {"formats": ["missing_pot"]}},
-            "js_runtimes": {
-                name: dict(config) for name, config in YT_DLP_JS_RUNTIMES.items()
-            },
-            "cookiefile": cookie_file,
-        }
+        ydl_opts = self._stream_extraction_options(browser)
+        ydl_opts.pop("cookiesfrombrowser", None)
+        ydl_opts["cookiefile"] = cookie_file
 
         try:
             with YoutubeDL(ydl_opts) as ydl:
@@ -314,13 +310,13 @@ class YTDLPUtils:
 
         return result
 
-    def extract_stream_url_async(self, video_id, browser="") -> Future:
+    def extract_stream_url_async(self, video_id, browser: str) -> Future:
         """
         Extract stream URL asynchronously using ThreadManager.
 
         Args:
             video_id (str): YouTube video ID.
-            browser (str, optional): Browser name for cookie extraction.
+            browser (str): Browser name for cookie extraction.
 
         Returns:
             Future: Future object that will contain the extraction result.
@@ -335,7 +331,7 @@ class YTDLPUtils:
             "extraction", self._extract_stream_url_worker, video_id, browser
         )
 
-    def _extract_stream_url_worker(self, video_id, browser=""):
+    def _extract_stream_url_worker(self, video_id, browser: str):
         """
         Worker function to extract stream URL for a thread pool task.
 

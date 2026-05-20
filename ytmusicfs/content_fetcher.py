@@ -23,7 +23,7 @@ class ContentFetcher:
         cache: CacheManager,
         logger: logging.Logger,
         yt_dlp_utils: YTDLPUtils,
-        browser: Optional[str] = None,
+        browser: str,
     ):
         """Initialize the ContentFetcher.
 
@@ -33,7 +33,7 @@ class ContentFetcher:
             cache: Cache manager for storing fetched data
             logger: Logger instance
             yt_dlp_utils: YTDLPUtils instance for YouTube interaction
-            browser: Browser to use for cookies (optional)
+            browser: Browser to use for cookies
         """
         self.client = client
         self.processor = processor

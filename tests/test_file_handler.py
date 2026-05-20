@@ -45,6 +45,7 @@ class TestFileHandler(unittest.TestCase):
             logger=self.logger,
             update_file_size_callback=self.update_file_size_callback,
             yt_dlp_utils=self.yt_dlp_utils,
+            browser="brave",
         )
 
         # Initialize class attributes
@@ -387,7 +388,7 @@ class TestFileHandler(unittest.TestCase):
 
         self.assertEqual(result, b"payload")
         self.yt_dlp_utils.extract_stream_url_async.assert_called_once_with(
-            video_id, None
+            video_id, "brave"
         )
 
     def test_offset_zero_uncached_read_extracts_stream(self):
@@ -413,7 +414,7 @@ class TestFileHandler(unittest.TestCase):
 
         self.assertEqual(result, b"payload")
         self.yt_dlp_utils.extract_stream_url_async.assert_called_once_with(
-            video_id, None
+            video_id, "brave"
         )
 
     def test_read_maps_unavailable_video_to_not_found(self):

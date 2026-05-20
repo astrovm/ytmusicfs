@@ -33,7 +33,7 @@ class FileHandler:
         logger: logging.Logger,
         update_file_size_callback: Callable[[str, int], None],
         yt_dlp_utils: YTDLPUtils,
-        browser: Optional[str] = None,
+        browser: str,
         record_stat_callback: Optional[Callable[[str], None]] = None,
         get_file_size_callback: Optional[Callable[[str], Optional[int]]] = None,
     ):
