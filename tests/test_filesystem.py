@@ -96,6 +96,20 @@ class TestYouTubeMusicFS(unittest.TestCase):
         self.assertEqual(result, [".", "..", "status.json"])
         self.assertEqual(attrs["st_mode"], stat.S_IFREG | 0o444)
         self.assertIn(b'"browser": "brave"', content)
+        self.assertIn(b'"stats"', content)
+
+    def test_status_counts_filesystem_operations(self):
+        self.fs.readdir("/", None)
+        self.fs.getattr("/", None)
+        self.fs.open("/.ytmusicfs/status.json", os.O_RDONLY)
+        self.fs.read("/.ytmusicfs/status.json", 4096, 0, 0)
+
+        status = self.fs.read("/.ytmusicfs/status.json", 4096, 0, 0)
+
+        self.assertIn(b'"readdir": 1', status)
+        self.assertIn(b'"getattr": 1', status)
+        self.assertIn(b'"open": 1', status)
+        self.assertIn(b'"read": 2', status)
 
     def test_readdir_playlists(self):
         """Test reading the contents of the playlists directory."""
@@ -237,6 +251,45 @@ class TestYouTubeMusicFS(unittest.TestCase):
         self.assertEqual(attrs["st_nlink"], 1)  # Standard for files
         self.assertEqual(attrs["st_size"], 1024 * 1024)  # File size is 1MB
         self.assertTrue(attrs["st_mode"] & stat.S_IRUSR)  # Readable
+
+    def test_getattr_uncached_audio_ignores_duration_for_size(self):
+        file_path = "/liked_songs/song.m4a"
+        self.mock_cache.get_file_attrs_from_parent_dir.return_value = None
+        self.mock_cache.get.return_value = None
+        self.mock_router.validate_path.return_value = True
+        self.mock_cache.get_duration.return_value = 9999
+
+        attrs = self.fs.getattr(file_path, None)
+
+        self.assertEqual(attrs["st_size"], self.fs.UNCACHED_AUDIO_SIZE)
+        self.mock_cache.get_duration.assert_not_called()
+
+    def test_getattr_audio_uses_cached_real_size(self):
+        file_path = "/liked_songs/song.m4a"
+        self.mock_cache.get_file_attrs_from_parent_dir.return_value = None
+        self.mock_cache.get.return_value = 12345
+        self.mock_router.validate_path.return_value = True
+
+        attrs = self.fs.getattr(file_path, None)
+
+        self.assertEqual(attrs["st_size"], 12345)
+
+    def test_cached_listing_ignores_duration_for_size(self):
+        self.mock_cache.get.return_value = None
+
+        self.fs._cache_directory_listing_with_attrs(
+            "/liked_songs",
+            [
+                {
+                    "filename": "song.m4a",
+                    "videoId": "abc123",
+                    "duration_seconds": 9999,
+                }
+            ],
+        )
+
+        listing = self.mock_cache.set_directory_listing_with_attrs.call_args.args[1]
+        self.assertEqual(listing["song.m4a"]["st_size"], self.fs.UNCACHED_AUDIO_SIZE)
 
     def test_open_file(self):
         """Test opening a file."""

@@ -18,6 +18,7 @@ class FileHandler:
     """Handles file operations for the YouTube Music filesystem."""
 
     CACHE_START_BYTES = 512 * 1024
+    PROBE_EOF_OFFSET = 1024 * 1024
     UNAVAILABLE_ERRORS = (
         "Video unavailable",
         "This video is not available",
@@ -32,6 +33,7 @@ class FileHandler:
         update_file_size_callback: Callable[[str, int], None],
         yt_dlp_utils: YTDLPUtils,
         browser: Optional[str] = None,
+        record_stat_callback: Optional[Callable[[str], None]] = None,
     ):
         """Initialize the FileHandler.
 
@@ -49,6 +51,7 @@ class FileHandler:
         self.cache = cache
         self.logger = logger
         self.update_file_size_callback = update_file_size_callback
+        self.record_stat_callback = record_stat_callback
         self.thread_manager = thread_manager
         self.yt_dlp_utils = yt_dlp_utils
 
@@ -137,6 +140,7 @@ class FileHandler:
         stream_url: str,
         offset: int,
         size: int,
+        path: Optional[str] = None,
         auth_headers: Optional[dict] = None,
         cookies: Optional[dict] = None,
         retries: int = 3,
@@ -175,10 +179,22 @@ class FileHandler:
                     request_kwargs["cookies"] = cookies
 
                 with requests.get(stream_url, **request_kwargs) as response:
+                    if response.status_code == 416:
+                        self._record_stat("range_416_eof")
+                        self.logger.debug(
+                            "Stream range past EOF for %s at offset %s",
+                            path or stream_url,
+                            offset,
+                        )
+                        return b""
+
                     if response.status_code not in (200, 206):
                         raise OSError(
                             errno.EIO, f"Stream failed: HTTP {response.status_code}"
                         )
+
+                    if path:
+                        self._update_size_from_response(path, response, offset)
 
                     # Collect all data chunks
                     data = b""
@@ -263,8 +279,16 @@ class FileHandler:
                     f.seek(offset)
                     return f.read(size)
 
+            if offset >= self.PROBE_EOF_OFFSET:
+                self._record_stat("probe_eof_skips")
+                self.logger.debug(
+                    "Skipping high-offset probe for %s at offset %s", video_id, offset
+                )
+                return b""
+
             unavailable = self.cache.get_unavailable_track(video_id)
             if unavailable:
+                self._record_stat("unavailable_cache_hits")
                 reason = unavailable.get("reason", "Track unavailable")
                 raise OSError(errno.ENOENT, reason)
 
@@ -278,6 +302,7 @@ class FileHandler:
                     future = self.futures[video_id]
                 else:
                     # Submit new extraction task
+                    self._record_stat("stream_extractions")
                     future = self.yt_dlp_utils.extract_stream_url_async(
                         video_id, self.browser
                     )
@@ -398,6 +423,7 @@ class FileHandler:
             file_info["stream_url"],
             offset,
             size,
+            path=path,
             auth_headers=file_info.get("headers"),
             cookies=file_info.get("cookies"),
         )
@@ -425,6 +451,7 @@ class FileHandler:
             cookies=file_info.get("cookies"),
         )
         file_info["cache_started"] = True
+        self._record_stat("background_downloads")
 
     @classmethod
     def _stream_error_errno(cls, error_msg: str) -> int:
@@ -438,6 +465,30 @@ class FileHandler:
         if self._stream_error_errno(error_msg) != errno.ENOENT:
             return
         self.cache.mark_unavailable_track(video_id, path, error_msg)
+
+    def _record_stat(self, name: str) -> None:
+        if self.record_stat_callback:
+            self.record_stat_callback(name)
+
+    def _update_size_from_response(
+        self, path: str, response: requests.Response, offset: int
+    ) -> None:
+        total = self._content_range_total(response.headers.get("Content-Range"))
+        if total is None and offset == 0 and response.status_code == 200:
+            content_length = response.headers.get("Content-Length")
+            if content_length and content_length.isdigit():
+                total = int(content_length)
+        if total and total > 0:
+            self.update_file_size_callback(path, total)
+
+    @staticmethod
+    def _content_range_total(value: Optional[str]) -> Optional[int]:
+        if not value or "/" not in value:
+            return None
+        total = value.rsplit("/", 1)[1]
+        if total == "*" or not total.isdigit():
+            return None
+        return int(total)
 
     def release(self, path: str, fh: int) -> int:
         """Release (close) a file handle but allow downloads to continue.

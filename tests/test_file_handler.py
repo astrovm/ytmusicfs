@@ -253,6 +253,7 @@ class TestFileHandler(unittest.TestCase):
                     stream_url,
                     offset,
                     size,
+                    path=path,
                     auth_headers=None,
                     cookies=None,
                 )
@@ -287,6 +288,7 @@ class TestFileHandler(unittest.TestCase):
             "https://example.com/stream.m4a",
             0,
             1024,
+            path=path,
             auth_headers=file_info["headers"],
             cookies=file_info["cookies"],
         )
@@ -334,6 +336,51 @@ class TestFileHandler(unittest.TestCase):
             path,
             headers=file_info["headers"],
             cookies=file_info["cookies"],
+        )
+
+    def test_high_offset_uncached_read_skips_yt_dlp(self):
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        fh = self.file_handler.open(path, video_id)
+        self.file_handler.record_stat_callback = Mock()
+
+        result = self.file_handler.read(
+            path,
+            size=4096,
+            offset=FileHandler.PROBE_EOF_OFFSET,
+            fh=fh,
+        )
+
+        self.assertEqual(result, b"")
+        self.yt_dlp_utils.extract_stream_url_async.assert_not_called()
+        self.file_handler.record_stat_callback.assert_called_once_with(
+            "probe_eof_skips"
+        )
+
+    def test_offset_zero_uncached_read_extracts_stream(self):
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        fh = self.file_handler.open(path, video_id)
+
+        future = Future()
+        future.set_result(
+            {
+                "status": "success",
+                "stream_url": "https://example.com/audio.m4a",
+                "http_headers": {},
+                "cookies": {},
+            }
+        )
+        self.yt_dlp_utils.extract_stream_url_async.return_value = future
+
+        with patch.object(
+            self.file_handler, "_stream_content", return_value=b"payload"
+        ):
+            result = self.file_handler.read(path, size=1024, offset=0, fh=fh)
+
+        self.assertEqual(result, b"payload")
+        self.yt_dlp_utils.extract_stream_url_async.assert_called_once_with(
+            video_id, None
         )
 
     def test_read_maps_unavailable_video_to_not_found(self):
@@ -445,6 +492,7 @@ class TestFileHandler(unittest.TestCase):
                     stream_url,
                     offset,
                     size,
+                    path=path,
                     auth_headers=None,
                     cookies=None,
                 )
@@ -520,6 +568,53 @@ class TestFileHandler(unittest.TestCase):
         self.assertIn("user-agent", sent_headers)
         self.assertEqual(sent_headers["user-agent"], "Real UA")
         self.assertNotIn("User-Agent", sent_headers)
+
+    @patch("ytmusicfs.file_handler.requests.get")
+    def test_stream_content_treats_416_as_eof(self, mock_requests_get):
+        mock_response = Mock()
+        mock_response.status_code = 416
+
+        mock_context = MagicMock()
+        mock_context.__enter__.return_value = mock_response
+        mock_context.__exit__.return_value = None
+        mock_requests_get.return_value = mock_context
+        self.file_handler.record_stat_callback = Mock()
+
+        data = self.file_handler._stream_content(
+            "https://example.com/audio.m4a",
+            offset=FileHandler.PROBE_EOF_OFFSET,
+            size=4096,
+            path="/liked_songs/song.m4a",
+            retries=1,
+        )
+
+        self.assertEqual(data, b"")
+        self.file_handler.record_stat_callback.assert_called_once_with("range_416_eof")
+
+    @patch("ytmusicfs.file_handler.requests.get")
+    def test_stream_content_updates_size_from_content_range(self, mock_requests_get):
+        mock_response = Mock()
+        mock_response.status_code = 206
+        mock_response.headers = {"Content-Range": "bytes 0-4095/12345"}
+        mock_response.iter_content.return_value = [b"a" * 4096]
+
+        mock_context = MagicMock()
+        mock_context.__enter__.return_value = mock_response
+        mock_context.__exit__.return_value = None
+        mock_requests_get.return_value = mock_context
+
+        data = self.file_handler._stream_content(
+            "https://example.com/audio.m4a",
+            offset=0,
+            size=4096,
+            path="/liked_songs/song.m4a",
+            retries=1,
+        )
+
+        self.assertEqual(data, b"a" * 4096)
+        self.update_file_size_callback.assert_called_once_with(
+            "/liked_songs/song.m4a", 12345
+        )
 
     def test_release_file(self):
         """Test releasing (closing) a file handle."""

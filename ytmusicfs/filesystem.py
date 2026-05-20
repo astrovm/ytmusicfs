@@ -29,6 +29,7 @@ class YouTubeMusicFS(Operations):
 
     METADATA_DIR = "/.ytmusicfs"
     STATUS_FILE = "/.ytmusicfs/status.json"
+    UNCACHED_AUDIO_SIZE = 1024 * 1024
 
     def __init__(
         self,
@@ -121,6 +122,18 @@ class YouTubeMusicFS(Operations):
         self.last_access_results = {}  # {operation_path: cached_result}
         self.read_error_log_times = {}
         self.read_error_log_cooldown = 60.0
+        self.stats_lock = self.thread_manager.create_lock()
+        self.stats = {
+            "open": 0,
+            "read": 0,
+            "getattr": 0,
+            "readdir": 0,
+            "stream_extractions": 0,
+            "probe_eof_skips": 0,
+            "range_416_eof": 0,
+            "background_downloads": 0,
+            "unavailable_cache_hits": 0,
+        }
 
         # Store the browser parameter
         self.browser = browser
@@ -134,6 +147,7 @@ class YouTubeMusicFS(Operations):
             update_file_size_callback=self._update_file_size,
             yt_dlp_utils=self.yt_dlp_utils,
             browser=self.browser,
+            record_stat_callback=self._record_stat,
         )
 
         # Register exact path handlers
@@ -245,17 +259,11 @@ class YouTubeMusicFS(Operations):
                     "st_mtime": now,
                     "st_nlink": 1,
                 }
-                duration_seconds = track.get("duration_seconds")
-                if duration_seconds:
-                    # Estimate file size based on duration (128kbps = 16KB/sec)
-                    attrs["st_size"] = duration_seconds * 16 * 1024
-                else:
-                    # Default placeholder size
-                    attrs["st_size"] = 4096
+                attrs["st_size"] = self.UNCACHED_AUDIO_SIZE
 
                 file_size_cache_key = f"filesize:{dir_path}/{filename}"
                 cached_size = self.cache.get(file_size_cache_key)
-                if cached_size is not None:
+                if isinstance(cached_size, int):
                     attrs["st_size"] = cached_size
 
             # Preserve important metadata fields from the original track
@@ -288,6 +296,7 @@ class YouTubeMusicFS(Operations):
         Returns:
             List of directory entries
         """
+        self._record_stat("readdir")
         self.logger.debug(f"readdir: {path}")
 
         # Priority 1: Check fixed paths directly
@@ -436,6 +445,7 @@ class YouTubeMusicFS(Operations):
         Returns:
             File attributes
         """
+        self._record_stat("getattr")
         # Start timing for performance analysis
         start_time = time.time()
         operation_key = f"getattr:{path}"
@@ -573,16 +583,12 @@ class YouTubeMusicFS(Operations):
             # For normal files, we need to set appropriate metadata
             if path.endswith(".m4a"):
                 # Audio files
-                size = 1024 * 1024  # Default size for audio files
+                size = self.UNCACHED_AUDIO_SIZE
 
-                # Try to get a more accurate size for audio files
-                video_id = self.fetcher.processor.extract_video_id_from_path(path)
-                if video_id:
-                    # Get duration from cache
-                    duration = self.cache.get_duration(video_id)
-                    if duration:
-                        # Rough estimate: ~1MB per minute of audio
-                        size = max(int(duration * 10 * 1024), size)
+                file_size_cache_key = f"filesize:{path}"
+                cached_size = self.cache.get(file_size_cache_key)
+                if isinstance(cached_size, int):
+                    size = cached_size
 
                 # Set file mode and type
                 mode = stat.S_IFREG | 0o444  # Regular file, read-only
@@ -641,6 +647,7 @@ class YouTubeMusicFS(Operations):
             File handle
         """
         try:
+            self._record_stat("open")
             self.logger.debug(f"open: {path} (flags={flags})")
 
             if path == self.STATUS_FILE:
@@ -695,6 +702,7 @@ class YouTubeMusicFS(Operations):
             Bytes read from file
         """
         try:
+            self._record_stat("read")
             self.logger.debug(f"read: {path} (size={size}, offset={offset}, fh={fh})")
 
             if path == self.STATUS_FILE:
@@ -735,13 +743,20 @@ class YouTubeMusicFS(Operations):
 
     def _get_status_json(self) -> bytes:
         """Return lightweight filesystem status for mounted debug reads."""
+        with self.stats_lock:
+            stats = dict(self.stats)
         payload = {
             "version": __version__,
             "browser": self.browser,
             "cache_dir": str(self.cache.cache_dir),
             "generated_at": int(time.time()),
+            "stats": stats,
         }
         return (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+
+    def _record_stat(self, name: str) -> None:
+        with self.stats_lock:
+            self.stats[name] = self.stats.get(name, 0) + 1
 
     def release(self, path: str, fh: int) -> int:
         """Close the file.
