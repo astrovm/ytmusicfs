@@ -147,7 +147,7 @@ class TestYTDLPUtils(unittest.TestCase):
         utils.cleanup()
 
     @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
-    def test_does_not_retry_without_browser_cookies(self, mock_youtube_dl):
+    def test_does_not_retry_when_cookiejar_cannot_be_cached(self, mock_youtube_dl):
         info = {
             "url": "https://example.com/low.m4a",
             "http_headers": {},
@@ -155,14 +155,22 @@ class TestYTDLPUtils(unittest.TestCase):
         }
 
         ydl = MagicMock()
+        ydl.cookiejar = None
         ydl.extract_info.return_value = info
         mock_youtube_dl.return_value.__enter__.return_value = ydl
 
-        result = YTDLPUtils().extract_stream_url("abc123")
+        result = YTDLPUtils().extract_stream_url("abc123", browser="brave")
 
         self.assertEqual(result["stream_url"], "https://example.com/low.m4a")
         self.assertEqual(result["format_id"], "140")
         self.assertEqual(mock_youtube_dl.call_count, 1)
+
+    @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
+    def test_stream_extraction_requires_browser_auth(self, mock_youtube_dl):
+        with self.assertRaisesRegex(ValueError, "Browser auth is required"):
+            YTDLPUtils().extract_stream_url("abc123")
+
+        mock_youtube_dl.assert_not_called()
 
     @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
     def test_extract_browser_cookies_filters_youtube_domains(self, mock_youtube_dl):
@@ -179,6 +187,13 @@ class TestYTDLPUtils(unittest.TestCase):
         self.assertEqual(cookies, {"SAPISID": "abc", "SID": "sid"})
         opts = mock_youtube_dl.call_args.args[0]
         self.assertEqual(opts["cookiesfrombrowser"], ("brave",))
+
+    @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
+    def test_extract_browser_cookies_requires_browser_auth(self, mock_youtube_dl):
+        with self.assertRaisesRegex(ValueError, "Browser auth is required"):
+            YTDLPUtils().extract_browser_cookies("")
+
+        mock_youtube_dl.assert_not_called()
 
 
 if __name__ == "__main__":

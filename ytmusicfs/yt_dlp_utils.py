@@ -48,7 +48,7 @@ class YTDLPUtils:
 
     def _add_cookie_options(self, ydl_opts, browser):
         if not browser:
-            return
+            raise ValueError("Browser auth is required")
 
         with self._cookie_lock:
             cookie_file = self._browser_cookie_files.get(browser)
@@ -82,7 +82,7 @@ class YTDLPUtils:
     def extract_browser_cookies(self, browser):
         """Return YouTube cookies from a local browser profile."""
         if not browser:
-            return {}
+            raise ValueError("Browser auth is required")
 
         ydl_opts = {
             "quiet": True,
@@ -114,7 +114,7 @@ class YTDLPUtils:
             except OSError as exc:
                 self.logger.debug("Failed to remove temporary cookie file: %s", exc)
 
-    def extract_playlist_content(self, playlist_id, limit=10000, browser=None):
+    def extract_playlist_content(self, playlist_id, limit=10000, browser=""):
         """
         Fetch playlist or album content using yt-dlp, handling YouTube Music's redirects.
 
@@ -201,7 +201,7 @@ class YTDLPUtils:
             self.logger.warning(f"Error extracting content: {e}")
             return []
 
-    def extract_stream_url(self, video_id, browser=None):
+    def extract_stream_url(self, video_id, browser=""):
         """
         Extract stream URL and duration for a video using yt-dlp.
 
@@ -236,12 +236,11 @@ class YTDLPUtils:
 
     def _should_retry_with_cached_cookies(self, result, browser, cached_cookies):
         return (
-            bool(browser)
-            and cached_cookies
+            cached_cookies
             and result.get("format_id") != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT
         )
 
-    def _retry_stream_url_with_cached_cookies(self, video_id, browser):
+    def _retry_stream_url_with_cached_cookies(self, video_id, browser: str):
         with self._cookie_lock:
             cookie_file = self._browser_cookie_files.get(browser)
         if not cookie_file or not Path(cookie_file).exists():
@@ -315,7 +314,7 @@ class YTDLPUtils:
 
         return result
 
-    def extract_stream_url_async(self, video_id, browser=None) -> Future:
+    def extract_stream_url_async(self, video_id, browser="") -> Future:
         """
         Extract stream URL asynchronously using ThreadManager.
 
@@ -336,7 +335,7 @@ class YTDLPUtils:
             "extraction", self._extract_stream_url_worker, video_id, browser
         )
 
-    def _extract_stream_url_worker(self, video_id, browser=None):
+    def _extract_stream_url_worker(self, video_id, browser=""):
         """
         Worker function to extract stream URL for a thread pool task.
 
