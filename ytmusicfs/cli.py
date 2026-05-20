@@ -21,6 +21,47 @@ SYSTEMD_SERVICE_FILE = SYSTEMD_USER_DIR / "ytmusicfs.service"
 JS_RUNTIMES = ("node", "bun", "deno", "quickjs")
 
 
+def add_common_options(parser: argparse.ArgumentParser) -> None:
+    """Add options shared by commands that touch config/cache state."""
+    parser.add_argument("--cache-dir", "-c", help="Cache directory")
+    parser.add_argument(
+        "--debug", "-d", action="store_true", help="Enable debug logging"
+    )
+
+
+def add_deferred_common_options(parser: argparse.ArgumentParser) -> None:
+    """Allow shared options after nested subcommands without changing defaults."""
+    parser.add_argument(
+        "--cache-dir",
+        "-c",
+        default=argparse.SUPPRESS,
+        help="Cache directory",
+    )
+    parser.add_argument(
+        "--debug",
+        "-d",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Enable debug logging",
+    )
+
+
+def add_debug_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--debug", "-d", action="store_true", help="Enable debug logging"
+    )
+
+
+def add_deferred_debug_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--debug",
+        "-d",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Enable debug logging",
+    )
+
+
 def print_error(message: str) -> None:
     """Print a user-facing error."""
     print(message, file=sys.stderr)
@@ -48,7 +89,7 @@ def setup_logging(args: argparse.Namespace) -> logging.Logger:
 
     handlers = [logging.StreamHandler(sys.stdout)]
     foreground = getattr(args, "foreground", False)
-    if not foreground:
+    if not foreground and not getattr(args, "skip_log_file", False):
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(str(LOG_FILE)))
 
@@ -359,7 +400,7 @@ class DoctorCommandHandler:
 
         if browser:
             print(f"browser: {browser}")
-            print("auth: run a mount to verify YouTube Music cookies")
+            print("auth: not checked (run a mount to verify YouTube Music cookies)")
         else:
             print("browser: not set")
 
@@ -382,15 +423,23 @@ class CacheCommandHandler:
         self.config = ConfigManager(cache_dir=args.cache_dir, logger=logger)
 
     def execute(self) -> int:
-        if self.args.cache_action in {"clear", "refresh"}:
+        if self.args.cache_action == "clear":
             return self.clear()
+        if self.args.cache_action == "refresh":
+            return self.refresh()
         return self.stats()
 
     def clear(self) -> int:
+        return self.remove_cache_entries("clear", include_audio=True)
+
+    def refresh(self) -> int:
+        return self.remove_cache_entries("refresh", include_audio=False)
+
+    def remove_cache_entries(self, action: str, include_audio: bool) -> int:
         active_mount = MountInspector.find_active_mount_point()
         if active_mount:
             print_error(
-                f"Cannot clear cache while mounted at {active_mount}. "
+                f"Cannot {action} cache while mounted at {active_mount}. "
                 "Run: ytmusicfs unmount"
             )
             return 1
@@ -401,13 +450,13 @@ class CacheCommandHandler:
             if path.exists():
                 path.unlink()
                 removed += 1
-        for name in self.CACHE_DIRS:
-            path = self.config.cache_dir / name
-            if path.exists():
-                shutil.rmtree(path)
-                removed += 1
+        if include_audio:
+            for name in self.CACHE_DIRS:
+                path = self.config.cache_dir / name
+                if path.exists():
+                    shutil.rmtree(path)
+                    removed += 1
 
-        action = "refresh" if self.args.cache_action == "refresh" else "clear"
         print(f"Cache {action}: removed {removed} files from {self.config.cache_dir}")
         return 0
 
@@ -561,9 +610,7 @@ def main() -> int:
     mount_parser.add_argument(
         "--foreground", "-f", action="store_true", help="Run in foreground"
     )
-    mount_parser.add_argument(
-        "--debug", "-d", action="store_true", help="Enable debug logging"
-    )
+    add_debug_option(mount_parser)
     mount_parser.add_argument(
         "--browser",
         "-b",
@@ -582,36 +629,29 @@ def main() -> int:
         "-m",
         help="Mount point directory. Defaults to the active ytmusicfs mount.",
     )
-    unmount_parser.add_argument("--cache-dir", "-c", help="Cache directory")
-    unmount_parser.add_argument(
-        "--debug", "-d", action="store_true", help="Enable debug logging"
-    )
+    add_common_options(unmount_parser)
     unmount_parser.set_defaults(
         func=lambda args: UnmountCommandHandler(args, setup_logging(args)).execute()
     )
 
     status_parser = subparsers.add_parser("status", help="Show YTMusicFS status")
-    status_parser.add_argument("--cache-dir", "-c", help="Cache directory")
-    status_parser.add_argument(
-        "--debug", "-d", action="store_true", help="Enable debug logging"
-    )
+    add_common_options(status_parser)
     status_parser.set_defaults(
         func=lambda args: StatusCommandHandler(args, setup_logging(args)).execute()
     )
 
     config_parser = subparsers.add_parser("config", help="Show or update saved config")
-    config_parser.add_argument("--cache-dir", "-c", help="Cache directory")
-    config_parser.add_argument(
-        "--debug", "-d", action="store_true", help="Enable debug logging"
-    )
+    add_common_options(config_parser)
     config_subparsers = config_parser.add_subparsers(
         dest="config_action", required=True
     )
     config_show_parser = config_subparsers.add_parser("show", help="Show saved config")
+    add_deferred_common_options(config_show_parser)
     config_show_parser.set_defaults(
         func=lambda args: ConfigCommandHandler(args, setup_logging(args)).execute()
     )
     config_set_parser = config_subparsers.add_parser("set", help="Set saved config")
+    add_deferred_common_options(config_set_parser)
     config_set_parser.add_argument(
         "key", choices=sorted(ConfigCommandHandler.VALID_KEYS)
     )
@@ -621,31 +661,28 @@ def main() -> int:
     )
 
     doctor_parser = subparsers.add_parser("doctor", help="Check local setup")
-    doctor_parser.add_argument("--cache-dir", "-c", help="Cache directory")
-    doctor_parser.add_argument(
-        "--debug", "-d", action="store_true", help="Enable debug logging"
-    )
+    add_common_options(doctor_parser)
     doctor_parser.set_defaults(
         func=lambda args: DoctorCommandHandler(args, setup_logging(args)).execute()
     )
 
     cache_parser = subparsers.add_parser("cache", help="Inspect or clear cache")
-    cache_parser.add_argument("--cache-dir", "-c", help="Cache directory")
-    cache_parser.add_argument(
-        "--debug", "-d", action="store_true", help="Enable debug logging"
-    )
+    add_common_options(cache_parser)
     cache_subparsers = cache_parser.add_subparsers(dest="cache_action", required=True)
     cache_stats_parser = cache_subparsers.add_parser("stats", help="Show cache stats")
+    add_deferred_common_options(cache_stats_parser)
     cache_stats_parser.set_defaults(
         func=lambda args: CacheCommandHandler(args, setup_logging(args)).execute()
     )
     cache_clear_parser = cache_subparsers.add_parser("clear", help="Clear cache files")
+    add_deferred_common_options(cache_clear_parser)
     cache_clear_parser.set_defaults(
         func=lambda args: CacheCommandHandler(args, setup_logging(args)).execute()
     )
     cache_refresh_parser = cache_subparsers.add_parser(
-        "refresh", help="Clear cache so the next browse fetches fresh data"
+        "refresh", help="Clear metadata cache but keep cached audio"
     )
+    add_deferred_common_options(cache_refresh_parser)
     cache_refresh_parser.set_defaults(
         func=lambda args: CacheCommandHandler(args, setup_logging(args)).execute()
     )
@@ -664,20 +701,19 @@ def main() -> int:
         "--debug", "-d", action="store_true", help="Enable debug logging"
     )
     logs_parser.set_defaults(
-        func=lambda args: LogsCommandHandler(args, setup_logging(args)).execute()
+        skip_log_file=True,
+        func=lambda args: LogsCommandHandler(args, setup_logging(args)).execute(),
     )
 
     service_parser = subparsers.add_parser(
         "service", help="Manage the systemd user service"
     )
-    service_parser.add_argument(
-        "--debug", "-d", action="store_true", help="Enable debug logging"
-    )
+    add_debug_option(service_parser)
     service_subparsers = service_parser.add_subparsers(
         dest="service_action", required=True
     )
     service_help = {
-        "install": "Install and enable the user service",
+        "install": "Install and enable the user service without starting it",
         "start": "Start the user service",
         "stop": "Stop the user service",
         "restart": "Restart the user service",
@@ -688,6 +724,7 @@ def main() -> int:
             action,
             help=help_text,
         )
+        add_deferred_debug_option(service_action_parser)
         service_action_parser.set_defaults(
             func=lambda args: ServiceCommandHandler(args, setup_logging(args)).execute()
         )

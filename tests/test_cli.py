@@ -2,6 +2,7 @@ import argparse
 import logging
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -16,6 +17,7 @@ from ytmusicfs.cli import (
     ServiceCommandHandler,
     StatusCommandHandler,
     UnmountCommandHandler,
+    main,
     positive_int,
 )
 from ytmusicfs.config import ConfigManager
@@ -337,10 +339,36 @@ def test_cache_clear_removes_sqlite_files(mock_active_mount, tmp_path):
     assert not audio_dir.exists()
 
 
+@patch("ytmusicfs.cli.MountInspector.find_active_mount_point", return_value=None)
+def test_cache_refresh_removes_sqlite_files_but_keeps_audio(
+    mock_active_mount, tmp_path
+):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    for name in CacheCommandHandler.CACHE_FILES:
+        (cache_dir / name).write_text("cache", encoding="utf-8")
+    audio_dir = cache_dir / "audio"
+    audio_dir.mkdir()
+    audio_file = audio_dir / "song.m4a"
+    audio_file.write_bytes(b"cache")
+    args = make_command_args(tmp_path, cache_action="refresh")
+
+    result = CacheCommandHandler(args, logging.getLogger("test")).execute()
+
+    assert result == 0
+    assert not any(
+        (cache_dir / name).exists() for name in CacheCommandHandler.CACHE_FILES
+    )
+    assert audio_file.exists()
+
+
 @patch("ytmusicfs.cli.MountInspector.find_active_mount_point")
-def test_cache_clear_refuses_while_mounted(mock_active_mount, tmp_path):
+@pytest.mark.parametrize("cache_action", ["clear", "refresh"])
+def test_cache_mutation_refuses_while_mounted(
+    mock_active_mount, tmp_path, cache_action
+):
     mock_active_mount.return_value = tmp_path / "music"
-    args = make_command_args(tmp_path, cache_action="clear")
+    args = make_command_args(tmp_path, cache_action=cache_action)
 
     result = CacheCommandHandler(args, logging.getLogger("test")).execute()
 
@@ -375,6 +403,52 @@ def test_cache_audio_stats_counts_files(tmp_path):
 def test_positive_int_rejects_zero():
     with pytest.raises(argparse.ArgumentTypeError):
         positive_int("0")
+
+
+def test_cache_options_work_after_subcommand(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_execute(self):
+        captured["cache_action"] = self.args.cache_action
+        captured["cache_dir"] = self.args.cache_dir
+        captured["debug"] = self.args.debug
+        return 0
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "ytmusicfs",
+            "cache",
+            "refresh",
+            "--cache-dir",
+            str(tmp_path / "custom-cache"),
+            "--debug",
+        ],
+    )
+    monkeypatch.setattr(CacheCommandHandler, "execute", fake_execute)
+
+    assert main() == 0
+    assert captured == {
+        "cache_action": "refresh",
+        "cache_dir": str(tmp_path / "custom-cache"),
+        "debug": True,
+    }
+
+
+def test_service_debug_works_after_subcommand(monkeypatch):
+    captured = {}
+
+    def fake_execute(self):
+        captured["service_action"] = self.args.service_action
+        captured["debug"] = self.args.debug
+        return 0
+
+    monkeypatch.setattr(sys, "argv", ["ytmusicfs", "service", "status", "--debug"])
+    monkeypatch.setattr(ServiceCommandHandler, "execute", fake_execute)
+
+    assert main() == 0
+    assert captured == {"service_action": "status", "debug": True}
 
 
 @patch("ytmusicfs.cli.subprocess.run")
@@ -484,3 +558,15 @@ def test_logs_missing_file_returns_error(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert result == 1
     assert "No log file found" in captured.err
+
+
+def test_logs_command_does_not_create_missing_log_file(tmp_path, monkeypatch, capsys):
+    log_file = tmp_path / "missing.log"
+    monkeypatch.setattr("ytmusicfs.cli.LOG_FILE", log_file)
+    monkeypatch.setattr(sys, "argv", ["ytmusicfs", "logs"])
+
+    assert main() == 1
+
+    captured = capsys.readouterr()
+    assert "No log file found" in captured.err
+    assert not log_file.exists()

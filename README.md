@@ -185,7 +185,7 @@ ytmusicfs config set browser brave
 
 ### Cache, Refresh, and Logs
 
-Inspect or clear the local metadata and audio cache:
+Inspect or clear the local cache:
 
 ```bash
 ytmusicfs cache stats
@@ -193,7 +193,9 @@ ytmusicfs cache clear
 ytmusicfs cache refresh
 ```
 
-`cache clear` and `cache refresh` refuse to run while YTMusicFS is mounted.
+`cache clear` removes metadata and cached audio. `cache refresh` removes
+metadata only and keeps cached audio. Both refuse to run while YTMusicFS is
+mounted.
 
 Show logs:
 
