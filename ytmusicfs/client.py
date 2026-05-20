@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 
 import logging
+import time
+from json import JSONDecodeError
 from typing import Dict, List, Optional
 
 from ytmusicfs.auth_adapter import YTMusicAuthAdapter
+
+_API_ATTEMPTS = 3
+_API_RETRY_DELAY_SECONDS = 1.0
 
 
 class YouTubeMusicClient:
@@ -37,11 +42,11 @@ class YouTubeMusicClient:
         Returns:
             List of playlist dictionaries.
         """
-        try:
-            return self.ytmusic.get_library_playlists(limit=limit)
-        except Exception as e:
-            self.logger.error(f"Failed to fetch library playlists: {e}")
-            raise
+        return self._call_with_json_retry(
+            "fetch library playlists",
+            self.ytmusic.get_library_playlists,
+            limit=limit,
+        )
 
     def get_liked_songs(self, limit: int = 10000) -> Dict:
         """Fetch liked songs from the user's library.
@@ -52,11 +57,11 @@ class YouTubeMusicClient:
         Returns:
             Dictionary containing liked songs data.
         """
-        try:
-            return self.ytmusic.get_liked_songs(limit=limit)
-        except Exception as e:
-            self.logger.error(f"Failed to fetch liked songs: {e}")
-            raise
+        return self._call_with_json_retry(
+            "fetch liked songs",
+            self.ytmusic.get_liked_songs,
+            limit=limit,
+        )
 
     def get_playlist(self, playlist_id: str, limit: int = 10000) -> Dict:
         """Fetch a playlist by its ID.
@@ -68,11 +73,12 @@ class YouTubeMusicClient:
         Returns:
             Dictionary containing playlist data.
         """
-        try:
-            return self.ytmusic.get_playlist(playlist_id, limit=limit)
-        except Exception as e:
-            self.logger.error(f"Failed to fetch playlist {playlist_id}: {e}")
-            raise
+        return self._call_with_json_retry(
+            f"fetch playlist {playlist_id}",
+            self.ytmusic.get_playlist,
+            playlist_id,
+            limit=limit,
+        )
 
     def get_library_artists(self, limit: int = 10000) -> List[Dict]:
         """Fetch artists from the user's library.
@@ -83,11 +89,11 @@ class YouTubeMusicClient:
         Returns:
             List of artist dictionaries.
         """
-        try:
-            return self.ytmusic.get_library_artists(limit=limit)
-        except Exception as e:
-            self.logger.error(f"Failed to fetch library artists: {e}")
-            raise
+        return self._call_with_json_retry(
+            "fetch library artists",
+            self.ytmusic.get_library_artists,
+            limit=limit,
+        )
 
     def get_artist(self, artist_id: str) -> Dict:
         """Fetch an artist by their ID.
@@ -98,11 +104,11 @@ class YouTubeMusicClient:
         Returns:
             Dictionary containing artist data.
         """
-        try:
-            return self.ytmusic.get_artist(artist_id)
-        except Exception as e:
-            self.logger.error(f"Failed to fetch artist {artist_id}: {e}")
-            raise
+        return self._call_with_json_retry(
+            f"fetch artist {artist_id}",
+            self.ytmusic.get_artist,
+            artist_id,
+        )
 
     def get_library_albums(self, limit: int = 10000) -> List[Dict]:
         """Fetch albums from the user's library.
@@ -113,11 +119,11 @@ class YouTubeMusicClient:
         Returns:
             List of album dictionaries.
         """
-        try:
-            return self.ytmusic.get_library_albums(limit=limit)
-        except Exception as e:
-            self.logger.error(f"Failed to fetch library albums: {e}")
-            raise
+        return self._call_with_json_retry(
+            "fetch library albums",
+            self.ytmusic.get_library_albums,
+            limit=limit,
+        )
 
     def get_album(self, album_id: str) -> Dict:
         """Fetch an album by its ID.
@@ -128,11 +134,11 @@ class YouTubeMusicClient:
         Returns:
             Dictionary containing album data.
         """
-        try:
-            return self.ytmusic.get_album(album_id)
-        except Exception as e:
-            self.logger.error(f"Failed to fetch album {album_id}: {e}")
-            raise
+        return self._call_with_json_retry(
+            f"fetch album {album_id}",
+            self.ytmusic.get_album,
+            album_id,
+        )
 
     def search(
         self,
@@ -170,3 +176,30 @@ class YouTubeMusicClient:
         except Exception as e:
             self.logger.error(f"Search failed: {e}")
             return []
+
+    def _call_with_json_retry(self, operation: str, func, *args, **kwargs):
+        for attempt in range(1, _API_ATTEMPTS + 1):
+            try:
+                return func(*args, **kwargs)
+            except JSONDecodeError:
+                if attempt == _API_ATTEMPTS:
+                    self.logger.error(
+                        "Failed to %s: empty or non-JSON response after %s attempts",
+                        operation,
+                        _API_ATTEMPTS,
+                    )
+                    raise
+
+                self.logger.warning(
+                    "YouTube Music returned an empty or non-JSON response while "
+                    "trying to %s; retrying (%s/%s)",
+                    operation,
+                    attempt,
+                    _API_ATTEMPTS,
+                )
+                time.sleep(_API_RETRY_DELAY_SECONDS)
+            except Exception as exc:
+                self.logger.error("Failed to %s: %s", operation, exc)
+                raise
+
+        raise RuntimeError(f"Failed to {operation}")
