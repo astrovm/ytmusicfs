@@ -21,6 +21,11 @@ SYSTEMD_SERVICE_FILE = SYSTEMD_USER_DIR / "ytmusicfs.service"
 JS_RUNTIMES = ("node", "bun", "deno", "quickjs")
 
 
+def print_error(message: str) -> None:
+    """Print a user-facing error."""
+    print(message, file=sys.stderr)
+
+
 def positive_int(value: str) -> int:
     """Parse a positive integer for CLI options."""
     parsed = int(value)
@@ -275,21 +280,19 @@ class StatusCommandHandler:
         active_mount = MountInspector.find_active_mount_point()
         saved_mount = mount_state.get("mount_point")
 
-        self.logger.info(f"Version: {__version__}")
-        self.logger.info(f"Cache dir: {self.config.cache_dir}")
-        self.logger.info(f"Config file: {self.config.config_file}")
-        self.logger.info(
-            f"Saved mount point: {user_config.get('last_mount_point', 'not set')}"
-        )
-        self.logger.info(f"Saved browser: {user_config.get('last_browser', 'not set')}")
+        print(f"Version: {__version__}")
+        print(f"Cache dir: {self.config.cache_dir}")
+        print(f"Config file: {self.config.config_file}")
+        print(f"Saved mount point: {user_config.get('last_mount_point', 'not set')}")
+        print(f"Saved browser: {user_config.get('last_browser', 'not set')}")
 
         if active_mount:
-            self.logger.info(f"Active mount: {active_mount}")
+            print(f"Active mount: {active_mount}")
         elif saved_mount:
             self.config.clear_mount_state()
-            self.logger.info(f"Active mount: none (cleared stale {saved_mount})")
+            print(f"Active mount: none (cleared stale {saved_mount})")
         else:
-            self.logger.info("Active mount: none")
+            print("Active mount: none")
 
         return 0
 
@@ -314,11 +317,9 @@ class ConfigCommandHandler:
 
     def show(self) -> int:
         user_config = self.config.load_user_config()
-        self.logger.info(
-            f"mount-point: {user_config.get('last_mount_point', 'not set')}"
-        )
-        self.logger.info(f"browser: {user_config.get('last_browser', 'not set')}")
-        self.logger.info(f"config-file: {self.config.config_file}")
+        print(f"mount-point: {user_config.get('last_mount_point', 'not set')}")
+        print(f"browser: {user_config.get('last_browser', 'not set')}")
+        print(f"config-file: {self.config.config_file}")
         return 0
 
     def set_value(self) -> int:
@@ -330,7 +331,7 @@ class ConfigCommandHandler:
         user_config = self.config.load_user_config()
         user_config[key] = value
         self.config.save_user_config(user_config)
-        self.logger.info(f"Saved {self.args.key}: {value}")
+        print(f"Saved {self.args.key}: {value}")
         return 0
 
 
@@ -353,14 +354,14 @@ class DoctorCommandHandler:
 
         failed = False
         for name, ok in checks:
-            self.logger.info(f"{name}: {'ok' if ok else 'missing'}")
+            print(f"{name}: {'ok' if ok else 'missing'}")
             failed = failed or not ok
 
         if browser:
-            self.logger.info(f"browser: {browser}")
-            self.logger.info("auth: run a mount to verify YouTube Music cookies")
+            print(f"browser: {browser}")
+            print("auth: run a mount to verify YouTube Music cookies")
         else:
-            self.logger.info("browser: not set")
+            print("browser: not set")
 
         return 1 if failed else 0
 
@@ -388,7 +389,7 @@ class CacheCommandHandler:
     def clear(self) -> int:
         active_mount = MountInspector.find_active_mount_point()
         if active_mount:
-            self.logger.error(
+            print_error(
                 f"Cannot clear cache while mounted at {active_mount}. "
                 "Run: ytmusicfs unmount"
             )
@@ -407,25 +408,23 @@ class CacheCommandHandler:
                 removed += 1
 
         action = "refresh" if self.args.cache_action == "refresh" else "clear"
-        self.logger.info(
-            f"Cache {action}: removed {removed} files from {self.config.cache_dir}"
-        )
+        print(f"Cache {action}: removed {removed} files from {self.config.cache_dir}")
         return 0
 
     def stats(self) -> int:
         db_path = self.config.cache_dir / "cache.db"
         if not db_path.exists():
-            self.logger.info(f"Cache database: missing ({db_path})")
+            print(f"Cache database: missing ({db_path})")
             return 0
 
         stats = self.read_database_stats(db_path)
-        self.logger.info(f"Cache database: {db_path}")
-        self.logger.info(f"Size: {db_path.stat().st_size} bytes")
+        print(f"Cache database: {db_path}")
+        print(f"Size: {db_path.stat().st_size} bytes")
         for key, value in stats.items():
-            self.logger.info(f"{key}: {value}")
+            print(f"{key}: {value}")
         audio_files, audio_size = self.audio_stats()
-        self.logger.info(f"audio_files: {audio_files}")
-        self.logger.info(f"audio_size: {audio_size} bytes")
+        print(f"audio_files: {audio_files}")
+        print(f"audio_size: {audio_size} bytes")
         return 0
 
     def audio_stats(self) -> tuple[int, int]:
@@ -461,11 +460,11 @@ class LogsCommandHandler:
 
     def execute(self) -> int:
         if not LOG_FILE.exists():
-            self.logger.error(f"No log file found at {LOG_FILE}")
+            print_error(f"No log file found at {LOG_FILE}")
             return 1
 
         if self.args.tail is None:
-            self.logger.info(str(LOG_FILE))
+            print(str(LOG_FILE))
             return 0
 
         lines = LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -493,7 +492,7 @@ class ServiceCommandHandler:
         if not user_config.get("last_mount_point") or not user_config.get(
             "last_browser"
         ):
-            self.logger.error(
+            print_error(
                 "Missing saved mount settings. Run: ytmusicfs mount "
                 "--mount-point ~/Music/ytmusic --browser brave"
             )
@@ -520,7 +519,7 @@ class ServiceCommandHandler:
             ),
             encoding="utf-8",
         )
-        self.logger.info(f"Installed {SYSTEMD_SERVICE_FILE}")
+        print(f"Installed {SYSTEMD_SERVICE_FILE}")
         if self.run_systemctl("daemon-reload") != 0:
             return 1
         return self.run_systemctl("enable")
@@ -533,15 +532,15 @@ class ServiceCommandHandler:
         try:
             subprocess.run(command, check=True, capture_output=True, text=True)
         except FileNotFoundError:
-            self.logger.error("Missing systemctl in PATH.")
+            print_error("Missing systemctl in PATH.")
             return 1
         except subprocess.CalledProcessError as error:
             stderr = error.stderr.strip()
             message = stderr or f"exit code {error.returncode}"
-            self.logger.error(f"systemctl {action} failed: {message}")
+            print_error(f"systemctl {action} failed: {message}")
             return 1
 
-        self.logger.info(f"systemctl {action}: ok")
+        print(f"systemctl {action}: ok")
         return 0
 
 
