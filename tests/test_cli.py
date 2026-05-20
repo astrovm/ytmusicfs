@@ -15,6 +15,7 @@ from ytmusicfs.cli import (
     ServiceCommandHandler,
     StatusCommandHandler,
     UnmountCommandHandler,
+    positive_int,
 )
 from ytmusicfs.config import ConfigManager
 
@@ -113,6 +114,24 @@ def test_mount_reuses_saved_settings(mock_mount, mock_active_mount, tmp_path):
     )
 
 
+@patch("ytmusicfs.cli.MountInspector.find_active_mount_point", return_value=None)
+def test_mount_saves_settings_before_mount_call(mock_active_mount, tmp_path):
+    mount_point = tmp_path / "music"
+    args = make_mount_args(tmp_path, mount_point=str(mount_point), browser="brave")
+    config = ConfigManager(cache_dir=str(tmp_path / "cache"))
+
+    def assert_config_saved(**kwargs):
+        assert config.load_user_config()["last_mount_point"] == str(
+            mount_point.resolve()
+        )
+        assert config.load_user_config()["last_browser"] == "brave"
+
+    with patch("ytmusicfs.cli.mount_filesystem", side_effect=assert_config_saved):
+        result = MountCommandHandler(args, logging.getLogger("test")).execute()
+
+    assert result == 0
+
+
 def test_mount_without_settings_fails(tmp_path):
     logger = Mock()
     args = make_mount_args(tmp_path)
@@ -139,6 +158,30 @@ def test_mount_failure_does_not_save_last_settings(
     assert config.load_mount_state() == {}
 
 
+@patch("ytmusicfs.cli.MountInspector.find_active_mount_point", return_value=None)
+@patch("ytmusicfs.cli.mount_filesystem", side_effect=RuntimeError("auth failed"))
+def test_mount_failure_restores_previous_settings(
+    mock_mount, mock_active_mount, tmp_path
+):
+    previous_mount = tmp_path / "previous"
+    failed_mount = tmp_path / "failed"
+    config = ConfigManager(cache_dir=str(tmp_path / "cache"))
+    config.save_user_config(
+        {
+            "last_mount_point": str(previous_mount),
+            "last_browser": "brave",
+        }
+    )
+    args = make_mount_args(tmp_path, mount_point=str(failed_mount), browser="firefox")
+
+    result = MountCommandHandler(args, logging.getLogger("test")).execute()
+
+    assert result == 1
+    assert config.load_user_config()["last_mount_point"] == str(previous_mount)
+    assert config.load_user_config()["last_browser"] == "brave"
+    assert config.load_mount_state() == {}
+
+
 @patch("ytmusicfs.cli.subprocess.run")
 @patch("ytmusicfs.cli.shutil.which", return_value="/usr/bin/fusermount")
 @patch("ytmusicfs.cli.os.path.ismount", return_value=True)
@@ -152,7 +195,7 @@ def test_unmount_uses_active_mount_state(mock_ismount, mock_which, mock_run, tmp
     result = UnmountCommandHandler(args, logging.getLogger("test")).execute()
 
     assert result == 0
-    mock_ismount.assert_called_once_with(mount_point.resolve())
+    mock_ismount.assert_called_with(mount_point.resolve())
     mock_run.assert_called_once_with(
         ["/usr/bin/fusermount", "-u", str(mount_point.resolve())],
         check=True,
@@ -175,6 +218,33 @@ def test_unmount_clears_stale_mount_state(mock_ismount, mock_which, tmp_path):
 
     assert result == 1
     assert config.load_mount_state() == {}
+
+
+@patch("ytmusicfs.cli.subprocess.run")
+@patch("ytmusicfs.cli.shutil.which", return_value="/usr/bin/fusermount")
+@patch("ytmusicfs.cli.os.path.ismount", side_effect=[False, True])
+@patch("ytmusicfs.cli.MountInspector.find_active_mount_point")
+def test_unmount_uses_detected_mount_when_state_is_stale(
+    mock_active_mount, mock_ismount, mock_which, mock_run, tmp_path
+):
+    stale_mount = tmp_path / "stale"
+    active_mount = tmp_path / "active"
+    stale_mount.mkdir()
+    active_mount.mkdir()
+    mock_active_mount.return_value = active_mount
+    config = ConfigManager(cache_dir=str(tmp_path / "cache"))
+    config.save_mount_state({"mount_point": str(stale_mount)})
+    args = make_unmount_args(tmp_path)
+
+    result = UnmountCommandHandler(args, logging.getLogger("test")).execute()
+
+    assert result == 0
+    mock_run.assert_called_once_with(
+        ["/usr/bin/fusermount", "-u", str(active_mount)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 @patch("ytmusicfs.cli.subprocess.run")
@@ -289,12 +359,36 @@ def test_cache_stats_reads_database_counts(tmp_path):
     assert stats["cache_entries"] == 1
 
 
+def test_cache_audio_stats_counts_files(tmp_path):
+    cache_dir = tmp_path / "cache"
+    audio_dir = cache_dir / "audio"
+    audio_dir.mkdir(parents=True)
+    (audio_dir / "one.m4a").write_bytes(b"123")
+    (audio_dir / "two.m4a").write_bytes(b"45")
+    args = make_command_args(tmp_path, cache_action="stats")
+    handler = CacheCommandHandler(args, logging.getLogger("test"))
+
+    assert handler.audio_stats() == (2, 5)
+
+
+def test_positive_int_rejects_zero():
+    with pytest.raises(argparse.ArgumentTypeError):
+        positive_int("0")
+
+
 @patch("ytmusicfs.cli.subprocess.run")
 @patch("ytmusicfs.cli.shutil.which", return_value="/usr/bin/ytmusicfs")
 def test_service_install_writes_user_unit(mock_which, mock_run, tmp_path, monkeypatch):
     service_file = tmp_path / "systemd" / "ytmusicfs.service"
     monkeypatch.setattr("ytmusicfs.cli.SYSTEMD_USER_DIR", service_file.parent)
     monkeypatch.setattr("ytmusicfs.cli.SYSTEMD_SERVICE_FILE", service_file)
+    config = ConfigManager(cache_dir=str(tmp_path / "cache"))
+    config.save_user_config(
+        {
+            "last_mount_point": str(tmp_path / "music"),
+            "last_browser": "brave",
+        }
+    )
     args = argparse.Namespace(service_action="install", debug=False)
 
     result = ServiceCommandHandler(args, logging.getLogger("test")).execute()
@@ -316,3 +410,15 @@ def test_service_install_writes_user_unit(mock_which, mock_run, tmp_path, monkey
         capture_output=True,
         text=True,
     )
+
+
+def test_service_install_requires_saved_settings(tmp_path, monkeypatch):
+    service_file = tmp_path / "systemd" / "ytmusicfs.service"
+    monkeypatch.setattr("ytmusicfs.cli.SYSTEMD_USER_DIR", service_file.parent)
+    monkeypatch.setattr("ytmusicfs.cli.SYSTEMD_SERVICE_FILE", service_file)
+    args = argparse.Namespace(service_action="install", debug=False)
+
+    result = ServiceCommandHandler(args, logging.getLogger("test")).execute()
+
+    assert result == 1
+    assert not service_file.exists()

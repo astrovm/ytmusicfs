@@ -174,6 +174,9 @@ ytmusicfs config show
 ytmusicfs doctor
 ```
 
+`doctor` checks the local FUSE helper, Python FUSE module, JavaScript runtime,
+and cache directory permissions.
+
 Set saved defaults without mounting:
 
 ```bash
@@ -183,13 +186,15 @@ ytmusicfs config set browser brave
 
 ### Cache, Refresh, and Logs
 
-Inspect or clear the local cache:
+Inspect or clear the local metadata and audio cache:
 
 ```bash
 ytmusicfs cache stats
 ytmusicfs cache clear
 ytmusicfs refresh
 ```
+
+`cache clear` and `refresh` refuse to run while YTMusicFS is mounted.
 
 Show logs:
 

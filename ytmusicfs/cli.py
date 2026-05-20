@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import importlib.util
 import logging
 import os
 import shutil
@@ -18,6 +19,14 @@ LOG_FILE = LOG_DIR / "ytmusicfs.log"
 SYSTEMD_USER_DIR = Path.home() / ".config" / "systemd" / "user"
 SYSTEMD_SERVICE_FILE = SYSTEMD_USER_DIR / "ytmusicfs.service"
 JS_RUNTIMES = ("node", "bun", "deno", "quickjs")
+
+
+def positive_int(value: str) -> int:
+    """Parse a positive integer for CLI options."""
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be greater than 0")
+    return parsed
 
 
 def setup_logging(args: argparse.Namespace) -> logging.Logger:
@@ -108,6 +117,7 @@ class MountCommandHandler:
         mount_point, browser = settings
         mount_point.mkdir(parents=True, exist_ok=True)
         mount_point = mount_point.resolve()
+        previous_user_config = self.config.load_user_config()
 
         active_mount = MountInspector.find_active_mount_point()
         if active_mount:
@@ -124,6 +134,12 @@ class MountCommandHandler:
             )
             return 1
 
+        self.config.save_user_config(
+            {
+                "last_mount_point": str(mount_point),
+                "last_browser": browser,
+            }
+        )
         self.config.save_mount_state(
             {
                 "mount_point": str(mount_point),
@@ -140,14 +156,9 @@ class MountCommandHandler:
                 foreground=self.args.foreground,
                 browser=browser,
             )
-            self.config.save_user_config(
-                {
-                    "last_mount_point": str(mount_point),
-                    "last_browser": browser,
-                }
-            )
             return 0
         except Exception as e:
+            self.config.save_user_config(previous_user_config)
             self.config.clear_mount_state()
             self.logger.error(f"Mount failed: {e}")
             return 1
@@ -170,13 +181,16 @@ class UnmountCommandHandler:
         if self.args.mount_point:
             return Path(self.args.mount_point).expanduser().resolve()
 
+        detected_mount_point = MountInspector.find_active_mount_point()
         mount_state = self.config.load_mount_state()
         mount_point = mount_state.get("mount_point")
         if mount_point:
-            return Path(mount_point).expanduser().resolve()
+            saved_mount_point = Path(mount_point).expanduser().resolve()
+            if saved_mount_point.exists() and os.path.ismount(saved_mount_point):
+                return saved_mount_point
+            self.config.clear_mount_state()
 
-        detected_mount_point = MountInspector.find_active_mount_point()
-        if detected_mount_point:
+        if detected_mount_point is not None:
             return detected_mount_point
 
         self.logger.error("No active ytmusicfs mount found.")
@@ -331,6 +345,7 @@ class DoctorCommandHandler:
     def execute(self) -> int:
         checks = [
             ("fusermount", self.has_unmount_helper()),
+            ("python fuse module", importlib.util.find_spec("fuse") is not None),
             ("js runtime", any(shutil.which(runtime) for runtime in JS_RUNTIMES)),
             ("cache dir writable", os.access(self.config.cache_dir, os.W_OK)),
         ]
@@ -408,7 +423,18 @@ class CacheCommandHandler:
         self.logger.info(f"Size: {db_path.stat().st_size} bytes")
         for key, value in stats.items():
             self.logger.info(f"{key}: {value}")
+        audio_files, audio_size = self.audio_stats()
+        self.logger.info(f"audio_files: {audio_files}")
+        self.logger.info(f"audio_size: {audio_size} bytes")
         return 0
+
+    def audio_stats(self) -> tuple[int, int]:
+        audio_dir = self.config.cache_dir / "audio"
+        if not audio_dir.exists():
+            return 0, 0
+
+        files = [path for path in audio_dir.rglob("*") if path.is_file()]
+        return len(files), sum(path.stat().st_size for path in files)
 
     @staticmethod
     def read_database_stats(db_path: Path) -> dict[str, Any]:
@@ -454,6 +480,7 @@ class ServiceCommandHandler:
     def __init__(self, args: argparse.Namespace, logger: logging.Logger):
         self.args = args
         self.logger = logger
+        self.config = ConfigManager(logger=logger)
 
     def execute(self) -> int:
         action = self.args.service_action
@@ -462,6 +489,16 @@ class ServiceCommandHandler:
         return self.run_systemctl(action)
 
     def install(self) -> int:
+        user_config = self.config.load_user_config()
+        if not user_config.get("last_mount_point") or not user_config.get(
+            "last_browser"
+        ):
+            self.logger.error(
+                "Missing saved mount settings. Run: ytmusicfs mount "
+                "--mount-point ~/Music/ytmusic --browser brave"
+            )
+            return 1
+
         executable = shutil.which("ytmusicfs") or sys.argv[0]
         SYSTEMD_USER_DIR.mkdir(parents=True, exist_ok=True)
         SYSTEMD_SERVICE_FILE.write_text(
@@ -627,7 +664,9 @@ def main() -> int:
     )
 
     logs_parser = subparsers.add_parser("logs", help="Show log path or recent logs")
-    logs_parser.add_argument("--tail", type=int, help="Print the last N log lines")
+    logs_parser.add_argument(
+        "--tail", type=positive_int, help="Print the last N log lines"
+    )
     logs_parser.add_argument(
         "--debug", "-d", action="store_true", help="Enable debug logging"
     )
