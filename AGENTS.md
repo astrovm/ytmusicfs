@@ -60,15 +60,15 @@
 - Verbose tests: `pipx run --spec '.[dev]' pytest -v`
 - Focused tests: `pipx run --spec '.[dev]' pytest -k path_router -q`
 - Coverage: `pipx run --spec '.[dev]' pytest --cov=ytmusicfs`
-- Lint/format check: `pipx run --spec '.[dev]' black --check . && pipx run --spec '.[dev]' isort --check-only . && pipx run --spec '.[dev]' flake8 ytmusicfs tests`
-- Auto-format: `pipx run --spec '.[dev]' black . && pipx run --spec '.[dev]' isort .`
+- Lint/type/format check: `pipx run --spec '.[dev]' black --check . && pipx run --spec '.[dev]' ruff check . && pipx run --spec '.[dev]' mypy ytmusicfs`
+- Auto-format: `pipx run --spec '.[dev]' black . && pipx run --spec '.[dev]' ruff check --fix .`
 - Build wheel/sdist: `pipx run --spec build pyproject-build`
 
 ## Coding Style & Naming
 
 - Python 3.10+ project; prefer type hints and explicit return types.
 - Formatter: Black, line length 88.
-- Imports: Isort with `profile = black`.
+- Imports: Ruff import sorting (`I` rules), formatted with Black.
 - Indentation: 4 spaces.
 - Names: modules/functions `snake_case`, classes `PascalCase`, constants `UPPER_SNAKE_CASE`.
 - Use `logging` instead of prints. Follow `ytmusicfs/cli.py` logging setup.

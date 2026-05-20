@@ -36,7 +36,14 @@ dependencies = [
 ytmusicfs = "ytmusicfs.cli:main"
 
 [project.optional-dependencies]
-dev = ["build==1.5.0", "pytest", "pytest-cov", "black", "isort", "flake8"]
+dev = [
+  "build==1.5.0",
+  "pytest",
+  "pytest-cov",
+  "black==26.5.1",
+  "ruff==0.15.13",
+  "mypy==2.1.0",
+]
 
 [tool.setuptools]
 packages = ["ytmusicfs"]
@@ -45,6 +52,21 @@ packages = ["ytmusicfs"]
 line-length = 88
 target-version = ["py310"]
 
-[tool.isort]
-profile = "black"
-line_length = 88
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B904"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+check_untyped_defs = false
+warn_unused_ignores = true
+allow_untyped_globals = true
+disable_error_code = ["arg-type", "assignment", "attr-defined", "call-overload", "var-annotated"]

@@ -183,13 +183,13 @@ class FileHandler:
                 if attempt == retries - 1:
                     raise OSError(
                         errno.EIO, f"Failed to stream after {retries} attempts: {e}"
-                    )
+                    ) from e
                 # Exponential backoff before retry
                 time.sleep(2**attempt)
             except Exception as e:
                 # Non-request related exceptions
                 self.logger.error(f"Unexpected streaming error: {e}")
-                raise OSError(errno.EIO, f"Streaming error: {str(e)}")
+                raise OSError(errno.EIO, f"Streaming error: {str(e)}") from e
 
         # Should not reach here but just in case
         raise OSError(errno.EIO, "Failed to stream content after all retries")
@@ -364,7 +364,7 @@ class FileHandler:
                 if video_id in self.futures:
                     del self.futures[video_id]
 
-                raise OSError(errno.EIO, error_msg)
+                raise OSError(errno.EIO, error_msg) from e
 
         # If we are here, we need to stream directly from URL because:
         # 1. No cache file exists yet, or

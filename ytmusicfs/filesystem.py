@@ -618,7 +618,7 @@ class YouTubeMusicFS(Operations):
                 raise
             self.logger.error(f"Error in getattr for {path}: {e}")
             self.logger.error(traceback.format_exc())
-            raise FuseOSError(errno.ENOENT)
+            raise FuseOSError(errno.ENOENT) from e
 
     def open(self, path: str, flags: int) -> int:
         """Open file and return file handle.
@@ -660,7 +660,7 @@ class YouTubeMusicFS(Operations):
                     raise FuseOSError(errno.ENOENT)
             except Exception as e:
                 self.logger.error(f"Error extracting video ID for {path}: {e}")
-                raise FuseOSError(errno.ENOENT)
+                raise FuseOSError(errno.ENOENT) from e
 
             # Delegate to file handler
             return self.file_handler.open(path, video_id)
@@ -670,7 +670,7 @@ class YouTubeMusicFS(Operations):
                 raise
             self.logger.error(f"Error in open for {path}: {e}")
             self.logger.error(traceback.format_exc())
-            raise FuseOSError(errno.ENOENT)
+            raise FuseOSError(errno.ENOENT) from e
 
     def read(self, path: str, size: int, offset: int, fh: int) -> bytes:
         """Read data from file.
@@ -699,7 +699,7 @@ class YouTubeMusicFS(Operations):
                 raise
             self.logger.error(f"Error reading {path}: {e}")
             self.logger.error(traceback.format_exc())
-            raise FuseOSError(errno.EIO)
+            raise FuseOSError(errno.EIO) from e
 
     def _get_status_json(self) -> bytes:
         """Return lightweight filesystem status for mounted debug reads."""
