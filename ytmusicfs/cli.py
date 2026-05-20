@@ -14,7 +14,7 @@ from typing import Any, ClassVar
 from ytmusicfs import __version__
 from ytmusicfs.config import ConfigManager
 
-LOG_DIR = Path.home() / ".local" / "share" / "ytmusicfs" / "logs"
+LOG_DIR = Path.home() / ".cache" / "ytmusicfs" / "logs"
 LOG_FILE = LOG_DIR / "ytmusicfs.log"
 SYSTEMD_USER_DIR = Path.home() / ".config" / "systemd" / "user"
 SYSTEMD_SERVICE_FILE = SYSTEMD_USER_DIR / "ytmusicfs.service"

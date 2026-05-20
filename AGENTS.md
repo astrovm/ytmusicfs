@@ -153,7 +153,7 @@
 - Cache: `~/.cache/ytmusicfs`.
 - Saved mount defaults: `~/.config/ytmusicfs/config.json`.
 - Active mount state: `~/.cache/ytmusicfs/mount.json`.
-- Logs: `~/.local/share/ytmusicfs/logs`.
+- Logs: `~/.cache/ytmusicfs/logs`.
 - Use `--foreground` and `--debug` when diagnosing mount issues.
 - Environment variables are only for secrets and external credentials.
 - Prefer sane defaults, zero-config behavior, and easy maintenance.
