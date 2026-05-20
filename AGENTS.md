@@ -49,6 +49,13 @@
 - Debug mount with browser cookies: `ytmusicfs mount --mount-point ~/Music/ytmusic --browser brave --foreground --debug`
 - Unmount active mount: `ytmusicfs unmount`
 - Unmount explicit path: `ytmusicfs unmount --mount-point ~/Music/ytmusic`
+- Status: `ytmusicfs status`
+- Doctor: `ytmusicfs doctor`
+- Saved config: `ytmusicfs config show`, `ytmusicfs config set browser brave`, `ytmusicfs config set mount-point ~/Music/ytmusic`
+- Cache: `ytmusicfs cache stats`, `ytmusicfs cache clear`, `ytmusicfs refresh`
+- Logs: `ytmusicfs logs --tail 50`
+- Systemd user service: `ytmusicfs service install`, `ytmusicfs service start`, `ytmusicfs service stop`
+- Mounted debug status: `/.ytmusicfs/status.json`.
 - Tests: `pipx run --spec '.[dev]' pytest -q`
 - Verbose tests: `pipx run --spec '.[dev]' pytest -v`
 - Focused tests: `pipx run --spec '.[dev]' pytest -k path_router -q`

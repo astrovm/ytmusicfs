@@ -1,12 +1,21 @@
 import argparse
 import logging
+import sqlite3
 import subprocess
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
 
-from ytmusicfs.cli import MountCommandHandler, UnmountCommandHandler
+from ytmusicfs.cli import (
+    CacheCommandHandler,
+    ConfigCommandHandler,
+    MountCommandHandler,
+    MountInspector,
+    ServiceCommandHandler,
+    StatusCommandHandler,
+    UnmountCommandHandler,
+)
 from ytmusicfs.config import ConfigManager
 
 
@@ -34,8 +43,20 @@ def make_unmount_args(tmp_path, mount_point=None):
     )
 
 
+def make_command_args(tmp_path, **kwargs):
+    defaults = {
+        "cache_dir": str(tmp_path / "cache"),
+        "debug": False,
+    }
+    defaults.update(kwargs)
+    return argparse.Namespace(**defaults)
+
+
+@patch("ytmusicfs.cli.MountInspector.find_active_mount_point", return_value=None)
 @patch("ytmusicfs.cli.mount_filesystem")
-def test_mount_saves_last_settings_and_active_state(mock_mount, tmp_path):
+def test_mount_saves_last_settings_and_active_state(
+    mock_mount, mock_active_mount, tmp_path
+):
     mount_point = tmp_path / "music"
     args = make_mount_args(tmp_path, mount_point=str(mount_point), browser="brave")
 
@@ -54,8 +75,23 @@ def test_mount_saves_last_settings_and_active_state(mock_mount, tmp_path):
     )
 
 
+@patch("ytmusicfs.cli.MountInspector.find_active_mount_point")
 @patch("ytmusicfs.cli.mount_filesystem")
-def test_mount_reuses_saved_settings(mock_mount, tmp_path):
+def test_mount_refuses_when_already_mounted(mock_mount, mock_active_mount, tmp_path):
+    mount_point = tmp_path / "music"
+    active_mount = tmp_path / "active"
+    mock_active_mount.return_value = active_mount
+    args = make_mount_args(tmp_path, mount_point=str(mount_point), browser="brave")
+
+    result = MountCommandHandler(args, logging.getLogger("test")).execute()
+
+    assert result == 1
+    mock_mount.assert_not_called()
+
+
+@patch("ytmusicfs.cli.MountInspector.find_active_mount_point", return_value=None)
+@patch("ytmusicfs.cli.mount_filesystem")
+def test_mount_reuses_saved_settings(mock_mount, mock_active_mount, tmp_path):
     mount_point = tmp_path / "music"
     config = ConfigManager(cache_dir=str(tmp_path / "cache"))
     config.save_user_config(
@@ -87,8 +123,11 @@ def test_mount_without_settings_fails(tmp_path):
     logger.error.assert_called_once()
 
 
+@patch("ytmusicfs.cli.MountInspector.find_active_mount_point", return_value=None)
 @patch("ytmusicfs.cli.mount_filesystem", side_effect=RuntimeError("auth failed"))
-def test_mount_failure_does_not_save_last_settings(mock_mount, tmp_path):
+def test_mount_failure_does_not_save_last_settings(
+    mock_mount, mock_active_mount, tmp_path
+):
     mount_point = tmp_path / "music"
     args = make_mount_args(tmp_path, mount_point=str(mount_point), browser="brave")
 
@@ -167,6 +206,109 @@ def test_unmount_reports_fusermount_failure(
     ),
 )
 def test_find_active_mount_point_from_mountinfo(mock_read_text):
-    result = UnmountCommandHandler.find_active_mount_point()
+    result = MountInspector.find_active_mount_point()
 
     assert result == Path("/home/astro/Music/ytmusic")
+
+
+@patch("ytmusicfs.cli.MountInspector.find_active_mount_point", return_value=None)
+def test_status_clears_stale_mount_state(mock_active_mount, tmp_path):
+    config = ConfigManager(cache_dir=str(tmp_path / "cache"))
+    config.save_mount_state({"mount_point": str(tmp_path / "music")})
+    args = make_command_args(tmp_path)
+
+    result = StatusCommandHandler(args, logging.getLogger("test")).execute()
+
+    assert result == 0
+    assert config.load_mount_state() == {}
+
+
+def test_config_set_mount_point_and_browser(tmp_path):
+    mount_point = tmp_path / "music"
+    browser_args = make_command_args(
+        tmp_path,
+        config_action="set",
+        key="browser",
+        value="brave",
+    )
+    mount_args = make_command_args(
+        tmp_path,
+        config_action="set",
+        key="mount-point",
+        value=str(mount_point),
+    )
+
+    assert ConfigCommandHandler(browser_args, logging.getLogger("test")).execute() == 0
+    assert ConfigCommandHandler(mount_args, logging.getLogger("test")).execute() == 0
+
+    config = ConfigManager(cache_dir=str(tmp_path / "cache"))
+    assert config.load_user_config()["last_browser"] == "brave"
+    assert config.load_user_config()["last_mount_point"] == str(mount_point.resolve())
+
+
+@patch("ytmusicfs.cli.MountInspector.find_active_mount_point", return_value=None)
+def test_cache_clear_removes_sqlite_files(mock_active_mount, tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    for name in CacheCommandHandler.CACHE_FILES:
+        (cache_dir / name).write_text("cache", encoding="utf-8")
+    args = make_command_args(tmp_path, cache_action="clear")
+
+    result = CacheCommandHandler(args, logging.getLogger("test")).execute()
+
+    assert result == 0
+    assert not any(
+        (cache_dir / name).exists() for name in CacheCommandHandler.CACHE_FILES
+    )
+
+
+@patch("ytmusicfs.cli.MountInspector.find_active_mount_point")
+def test_cache_clear_refuses_while_mounted(mock_active_mount, tmp_path):
+    mock_active_mount.return_value = tmp_path / "music"
+    args = make_command_args(tmp_path, cache_action="clear")
+
+    result = CacheCommandHandler(args, logging.getLogger("test")).execute()
+
+    assert result == 1
+
+
+def test_cache_stats_reads_database_counts(tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    db_path = cache_dir / "cache.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE cache_entries (key TEXT)")
+        conn.execute("INSERT INTO cache_entries VALUES ('one')")
+
+    stats = CacheCommandHandler.read_database_stats(db_path)
+
+    assert stats["cache_entries"] == 1
+
+
+@patch("ytmusicfs.cli.subprocess.run")
+@patch("ytmusicfs.cli.shutil.which", return_value="/usr/bin/ytmusicfs")
+def test_service_install_writes_user_unit(mock_which, mock_run, tmp_path, monkeypatch):
+    service_file = tmp_path / "systemd" / "ytmusicfs.service"
+    monkeypatch.setattr("ytmusicfs.cli.SYSTEMD_USER_DIR", service_file.parent)
+    monkeypatch.setattr("ytmusicfs.cli.SYSTEMD_SERVICE_FILE", service_file)
+    args = argparse.Namespace(service_action="install", debug=False)
+
+    result = ServiceCommandHandler(args, logging.getLogger("test")).execute()
+
+    assert result == 0
+    assert "ExecStart=/usr/bin/ytmusicfs mount --foreground" in service_file.read_text(
+        encoding="utf-8"
+    )
+    assert mock_run.call_count == 2
+    mock_run.assert_any_call(
+        ["systemctl", "--user", "daemon-reload"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    mock_run.assert_any_call(
+        ["systemctl", "--user", "enable", "ytmusicfs.service"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )

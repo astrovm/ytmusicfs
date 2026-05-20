@@ -40,6 +40,7 @@ class TestYouTubeMusicFS(unittest.TestCase):
             self.mock_client = mock_client.return_value
             self.mock_processor = mock_processor.return_value
             self.mock_cache = mock_cache.return_value
+            self.mock_cache.cache_dir = "/tmp/cache_test"
             self.mock_fetcher = mock_fetcher.return_value
             self.mock_router = mock_router.return_value
             self.mock_file_handler = mock_file_handler.return_value
@@ -76,12 +77,23 @@ class TestYouTubeMusicFS(unittest.TestCase):
         result = self.fs.readdir("/", None)
 
         # Verify expected results
-        self.assertEqual(len(result), 5)  # ".", "..", and 3 default directories
+        self.assertEqual(len(result), 6)  # ".", "..", 3 library dirs, metadata dir
         self.assertIn(".", result)
         self.assertIn("..", result)
         self.assertIn("playlists", result)
         self.assertIn("liked_songs", result)
         self.assertIn("albums", result)
+        self.assertIn(".ytmusicfs", result)
+
+    def test_metadata_status_file(self):
+        """Test reading the virtual status file."""
+        result = self.fs.readdir("/.ytmusicfs", None)
+        attrs = self.fs.getattr("/.ytmusicfs/status.json")
+        content = self.fs.read("/.ytmusicfs/status.json", 4096, 0, 0)
+
+        self.assertEqual(result, [".", "..", "status.json"])
+        self.assertEqual(attrs["st_mode"], stat.S_IFREG | 0o444)
+        self.assertIn(b'"browser": "brave"', content)
 
     def test_readdir_playlists(self):
         """Test reading the contents of the playlists directory."""

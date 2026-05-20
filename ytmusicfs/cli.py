@@ -4,13 +4,20 @@ import argparse
 import logging
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from ytmusicfs import __version__
 from ytmusicfs.config import ConfigManager
+
+LOG_DIR = Path.home() / ".local" / "share" / "ytmusicfs" / "logs"
+LOG_FILE = LOG_DIR / "ytmusicfs.log"
+SYSTEMD_USER_DIR = Path.home() / ".config" / "systemd" / "user"
+SYSTEMD_SERVICE_FILE = SYSTEMD_USER_DIR / "ytmusicfs.service"
+JS_RUNTIMES = ("node", "bun", "deno", "quickjs")
 
 
 def setup_logging(args: argparse.Namespace) -> logging.Logger:
@@ -28,10 +35,8 @@ def setup_logging(args: argparse.Namespace) -> logging.Logger:
     handlers = [logging.StreamHandler(sys.stdout)]
     foreground = getattr(args, "foreground", False)
     if not foreground:
-        log_path = Path.home() / ".local" / "share" / "ytmusicfs" / "logs"
-        log_path.mkdir(parents=True, exist_ok=True)
-        log_file = log_path / "ytmusicfs.log"
-        handlers.append(logging.FileHandler(str(log_file)))
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(str(LOG_FILE)))
 
     logging.basicConfig(level=log_level, format=log_format, handlers=handlers)
 
@@ -103,6 +108,22 @@ class MountCommandHandler:
         mount_point, browser = settings
         mount_point.mkdir(parents=True, exist_ok=True)
         mount_point = mount_point.resolve()
+
+        active_mount = MountInspector.find_active_mount_point()
+        if active_mount:
+            self.config.save_mount_state(
+                {
+                    "mount_point": str(active_mount),
+                    "browser": browser,
+                    "pid": os.getpid(),
+                }
+            )
+            self.logger.error(
+                f"YTMusicFS is already mounted at {active_mount}. "
+                "Run: ytmusicfs unmount"
+            )
+            return 1
+
         self.config.save_mount_state(
             {
                 "mount_point": str(mount_point),
@@ -154,7 +175,7 @@ class UnmountCommandHandler:
         if mount_point:
             return Path(mount_point).expanduser().resolve()
 
-        detected_mount_point = self.find_active_mount_point()
+        detected_mount_point = MountInspector.find_active_mount_point()
         if detected_mount_point:
             return detected_mount_point
 
@@ -199,9 +220,12 @@ class UnmountCommandHandler:
         """Find the FUSE unmount helper."""
         return shutil.which("fusermount") or shutil.which("fusermount3")
 
+
+class MountInspector:
+    """Read ytmusicfs mount state from the kernel mount table."""
+
     @staticmethod
     def find_active_mount_point() -> Optional[Path]:
-        """Find an active ytmusicfs mount from the kernel mount table."""
         mountinfo = Path("/proc/self/mountinfo")
         try:
             lines = mountinfo.read_text(encoding="utf-8").splitlines()
@@ -221,6 +245,261 @@ class UnmountCommandHandler:
                 return Path(mount_point)
 
         return None
+
+
+class StatusCommandHandler:
+    """Show saved settings and active mount state."""
+
+    def __init__(self, args: argparse.Namespace, logger: logging.Logger):
+        self.args = args
+        self.logger = logger
+        self.config = ConfigManager(cache_dir=args.cache_dir, logger=logger)
+
+    def execute(self) -> int:
+        user_config = self.config.load_user_config()
+        mount_state = self.config.load_mount_state()
+        active_mount = MountInspector.find_active_mount_point()
+        saved_mount = mount_state.get("mount_point")
+
+        self.logger.info(f"Version: {__version__}")
+        self.logger.info(f"Cache dir: {self.config.cache_dir}")
+        self.logger.info(f"Config file: {self.config.config_file}")
+        self.logger.info(
+            f"Saved mount point: {user_config.get('last_mount_point', 'not set')}"
+        )
+        self.logger.info(f"Saved browser: {user_config.get('last_browser', 'not set')}")
+
+        if active_mount:
+            self.logger.info(f"Active mount: {active_mount}")
+        elif saved_mount:
+            self.config.clear_mount_state()
+            self.logger.info(f"Active mount: none (cleared stale {saved_mount})")
+        else:
+            self.logger.info("Active mount: none")
+
+        return 0
+
+
+class ConfigCommandHandler:
+    """Show and update saved mount settings."""
+
+    VALID_KEYS = {
+        "browser": "last_browser",
+        "mount-point": "last_mount_point",
+    }
+
+    def __init__(self, args: argparse.Namespace, logger: logging.Logger):
+        self.args = args
+        self.logger = logger
+        self.config = ConfigManager(cache_dir=args.cache_dir, logger=logger)
+
+    def execute(self) -> int:
+        if self.args.config_action == "show":
+            return self.show()
+        return self.set_value()
+
+    def show(self) -> int:
+        user_config = self.config.load_user_config()
+        self.logger.info(
+            f"mount-point: {user_config.get('last_mount_point', 'not set')}"
+        )
+        self.logger.info(f"browser: {user_config.get('last_browser', 'not set')}")
+        self.logger.info(f"config-file: {self.config.config_file}")
+        return 0
+
+    def set_value(self) -> int:
+        key = self.VALID_KEYS[self.args.key]
+        value = self.args.value
+        if self.args.key == "mount-point":
+            value = str(Path(value).expanduser().resolve())
+
+        user_config = self.config.load_user_config()
+        user_config[key] = value
+        self.config.save_user_config(user_config)
+        self.logger.info(f"Saved {self.args.key}: {value}")
+        return 0
+
+
+class DoctorCommandHandler:
+    """Run local environment checks."""
+
+    def __init__(self, args: argparse.Namespace, logger: logging.Logger):
+        self.args = args
+        self.logger = logger
+        self.config = ConfigManager(cache_dir=args.cache_dir, logger=logger)
+
+    def execute(self) -> int:
+        checks = [
+            ("fusermount", self.has_unmount_helper()),
+            ("js runtime", any(shutil.which(runtime) for runtime in JS_RUNTIMES)),
+            ("cache dir writable", os.access(self.config.cache_dir, os.W_OK)),
+        ]
+        browser = self.config.load_user_config().get("last_browser")
+
+        failed = False
+        for name, ok in checks:
+            self.logger.info(f"{name}: {'ok' if ok else 'missing'}")
+            failed = failed or not ok
+
+        if browser:
+            self.logger.info(f"browser: {browser}")
+            self.logger.info("auth: run a mount to verify YouTube Music cookies")
+        else:
+            self.logger.info("browser: not set")
+
+        return 1 if failed else 0
+
+    @staticmethod
+    def has_unmount_helper() -> bool:
+        return UnmountCommandHandler.find_unmount_command() is not None
+
+
+class CacheCommandHandler:
+    """Inspect or clear persistent cache files."""
+
+    CACHE_FILES = ("cache.db", "cache.db-wal", "cache.db-shm")
+
+    def __init__(self, args: argparse.Namespace, logger: logging.Logger):
+        self.args = args
+        self.logger = logger
+        self.config = ConfigManager(cache_dir=args.cache_dir, logger=logger)
+
+    def execute(self) -> int:
+        if self.args.cache_action in {"clear", "refresh"}:
+            return self.clear()
+        return self.stats()
+
+    def clear(self) -> int:
+        active_mount = MountInspector.find_active_mount_point()
+        if active_mount:
+            self.logger.error(
+                f"Cannot clear cache while mounted at {active_mount}. "
+                "Run: ytmusicfs unmount"
+            )
+            return 1
+
+        removed = 0
+        for name in self.CACHE_FILES:
+            path = self.config.cache_dir / name
+            if path.exists():
+                path.unlink()
+                removed += 1
+
+        action = "refresh" if self.args.cache_action == "refresh" else "clear"
+        self.logger.info(
+            f"Cache {action}: removed {removed} files from {self.config.cache_dir}"
+        )
+        return 0
+
+    def stats(self) -> int:
+        db_path = self.config.cache_dir / "cache.db"
+        if not db_path.exists():
+            self.logger.info(f"Cache database: missing ({db_path})")
+            return 0
+
+        stats = self.read_database_stats(db_path)
+        self.logger.info(f"Cache database: {db_path}")
+        self.logger.info(f"Size: {db_path.stat().st_size} bytes")
+        for key, value in stats.items():
+            self.logger.info(f"{key}: {value}")
+        return 0
+
+    @staticmethod
+    def read_database_stats(db_path: Path) -> dict[str, Any]:
+        with sqlite3.connect(str(db_path)) as conn:
+            cursor = conn.cursor()
+            stats = {}
+            for table in ("cache_entries", "hash_mappings", "refresh_tracker"):
+                cursor.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+                    (table,),
+                )
+                if cursor.fetchone():
+                    cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                    stats[table] = cursor.fetchone()[0]
+            return stats
+
+
+class LogsCommandHandler:
+    """Print the ytmusicfs log path or tail."""
+
+    def __init__(self, args: argparse.Namespace, logger: logging.Logger):
+        self.args = args
+        self.logger = logger
+
+    def execute(self) -> int:
+        if not LOG_FILE.exists():
+            self.logger.error(f"No log file found at {LOG_FILE}")
+            return 1
+
+        if self.args.tail is None:
+            self.logger.info(str(LOG_FILE))
+            return 0
+
+        lines = LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
+        for line in lines[-self.args.tail :]:
+            print(line)
+        return 0
+
+
+class ServiceCommandHandler:
+    """Manage a simple systemd user service."""
+
+    def __init__(self, args: argparse.Namespace, logger: logging.Logger):
+        self.args = args
+        self.logger = logger
+
+    def execute(self) -> int:
+        action = self.args.service_action
+        if action == "install":
+            return self.install()
+        return self.run_systemctl(action)
+
+    def install(self) -> int:
+        executable = shutil.which("ytmusicfs") or sys.argv[0]
+        SYSTEMD_USER_DIR.mkdir(parents=True, exist_ok=True)
+        SYSTEMD_SERVICE_FILE.write_text(
+            "\n".join(
+                [
+                    "[Unit]",
+                    "Description=YTMusicFS mount",
+                    "",
+                    "[Service]",
+                    "Type=simple",
+                    f"ExecStart={executable} mount --foreground",
+                    f"ExecStop={executable} unmount",
+                    "Restart=on-failure",
+                    "",
+                    "[Install]",
+                    "WantedBy=default.target",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        self.logger.info(f"Installed {SYSTEMD_SERVICE_FILE}")
+        if self.run_systemctl("daemon-reload") != 0:
+            return 1
+        return self.run_systemctl("enable")
+
+    def run_systemctl(self, action: str) -> int:
+        command = ["systemctl", "--user", action, "ytmusicfs.service"]
+        if action == "daemon-reload":
+            command = ["systemctl", "--user", "daemon-reload"]
+
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        except FileNotFoundError:
+            self.logger.error("Missing systemctl in PATH.")
+            return 1
+        except subprocess.CalledProcessError as error:
+            stderr = error.stderr.strip()
+            message = stderr or f"exit code {error.returncode}"
+            self.logger.error(f"systemctl {action} failed: {message}")
+            return 1
+
+        self.logger.info(f"systemctl {action}: ok")
+        return 0
 
 
 def main() -> int:
@@ -268,6 +547,112 @@ def main() -> int:
     unmount_parser.set_defaults(
         func=lambda args: UnmountCommandHandler(args, setup_logging(args)).execute()
     )
+
+    status_parser = subparsers.add_parser("status", help="Show YTMusicFS status")
+    status_parser.add_argument("--cache-dir", "-c", help="Cache directory")
+    status_parser.add_argument(
+        "--debug", "-d", action="store_true", help="Enable debug logging"
+    )
+    status_parser.set_defaults(
+        func=lambda args: StatusCommandHandler(args, setup_logging(args)).execute()
+    )
+
+    config_parser = subparsers.add_parser("config", help="Show or update saved config")
+    config_parser.add_argument("--cache-dir", "-c", help="Cache directory")
+    config_parser.add_argument(
+        "--debug", "-d", action="store_true", help="Enable debug logging"
+    )
+    config_subparsers = config_parser.add_subparsers(
+        dest="config_action", required=True
+    )
+    config_show_parser = config_subparsers.add_parser("show", help="Show saved config")
+    config_show_parser.set_defaults(
+        func=lambda args: ConfigCommandHandler(args, setup_logging(args)).execute()
+    )
+    config_set_parser = config_subparsers.add_parser("set", help="Set saved config")
+    config_set_parser.add_argument(
+        "key", choices=sorted(ConfigCommandHandler.VALID_KEYS)
+    )
+    config_set_parser.add_argument("value")
+    config_set_parser.set_defaults(
+        func=lambda args: ConfigCommandHandler(args, setup_logging(args)).execute()
+    )
+
+    doctor_parser = subparsers.add_parser("doctor", help="Check local setup")
+    doctor_parser.add_argument("--cache-dir", "-c", help="Cache directory")
+    doctor_parser.add_argument(
+        "--debug", "-d", action="store_true", help="Enable debug logging"
+    )
+    doctor_parser.set_defaults(
+        func=lambda args: DoctorCommandHandler(args, setup_logging(args)).execute()
+    )
+
+    cache_parser = subparsers.add_parser("cache", help="Inspect or clear cache")
+    cache_parser.add_argument("--cache-dir", "-c", help="Cache directory")
+    cache_parser.add_argument(
+        "--debug", "-d", action="store_true", help="Enable debug logging"
+    )
+    cache_subparsers = cache_parser.add_subparsers(dest="cache_action", required=True)
+    cache_stats_parser = cache_subparsers.add_parser("stats", help="Show cache stats")
+    cache_stats_parser.set_defaults(
+        func=lambda args: CacheCommandHandler(args, setup_logging(args)).execute()
+    )
+    cache_clear_parser = cache_subparsers.add_parser("clear", help="Clear cache files")
+    cache_clear_parser.set_defaults(
+        func=lambda args: CacheCommandHandler(args, setup_logging(args)).execute()
+    )
+    cache_refresh_parser = cache_subparsers.add_parser(
+        "refresh", help="Clear cache so the next browse fetches fresh data"
+    )
+    cache_refresh_parser.set_defaults(
+        func=lambda args: CacheCommandHandler(args, setup_logging(args)).execute()
+    )
+
+    refresh_parser = subparsers.add_parser(
+        "refresh", help="Clear cache so the next browse fetches fresh data"
+    )
+    refresh_parser.add_argument("--cache-dir", "-c", help="Cache directory")
+    refresh_parser.add_argument(
+        "--debug", "-d", action="store_true", help="Enable debug logging"
+    )
+    refresh_parser.set_defaults(
+        cache_action="refresh",
+        func=lambda args: CacheCommandHandler(args, setup_logging(args)).execute(),
+    )
+
+    logs_parser = subparsers.add_parser("logs", help="Show log path or recent logs")
+    logs_parser.add_argument("--tail", type=int, help="Print the last N log lines")
+    logs_parser.add_argument(
+        "--debug", "-d", action="store_true", help="Enable debug logging"
+    )
+    logs_parser.set_defaults(
+        func=lambda args: LogsCommandHandler(args, setup_logging(args)).execute()
+    )
+
+    service_parser = subparsers.add_parser(
+        "service", help="Manage the systemd user service"
+    )
+    service_parser.add_argument(
+        "--debug", "-d", action="store_true", help="Enable debug logging"
+    )
+    service_subparsers = service_parser.add_subparsers(
+        dest="service_action", required=True
+    )
+    service_help = {
+        "install": "Install and enable the user service",
+        "start": "Start the user service",
+        "stop": "Stop the user service",
+        "restart": "Restart the user service",
+        "status": "Show user service status",
+    }
+    for action, help_text in service_help.items():
+        service_action_parser = service_subparsers.add_parser(
+            action,
+            help=help_text,
+        )
+        service_action_parser.set_defaults(
+            func=lambda args: ServiceCommandHandler(args, setup_logging(args)).execute()
+        )
 
     args = parser.parse_args()
     return args.func(args)

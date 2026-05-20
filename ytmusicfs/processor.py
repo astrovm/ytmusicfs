@@ -255,6 +255,7 @@ class TrackProcessor:
         processed = []
         # Collect durations for batch processing
         durations_batch = {}
+        filename_counts = {}
 
         for track in tracks:
             # Extract track info
@@ -276,12 +277,24 @@ class TrackProcessor:
             filename = self.sanitize_filename(
                 f"{track_info['artist']} - {track_info['title']}.m4a"
             )
+            filename_counts[filename] = filename_counts.get(filename, 0) + 1
 
             if add_filename:
                 processed_track = dict(track)
                 processed_track.update(track_info)
                 processed_track["filename"] = filename
                 processed.append(processed_track)
+
+        duplicate_indexes = {}
+        for track in processed:
+            filename = track["filename"]
+            if filename_counts[filename] < 2:
+                continue
+
+            duplicate_indexes[filename] = duplicate_indexes.get(filename, 0) + 1
+            suffix = track.get("videoId") or str(duplicate_indexes[filename])
+            stem, extension = filename.rsplit(".", 1)
+            track["filename"] = f"{stem} [{suffix}].{extension}"
 
         # Batch update all durations at once
         if durations_batch and self.cache_manager:

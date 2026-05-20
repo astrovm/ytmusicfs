@@ -92,6 +92,13 @@ Available commands:
 
 - `mount`: Mount YouTube Music as a filesystem
 - `unmount`: Unmount the active YouTube Music filesystem
+- `status`: Show saved settings and active mount state
+- `doctor`: Check local dependencies
+- `config`: Show or update saved mount settings
+- `cache`: Inspect or clear the persistent cache
+- `refresh`: Clear cache so the next browse fetches fresh data
+- `logs`: Show the log path or recent log lines
+- `service`: Manage an optional systemd user service
 
 ### Mount the Filesystem
 
@@ -157,11 +164,58 @@ To unmount a specific path:
 ytmusicfs unmount --mount-point ~/Music/ytmusic
 ```
 
+### Status and Config
+
+Inspect the current setup:
+
+```bash
+ytmusicfs status
+ytmusicfs config show
+ytmusicfs doctor
+```
+
+Set saved defaults without mounting:
+
+```bash
+ytmusicfs config set mount-point ~/Music/ytmusic
+ytmusicfs config set browser brave
+```
+
+### Cache, Refresh, and Logs
+
+Inspect or clear the local cache:
+
+```bash
+ytmusicfs cache stats
+ytmusicfs cache clear
+ytmusicfs refresh
+```
+
+Show logs:
+
+```bash
+ytmusicfs logs
+ytmusicfs logs --tail 50
+```
+
+### Systemd User Service
+
+Install and manage an optional user service. It uses the saved mount settings,
+so run one successful `ytmusicfs mount --mount-point ... --browser ...` first.
+
+```bash
+ytmusicfs service install
+ytmusicfs service start
+ytmusicfs service stop
+ytmusicfs service status
+```
+
 ## Filesystem Structure
 
 - `/playlists/` - Your YouTube Music playlists
 - `/liked_songs/` - Your liked songs
 - `/albums/` - Albums in your library
+- `/.ytmusicfs/status.json` - Lightweight mount status for debugging
 
 ## Command Line Options
 
@@ -199,6 +253,20 @@ Options:
   --cache-dir, -c CACHE_DIR
                         Cache directory
   --debug, -d           Enable debug logging
+```
+
+### Other Commands
+
+```
+ytmusicfs status
+ytmusicfs doctor
+ytmusicfs config show
+ytmusicfs config set {browser,mount-point} VALUE
+ytmusicfs cache stats
+ytmusicfs cache clear
+ytmusicfs refresh [--cache-dir CACHE_DIR] [--debug]
+ytmusicfs logs [--tail N] [--debug]
+ytmusicfs service {install,start,stop,restart,status} [--debug]
 ```
 
 ## Limitations

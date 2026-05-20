@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import errno
+import json
 import logging
 import os
 import stat
@@ -10,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from fuse import FUSE, FuseOSError, Operations
 
+from ytmusicfs import __version__
 from ytmusicfs.auth_adapter import YTMusicAuthAdapter
 from ytmusicfs.cache import CacheManager
 from ytmusicfs.client import YouTubeMusicClient
@@ -24,6 +26,9 @@ from ytmusicfs.yt_dlp_utils import YTDLPUtils
 
 class YouTubeMusicFS(Operations):
     """YouTube Music FUSE filesystem implementation."""
+
+    METADATA_DIR = "/.ytmusicfs"
+    STATUS_FILE = "/.ytmusicfs/status.json"
 
     def __init__(
         self,
@@ -279,7 +284,10 @@ class YouTubeMusicFS(Operations):
 
         # Priority 1: Check fixed paths directly
         if path == "/":
-            return [".", "..", "playlists", "liked_songs", "albums"]
+            return [".", "..", "playlists", "liked_songs", "albums", ".ytmusicfs"]
+
+        if path == self.METADATA_DIR:
+            return [".", "..", "status.json"]
 
         if path in ["/playlists", "/albums", "/liked_songs"]:
             # Make a direct call to the appropriate content function
@@ -460,6 +468,31 @@ class YouTubeMusicFS(Operations):
                 self.last_access_results[operation_key] = attrs
             return attrs
 
+        if path == self.METADATA_DIR:
+            attrs.update(
+                {
+                    "st_mode": stat.S_IFDIR | 0o555,
+                    "st_nlink": 2,
+                    "st_size": 4096,
+                }
+            )
+            with self.last_access_lock:
+                self.last_access_results[operation_key] = attrs
+            return attrs
+
+        if path == self.STATUS_FILE:
+            status = self._get_status_json()
+            attrs.update(
+                {
+                    "st_mode": stat.S_IFREG | 0o444,
+                    "st_nlink": 1,
+                    "st_size": len(status),
+                }
+            )
+            with self.last_access_lock:
+                self.last_access_results[operation_key] = attrs
+            return attrs
+
         # CASE 2: Top-level directories
         if path in ["/playlists", "/albums", "/liked_songs"]:
             attrs.update(
@@ -600,6 +633,9 @@ class YouTubeMusicFS(Operations):
         try:
             self.logger.debug(f"open: {path} (flags={flags})")
 
+            if path == self.STATUS_FILE:
+                return 0
+
             # Check entry type from cache
             entry_type = self.cache.get_entry_type(path)
 
@@ -651,6 +687,10 @@ class YouTubeMusicFS(Operations):
         try:
             self.logger.debug(f"read: {path} (size={size}, offset={offset}, fh={fh})")
 
+            if path == self.STATUS_FILE:
+                data = self._get_status_json()
+                return data[offset : offset + size]
+
             # Delegate to file handler
             return self.file_handler.read(path, size, offset, fh)
 
@@ -660,6 +700,16 @@ class YouTubeMusicFS(Operations):
             self.logger.error(f"Error reading {path}: {e}")
             self.logger.error(traceback.format_exc())
             raise FuseOSError(errno.EIO)
+
+    def _get_status_json(self) -> bytes:
+        """Return lightweight filesystem status for mounted debug reads."""
+        payload = {
+            "version": __version__,
+            "browser": self.browser,
+            "cache_dir": str(self.cache.cache_dir),
+            "generated_at": int(time.time()),
+        }
+        return (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
 
     def release(self, path: str, fh: int) -> int:
         """Close the file.
