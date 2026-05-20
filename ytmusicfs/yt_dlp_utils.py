@@ -185,7 +185,7 @@ class YTDLPUtils:
             "quiet": True,
             "no_warnings": True,
             "ignoreerrors": True,
-            "playlistend": limit,
+            "playlistitems": f"1-{limit}",
             "extractor_args": {"youtubetab": {"skip": ["authcheck"]}},
         }
         self._add_cookie_options(ydl_opts, browser)
@@ -201,6 +201,13 @@ class YTDLPUtils:
                     return []
 
                 tracks = result.get("entries", [])[:limit]
+                playlist_count = result.get("playlist_count")
+                if playlist_count and len(tracks) < playlist_count * 0.8:
+                    self.logger.warning(
+                        f"Playlist {playlist_id} returned {len(tracks)} of "
+                        f"{playlist_count} tracks. YouTube rate limiting may "
+                        "have reduced the result."
+                    )
                 self.logger.debug(
                     f"Found {len(tracks)} tracks from {'album' if is_album else 'playlist'}"
                 )

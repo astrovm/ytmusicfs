@@ -332,7 +332,10 @@ class TestContentFetcher(unittest.TestCase):
         }
         self.cache.get_unavailable_video_ids.return_value = {"bad"}
 
-        result = self.fetcher.readdir_playlist_by_type("liked_songs", "/liked_songs")
+        # Use "playlist" type because cached listings are still served for
+        # playlist/album roots; /liked_songs bypasses the stale listing cache
+        # and goes through refresh_content instead.
+        result = self.fetcher.readdir_playlist_by_type("playlist", "/playlists")
 
         self.assertEqual(result, [".", "..", "good.m4a"])
         self.cache.is_track_unavailable.assert_not_called()

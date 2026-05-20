@@ -190,7 +190,9 @@ class ContentFetcher:
         # CONSISTENT CACHE KEY: Always use path_processed regardless of playlist type
         cache_key = f"{path}_processed"
         if not playlist_id:
-            existing_tracks = self.cache.get(cache_key) or []
+            existing_tracks = self.cache.get(cache_key)
+            if not isinstance(existing_tracks, list):
+                existing_tracks = []
             if existing_tracks:
                 self.logger.warning("Missing playlist ID for %s, using cache", path)
                 self._cache_directory_listing_with_attrs(path, existing_tracks)
@@ -228,7 +230,10 @@ class ContentFetcher:
 
         cache_key = f"{directory_path}_listing"
         cached_listing = self.cache.get_directory_listing_with_attrs(directory_path)
-        if cached_listing:
+        # Only serve cached directory listing for playlist/album roots.
+        # /liked_songs lists tracks directly; its content cache (1-hour) must
+        # drive refreshes, not the directory-listing cache (30-day).
+        if cached_listing and playlist_type in ("playlist", "album"):
             self.logger.debug(f"Instant cache hit for {directory_path}")
             return [".", "..", *self._filter_unavailable_listing(cached_listing)]
 
@@ -350,7 +355,9 @@ class ContentFetcher:
         needs_refresh = force_refresh or self.check_refresh_needed(cache_key)
 
         # Get existing cached tracks
-        existing_tracks = self.cache.get(cache_key) or []
+        existing_tracks = self.cache.get(cache_key)
+        if not isinstance(existing_tracks, list):
+            existing_tracks = []
 
         # If no refresh needed and we have data, use it
         if not needs_refresh and existing_tracks:
@@ -432,6 +439,21 @@ class ContentFetcher:
                 processed_track["filename"] = filename
                 processed_track["is_directory"] = False
                 new_tracks.append(processed_track)
+
+            # If the new fetch is much smaller than our existing cache,
+            # YouTube rate limiting likely truncated the result. Keep
+            # the existing data and mark stale so we retry next hour.
+            if (
+                not force_refresh
+                and existing_tracks
+                and len(new_tracks) < len(existing_tracks) * 0.8
+            ):
+                self.logger.warning(
+                    f"Partial fetch returned {len(new_tracks)} tracks "
+                    f"vs {len(existing_tracks)} cached. Keeping cached data."
+                )
+                self.cache.set_refresh_metadata(cache_key, time.time(), "stale")
+                return existing_tracks
 
             # Update durations cache
             if durations_batch:
