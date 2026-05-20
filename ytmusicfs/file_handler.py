@@ -103,13 +103,13 @@ class FileHandler:
         """
         self.logger.debug(f"Opening {path} with video_id {video_id}")
 
-        unavailable = self.cache.get_unavailable_track(video_id)
-        if unavailable:
-            reason = unavailable.get("reason", "Track unavailable")
-            raise OSError(errno.ENOENT, reason)
-
         cache_path = self.cache_dir / "audio" / f"{video_id}.m4a"
         cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+        unavailable = self.cache.get_unavailable_track(video_id)
+        if unavailable and not self._check_cached_audio(video_id):
+            reason = unavailable.get("reason", "Track unavailable")
+            raise OSError(errno.ENOENT, reason)
 
         with self.file_handle_lock:
             fh = self.next_fh
@@ -226,11 +226,6 @@ class FileHandler:
         cache_path = Path(file_info["cache_path"])
         video_id = file_info["video_id"]
 
-        unavailable = self.cache.get_unavailable_track(video_id)
-        if unavailable:
-            reason = unavailable.get("reason", "Track unavailable")
-            raise OSError(errno.ENOENT, reason)
-
         # If there was an error, raise it
         if file_info["status"] == "error":
             error_msg = file_info.get("error", "Unknown error")
@@ -267,6 +262,11 @@ class FileHandler:
                 with cache_path.open("rb") as f:
                     f.seek(offset)
                     return f.read(size)
+
+            unavailable = self.cache.get_unavailable_track(video_id)
+            if unavailable:
+                reason = unavailable.get("reason", "Track unavailable")
+                raise OSError(errno.ENOENT, reason)
 
             # Otherwise, proceed with fetching the stream URL
             self.logger.debug(f"Fetching stream URL on-demand for {video_id}")

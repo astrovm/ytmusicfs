@@ -206,10 +206,11 @@ class YouTubeMusicFS(Operations):
         now = time.time()
         listing_with_attrs = {}
         valid_filenames = set()
+        unavailable_ids = self.cache.get_unavailable_video_ids()
 
         for track in processed_tracks:
             video_id = track.get("videoId")
-            if video_id and self.cache.is_track_unavailable(video_id):
+            if video_id and video_id in unavailable_ids:
                 self.logger.debug("Skipping unavailable track in listing: %s", video_id)
                 continue
 
@@ -717,11 +718,11 @@ class YouTubeMusicFS(Operations):
     def _filter_unavailable_listing(
         self, listing: Dict[str, Dict[str, Any]]
     ) -> Dict[str, Dict[str, Any]]:
+        unavailable_ids = self.cache.get_unavailable_video_ids()
         return {
             filename: attrs
             for filename, attrs in listing.items()
-            if not attrs.get("videoId")
-            or not self.cache.is_track_unavailable(attrs["videoId"])
+            if not attrs.get("videoId") or attrs["videoId"] not in unavailable_ids
         }
 
     def _log_read_failure(self, path: str, error: OSError) -> None:

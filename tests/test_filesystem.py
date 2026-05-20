@@ -42,6 +42,7 @@ class TestYouTubeMusicFS(unittest.TestCase):
             self.mock_cache = mock_cache.return_value
             self.mock_cache.cache_dir = "/tmp/cache_test"
             self.mock_cache.is_track_unavailable.return_value = False
+            self.mock_cache.get_unavailable_video_ids.return_value = set()
             self.mock_fetcher = mock_fetcher.return_value
             self.mock_router = mock_router.return_value
             self.mock_file_handler = mock_file_handler.return_value
@@ -307,13 +308,12 @@ class TestYouTubeMusicFS(unittest.TestCase):
             "good.m4a": {"videoId": "good"},
             "bad.m4a": {"videoId": "bad"},
         }
-        self.mock_cache.is_track_unavailable.side_effect = lambda video_id: (
-            video_id == "bad"
-        )
+        self.mock_cache.get_unavailable_video_ids.return_value = {"bad"}
 
         result = self.fs.readdir(directory, None)
 
         self.assertEqual(result, [".", "..", "good.m4a"])
+        self.mock_cache.is_track_unavailable.assert_not_called()
 
     def test_release_file(self):
         """Test releasing (closing) a file."""

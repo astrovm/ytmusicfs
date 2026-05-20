@@ -172,6 +172,21 @@ class TestFileHandler(unittest.TestCase):
 
         self.assertEqual(context.exception.errno, errno.ENOENT)
 
+    def test_open_allows_unavailable_video_when_audio_is_cached(self):
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "OFuzv2fm2PY"
+        self.cache.get_unavailable_track.return_value = {
+            "videoId": video_id,
+            "path": path,
+            "reason": "Video unavailable",
+            "timestamp": time.time(),
+        }
+        self.file_handler._check_cached_audio.return_value = True
+
+        fh = self.file_handler.open(path, video_id)
+
+        self.assertEqual(self.file_handler.open_files[fh]["stream_url"], "cached")
+
     @patch("ytmusicfs.file_handler.requests.get")
     def test_read_file(self, mock_requests_get):
         """Test reading content from a file."""

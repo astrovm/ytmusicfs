@@ -121,6 +121,7 @@ class TestCacheManager(unittest.TestCase):
         self.assertEqual(key, "unavailable:abc123")
         self.assertEqual(value["videoId"], "abc123")
         self.assertTrue(self.cache.is_track_unavailable("abc123"))
+        self.assertEqual(self.cache.get_unavailable_video_ids(), {"abc123"})
 
     def test_set_and_get(self):
         """Test setting and getting a value in the cache."""

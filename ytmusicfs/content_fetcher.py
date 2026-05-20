@@ -271,16 +271,16 @@ class ContentFetcher:
     def _filter_unavailable_listing(
         self, listing: Dict[str, Dict[str, Any]]
     ) -> Dict[str, Dict[str, Any]]:
+        unavailable_ids = self.cache.get_unavailable_video_ids()
         return {
             filename: attrs
             for filename, attrs in listing.items()
-            if not attrs.get("videoId")
-            or not self.cache.is_track_unavailable(attrs["videoId"])
+            if not attrs.get("videoId") or attrs["videoId"] not in unavailable_ids
         }
 
     def _is_track_unavailable(self, track: Dict[str, Any]) -> bool:
         video_id = track.get("videoId")
-        return bool(video_id and self.cache.is_track_unavailable(video_id))
+        return bool(video_id and video_id in self.cache.get_unavailable_video_ids())
 
     def _cache_directory_listing_with_attrs(
         self, dir_path: str, processed_tracks: List[Dict[str, Any]]

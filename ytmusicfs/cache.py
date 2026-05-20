@@ -10,7 +10,7 @@ import stat
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Set, Tuple
 
 from cachetools import LRUCache
 
@@ -104,7 +104,9 @@ class CacheManager:
         # Path validation cache - keep this for fast validation
         self.valid_paths = set()
         self.path_types = {}
+        self.unavailable_video_ids = set()
         self._load_valid_paths()
+        self._load_unavailable_tracks()
 
         # Track cache hits/misses for performance monitoring
         self.stats = {"hits": 0, "misses": 0, "db_hits": 0, "db_misses": 0}
@@ -153,11 +155,30 @@ class CacheManager:
                 if row[1]:  # If entry_type exists
                     self.path_types[path] = row[1]
                 valid_paths_count += 1
-
-            self.logger.info(f"Loaded {valid_paths_count} valid paths into memory")
         except sqlite3.Error as e:
             self.logger.warning(
                 f"Failed to load valid paths: {e.__class__.__name__}: {e}"
+            )
+
+        self.logger.info(f"Loaded {valid_paths_count} valid paths into memory")
+
+    def _load_unavailable_tracks(self) -> None:
+        """Load unavailable video IDs from SQLite into memory."""
+        try:
+            with self.lock:
+                self.cursor.execute(
+                    "SELECT key FROM cache_entries WHERE key LIKE ?",
+                    (self.path_to_key("unavailable:") + "%",),
+                )
+                for (key,) in self.cursor.fetchall():
+                    self.unavailable_video_ids.add(
+                        self.key_to_path(key).replace("unavailable:", "", 1)
+                    )
+        except sqlite3.Error as e:
+            self.logger.warning(
+                "Failed to load unavailable-track cache: %s: %s",
+                e.__class__.__name__,
+                e,
             )
 
     def mark_valid(self, path: str, is_directory: Optional[bool] = None) -> None:
@@ -704,6 +725,7 @@ class CacheManager:
         """Persist that a track cannot be streamed."""
         if not video_id:
             return
+        self.unavailable_video_ids.add(video_id)
         self.set(
             f"unavailable:{video_id}",
             {
@@ -723,34 +745,11 @@ class CacheManager:
 
     def is_track_unavailable(self, video_id: str) -> bool:
         """Return whether a video ID is marked unavailable."""
-        return self.get_unavailable_track(video_id) is not None
+        return video_id in self.unavailable_video_ids
 
-    def clear_unavailable_tracks(self) -> int:
-        """Delete all persisted unavailable-track entries."""
-        removed = 0
-        keys_to_remove = [
-            key
-            for key in list(self.hotcache.keys())
-            if str(key).startswith("hotcache:unavailable:")
-        ]
-        for key in keys_to_remove:
-            del self.hotcache[key]
-
-        try:
-            with self.lock:
-                self.cursor.execute(
-                    "DELETE FROM cache_entries WHERE key LIKE ?",
-                    (self.path_to_key("unavailable:") + "%",),
-                )
-                removed = self.cursor.rowcount
-                self.conn.commit()
-        except sqlite3.Error as e:
-            self.logger.warning(
-                "Failed to clear unavailable-track cache: %s: %s",
-                e.__class__.__name__,
-                e,
-            )
-        return removed
+    def get_unavailable_video_ids(self) -> Set[str]:
+        """Return a snapshot of unavailable video IDs."""
+        return set(self.unavailable_video_ids)
 
     def set_durations_batch(self, durations: Dict[str, int]) -> None:
         """Store multiple durations in a batch operation with optimized performance.
