@@ -463,7 +463,7 @@ class LogsCommandHandler:
             print_error(f"No log file found at {LOG_FILE}")
             return 1
 
-        if self.args.tail is None:
+        if self.args.path:
             print(str(LOG_FILE))
             return 0
 
@@ -662,9 +662,15 @@ def main() -> int:
         func=lambda args: CacheCommandHandler(args, setup_logging(args)).execute(),
     )
 
-    logs_parser = subparsers.add_parser("logs", help="Show log path or recent logs")
+    logs_parser = subparsers.add_parser("logs", help="Show recent logs")
     logs_parser.add_argument(
-        "--tail", type=positive_int, help="Print the last N log lines"
+        "--tail",
+        type=positive_int,
+        default=50,
+        help="Print the last N log lines (default: 50)",
+    )
+    logs_parser.add_argument(
+        "--path", action="store_true", help="Print the log file path"
     )
     logs_parser.add_argument(
         "--debug", "-d", action="store_true", help="Enable debug logging"
