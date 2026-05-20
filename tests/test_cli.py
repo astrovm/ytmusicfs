@@ -252,6 +252,9 @@ def test_cache_clear_removes_sqlite_files(mock_active_mount, tmp_path):
     cache_dir.mkdir()
     for name in CacheCommandHandler.CACHE_FILES:
         (cache_dir / name).write_text("cache", encoding="utf-8")
+    audio_dir = cache_dir / "audio"
+    audio_dir.mkdir()
+    (audio_dir / "song.m4a").write_bytes(b"cache")
     args = make_command_args(tmp_path, cache_action="clear")
 
     result = CacheCommandHandler(args, logging.getLogger("test")).execute()
@@ -260,6 +263,7 @@ def test_cache_clear_removes_sqlite_files(mock_active_mount, tmp_path):
     assert not any(
         (cache_dir / name).exists() for name in CacheCommandHandler.CACHE_FILES
     )
+    assert not audio_dir.exists()
 
 
 @patch("ytmusicfs.cli.MountInspector.find_active_mount_point")

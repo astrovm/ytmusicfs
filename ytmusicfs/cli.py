@@ -358,6 +358,7 @@ class CacheCommandHandler:
     """Inspect or clear persistent cache files."""
 
     CACHE_FILES = ("cache.db", "cache.db-wal", "cache.db-shm")
+    CACHE_DIRS = ("audio",)
 
     def __init__(self, args: argparse.Namespace, logger: logging.Logger):
         self.args = args
@@ -383,6 +384,11 @@ class CacheCommandHandler:
             path = self.config.cache_dir / name
             if path.exists():
                 path.unlink()
+                removed += 1
+        for name in self.CACHE_DIRS:
+            path = self.config.cache_dir / name
+            if path.exists():
+                shutil.rmtree(path)
                 removed += 1
 
         action = "refresh" if self.args.cache_action == "refresh" else "clear"
