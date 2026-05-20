@@ -5,7 +5,7 @@
 import logging
 import time
 from json import JSONDecodeError
-from typing import Any, Dict, Optional
+from typing import Any
 
 from ytmusicapi import YTMusic
 
@@ -27,7 +27,7 @@ class YTMusicAuthAdapter:
         self,
         browser: str,
         yt_dlp_utils: Any,
-        logger: Optional[logging.Logger] = None,
+        logger: logging.Logger | None = None,
     ) -> None:
         """Create a YTMusic client authenticated from browser cookies."""
         self.logger = logger or logging.getLogger(__name__)
@@ -53,7 +53,7 @@ class YTMusicAuthAdapter:
         )
         return client
 
-    def _build_browser_auth(self) -> Dict[str, str]:
+    def _build_browser_auth(self) -> dict[str, str]:
         cookies = self.yt_dlp_utils.extract_browser_cookies(self.browser)
         auth_header = _build_sapisidhash(cookies, _YT_ORIGIN)
         if not auth_header:

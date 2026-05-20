@@ -155,7 +155,7 @@ class TestPathRouter(unittest.TestCase):
                     "my_playlist": {"is_dir": True},
                     "popular": {"is_dir": True},
                 }
-            elif path == "/albums":
+            if path == "/albums":
                 return {
                     ".": {"is_dir": True},
                     "..": {"is_dir": True},

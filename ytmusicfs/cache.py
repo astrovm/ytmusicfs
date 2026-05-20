@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import builtins
 import hashlib
 import json
 import logging
@@ -9,8 +10,9 @@ import sqlite3
 import stat
 import time
 import traceback
+from contextlib import suppress
 from pathlib import Path
-from typing import Any, Dict, Optional, Set, Tuple
+from typing import Any
 
 from cachetools import LRUCache
 
@@ -21,10 +23,10 @@ class CacheManager:
     def __init__(
         self,
         thread_manager: Any,  # ThreadManager (required)
-        cache_dir: Optional[str] = None,
+        cache_dir: str | None = None,
         cache_timeout: int = 2592000,
         maxsize: int = 1000,
-        logger: Optional[logging.Logger] = None,
+        logger: logging.Logger | None = None,
     ):
         """
         Initialize the CacheManager.
@@ -181,7 +183,7 @@ class CacheManager:
                 e,
             )
 
-    def mark_valid(self, path: str, is_directory: Optional[bool] = None) -> None:
+    def mark_valid(self, path: str, is_directory: bool | None = None) -> None:
         """Mark a path as valid in the cache with optimized storage.
 
         Args:
@@ -382,7 +384,7 @@ class CacheManager:
         self.stats["misses"] += 1
         return False
 
-    def get_entry_type(self, path: str) -> Optional[str]:
+    def get_entry_type(self, path: str) -> str | None:
         """Retrieve the entry type (file or directory) for a path.
 
         Args:
@@ -466,7 +468,7 @@ class CacheManager:
             )
             return None
 
-    def get(self, path: str) -> Optional[Any]:
+    def get(self, path: str) -> Any | None:
         """Get data from cache if it's still valid with improved caching.
 
         Args:
@@ -540,8 +542,7 @@ class CacheManager:
 
                 # Only commit every 50 writes or if it's a critical path
                 if (
-                    key.startswith("valid_")
-                    or key.startswith("unavailable:")
+                    key.startswith(("valid_", "unavailable:"))
                     or "_listing_with_attrs" in key
                     or random.random() < 0.02
                 ):
@@ -550,7 +551,7 @@ class CacheManager:
             self.logger.error(f"Failed to write database cache for {key}: {e}")
             self.logger.error(traceback.format_exc())
 
-    def set_batch(self, entries: Dict[str, Any]) -> None:
+    def set_batch(self, entries: dict[str, Any]) -> None:
         """Set multiple cache entries in a single database transaction.
 
         Args:
@@ -667,9 +668,7 @@ class CacheManager:
             return key  # Return as is if we can't reconstruct the original
 
         # Regular key - just replace underscores with slashes and restore quotes
-        path = key.replace("_", "/")
-        path = path.replace("''", "'")
-        return path
+        return key.replace("_", "/").replace("''", "'")
 
     def _store_hash_mapping(self, hashed_key: str, original_path: str) -> None:
         """Store a mapping between a hashed key and its original path."""
@@ -688,7 +687,7 @@ class CacheManager:
                 f"Failed to store hash mapping: {e.__class__.__name__}: {e}"
             )
 
-    def get_original_path(self, hashed_key: str) -> Optional[str]:
+    def get_original_path(self, hashed_key: str) -> str | None:
         """Retrieve the original path for a hashed key."""
         try:
             with self.lock:
@@ -706,7 +705,7 @@ class CacheManager:
             )
             return None
 
-    def get_duration(self, video_id: str) -> Optional[int]:
+    def get_duration(self, video_id: str) -> int | None:
         """Retrieve cached duration for a video ID."""
         duration = self.get(f"duration:{video_id}")
         if duration is not None:
@@ -714,7 +713,7 @@ class CacheManager:
         return duration
 
     def mark_unavailable_track(
-        self, video_id: str, path: Optional[str], reason: str
+        self, video_id: str, path: str | None, reason: str
     ) -> None:
         """Persist that a track cannot be streamed."""
         if not video_id:
@@ -731,7 +730,7 @@ class CacheManager:
         )
         self._invalidate_unavailable_track_path(path)
 
-    def _invalidate_unavailable_track_path(self, path: Optional[str]) -> None:
+    def _invalidate_unavailable_track_path(self, path: str | None) -> None:
         """Drop cached path/listing entries that can keep dead tracks visible."""
         if not path:
             return
@@ -753,7 +752,7 @@ class CacheManager:
         self.delete(f"valid_files:{parent_dir}")
         self.delete(listing_key)
 
-    def get_unavailable_track(self, video_id: str) -> Optional[Dict[str, Any]]:
+    def get_unavailable_track(self, video_id: str) -> dict[str, Any] | None:
         """Return persisted unavailable-track metadata for a video ID."""
         if not video_id:
             return None
@@ -764,11 +763,11 @@ class CacheManager:
         """Return whether a video ID is marked unavailable."""
         return video_id in self.unavailable_video_ids
 
-    def get_unavailable_video_ids(self) -> Set[str]:
+    def get_unavailable_video_ids(self) -> builtins.set[str]:
         """Return a snapshot of unavailable video IDs."""
         return set(self.unavailable_video_ids)
 
-    def set_durations_batch(self, durations: Dict[str, int]) -> None:
+    def set_durations_batch(self, durations: dict[str, int]) -> None:
         """Store multiple durations in a batch operation with optimized performance.
 
         Args:
@@ -797,7 +796,7 @@ class CacheManager:
 
     def get_directory_listing_with_attrs(
         self, path: str
-    ) -> Optional[Dict[str, Dict[str, Any]]]:
+    ) -> dict[str, dict[str, Any]] | None:
         """Get cached directory listing with attributes with improved performance.
 
         Args:
@@ -874,7 +873,7 @@ class CacheManager:
             return None
 
     def set_directory_listing_with_attrs(
-        self, path: str, listing_with_attrs: Dict[str, Dict[str, Any]]
+        self, path: str, listing_with_attrs: dict[str, dict[str, Any]]
     ) -> None:
         """Cache directory listing with attributes using optimized storage.
 
@@ -979,7 +978,7 @@ class CacheManager:
                 f"Failed to cache directory listing: {e.__class__.__name__}: {e}"
             )
 
-    def get_file_attrs_from_parent_dir(self, path: str) -> Optional[Dict[str, Any]]:
+    def get_file_attrs_from_parent_dir(self, path: str) -> dict[str, Any] | None:
         """Get file attributes from parent directory cache with improved performance.
 
         Args:
@@ -1016,15 +1015,14 @@ class CacheManager:
         if (
             parent_dir in ["/playlists", "/albums", "/liked_songs"]
             and len(path.split("/")) == 3
+            and self.is_valid_path(path)
         ):
             # This might be a playlist/album entry - create minimal attrs for directories
-            if self.is_valid_path(path):
-                # Create basic attributes for a directory
-                attrs = self._create_directory_attrs()
-                # Cache for future lookups
-                self.attrs_cache[path] = attrs
-                self.stats["hits"] += 1
-                return attrs
+            attrs = self._create_directory_attrs()
+            # Cache for future lookups
+            self.attrs_cache[path] = attrs
+            self.stats["hits"] += 1
+            return attrs
 
         # Look in parent's parent for special cases (nested directory listings)
         if parent_dir != "/" and len(path.split("/")) > 3:
@@ -1053,7 +1051,7 @@ class CacheManager:
         self.stats["misses"] += 1
         return None
 
-    def _create_directory_attrs(self) -> Dict[str, Any]:
+    def _create_directory_attrs(self) -> dict[str, Any]:
         """Create default attributes for a directory.
 
         Returns:
@@ -1069,7 +1067,7 @@ class CacheManager:
             "st_atime": now,
         }
 
-    def _create_file_attrs(self) -> Dict[str, Any]:
+    def _create_file_attrs(self) -> dict[str, Any]:
         """Create default attributes for a file.
 
         Returns:
@@ -1085,7 +1083,7 @@ class CacheManager:
             "st_atime": now,
         }
 
-    def is_directory(self, path: str) -> Optional[bool]:
+    def is_directory(self, path: str) -> bool | None:
         """Check if a path is a directory.
 
         Args:
@@ -1133,7 +1131,7 @@ class CacheManager:
                 f"Failed to set refresh metadata for {key}: {e.__class__.__name__}: {e}"
             )
 
-    def get_refresh_metadata(self, key: str) -> Tuple[Optional[float], Optional[str]]:
+    def get_refresh_metadata(self, key: str) -> tuple[float | None, str | None]:
         """Get last refresh time and status for a cache key.
 
         Args:
@@ -1175,13 +1173,10 @@ class CacheManager:
 
     def __del__(self):
         """Attempt to close database connection during garbage collection."""
-        try:
+        with suppress(Exception):
             self.close()
-        except Exception:
-            # Don't raise exceptions during garbage collection
-            pass
 
-    def get_cache_stats(self) -> Dict[str, int]:
+    def get_cache_stats(self) -> dict[str, int]:
         """Get cache statistics.
 
         Returns:
@@ -1210,7 +1205,7 @@ class CacheManager:
             "attrs_cache_size": len(self.attrs_cache),
         }
 
-    def update_file_attrs_in_parent_dir(self, path: str, attrs: Dict[str, Any]) -> None:
+    def update_file_attrs_in_parent_dir(self, path: str, attrs: dict[str, Any]) -> None:
         """Update file attributes in the parent directory's cached listing with improved caching.
 
         Args:

@@ -31,9 +31,11 @@ def test_library_playlist_fetch_raises_after_persistent_non_json_response():
     )
     client = YouTubeMusicClient(auth_adapter=auth_adapter)
 
-    with patch("ytmusicfs.client.time.sleep") as mock_sleep:
-        with pytest.raises(JSONDecodeError):
-            client.get_library_playlists(limit=1000)
+    with (
+        patch("ytmusicfs.client.time.sleep") as mock_sleep,
+        pytest.raises(JSONDecodeError),
+    ):
+        client.get_library_playlists(limit=1000)
 
     assert auth_adapter.get_library_playlists.call_count == 3
     assert mock_sleep.call_count == 2

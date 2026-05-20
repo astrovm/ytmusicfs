@@ -4,8 +4,9 @@ import logging
 import os
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 import requests
 
@@ -48,8 +49,8 @@ class Downloader:
         video_id: str,
         stream_url: str,
         path: str,
-        headers: Optional[dict] = None,
-        cookies: Optional[dict] = None,
+        headers: dict[str, Any] | None = None,
+        cookies: dict[str, Any] | None = None,
         retries: int = 3,
         chunk_size: int = 8192,
     ) -> bool:
@@ -104,8 +105,8 @@ class Downloader:
         video_id: str,
         stream_url: str,
         path: str,
-        headers: Optional[dict] = None,
-        cookies: Optional[dict] = None,
+        headers: dict[str, Any] | None = None,
+        cookies: dict[str, Any] | None = None,
         retries: int = 3,
         chunk_size: int = 8192,
     ) -> bool:
@@ -127,10 +128,10 @@ class Downloader:
         status_path = audio_path.parent / f"{video_id}.status"
 
         # Create a temporary file for the download
-        temp_file = tempfile.NamedTemporaryFile(
+        with tempfile.NamedTemporaryFile(
             delete=False, dir=audio_path.parent, suffix=".tmp"
-        )
-        temp_path = Path(temp_file.name)
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
 
         # Mark as in-progress before starting download
         with self.lock:
@@ -168,9 +169,8 @@ class Downloader:
 
                 # If resuming, copy existing content to temp file
                 if downloaded > 0 and audio_path.exists():
-                    with audio_path.open("rb") as src:
-                        with temp_file:
-                            temp_file.write(src.read())
+                    with audio_path.open("rb") as src, temp_file:
+                        temp_file.write(src.read())
 
                 # Get the expected total size
                 expected_total = (
@@ -319,18 +319,21 @@ class Downloader:
                 self.logger.warning(f"Error checking status for {video_id}: {e}")
 
         # If status check doesn't confirm completion, do a more thorough check
-        if audio_path.exists() and audio_path.stat().st_size > 0:
-            if self._validate_file_format(audio_path):
-                # File exists and passes validation, mark as complete
-                with status_path.open("w") as sf:
-                    sf.write("complete")
-                with self.lock:
-                    self.active_downloads[video_id] = {
-                        "status": "complete",
-                        "progress": audio_path.stat().st_size,
-                        "total": audio_path.stat().st_size,
-                    }
-                return True
+        if (
+            audio_path.exists()
+            and audio_path.stat().st_size > 0
+            and self._validate_file_format(audio_path)
+        ):
+            # File exists and passes validation, mark as complete
+            with status_path.open("w") as sf:
+                sf.write("complete")
+            with self.lock:
+                self.active_downloads[video_id] = {
+                    "status": "complete",
+                    "progress": audio_path.stat().st_size,
+                    "total": audio_path.stat().st_size,
+                }
+            return True
 
         return False
 
@@ -369,7 +372,7 @@ class Downloader:
             self.logger.warning(f"File validation error: {e}")
             return False
 
-    def get_progress(self, video_id: str) -> Optional[dict]:
+    def get_progress(self, video_id: str) -> dict[str, Any] | None:
         """Get download progress for a video.
 
         Args:

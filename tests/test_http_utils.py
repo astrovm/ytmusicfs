@@ -49,7 +49,7 @@ def test_refreshes_sapisidhash_when_stale(monkeypatch):
     merged_headers, merged_cookies = ensure_headers_and_cookies(headers, cookies)
 
     expected_digest = hashlib.sha1(
-        f"{fixed_timestamp} fresh_cookie https://music.youtube.com".encode("utf-8")
+        f"{fixed_timestamp} fresh_cookie https://music.youtube.com".encode()
     ).hexdigest()
     expected_auth = f"SAPISIDHASH {fixed_timestamp}_{expected_digest}"
 

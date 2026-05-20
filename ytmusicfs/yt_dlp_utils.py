@@ -5,6 +5,7 @@ import re
 import tempfile
 import threading
 from concurrent.futures import Future
+from contextlib import suppress
 from pathlib import Path
 
 from yt_dlp import YoutubeDL
@@ -58,8 +59,8 @@ class YTDLPUtils:
 
         ydl_opts["cookiesfrombrowser"] = (browser,)
 
-    def _stream_extraction_options(self, browser: str) -> dict:
-        ydl_opts = {
+    def _stream_extraction_options(self, browser: str) -> dict[str, object]:
+        ydl_opts: dict[str, object] = {
             "format": YOUTUBE_MUSIC_AUDIO_FORMAT,
             "extractor_args": {"youtube": {"formats": ["missing_pot"]}},
             "js_runtimes": {
@@ -77,11 +78,10 @@ class YTDLPUtils:
         with self._cookie_lock:
             cookie_file = self._browser_cookie_files.get(browser)
             if not cookie_file:
-                tmp = tempfile.NamedTemporaryFile(
+                with tempfile.NamedTemporaryFile(
                     prefix=f"ytmusicfs-{browser}-", suffix=".cookies", delete=False
-                )
-                cookie_file = tmp.name
-                tmp.close()
+                ) as tmp:
+                    cookie_file = tmp.name
                 self._browser_cookie_files[browser] = cookie_file
 
         cookiejar.save(cookie_file, ignore_discard=True, ignore_expires=True)
@@ -303,14 +303,12 @@ class YTDLPUtils:
                 result["cookies"] = cookie_dict
 
         if "duration" in info and info["duration"] is not None:
-            try:
+            with suppress(ValueError, TypeError):
                 result["duration"] = int(info["duration"])
-            except (ValueError, TypeError):
-                pass
 
         return result
 
-    def extract_stream_url_async(self, video_id, browser: str) -> Future:
+    def extract_stream_url_async(self, video_id, browser: str) -> Future[object]:
         """
         Extract stream URL asynchronously using ThreadManager.
 

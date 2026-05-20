@@ -239,25 +239,26 @@ class TestFileHandler(unittest.TestCase):
         }
 
         # Patch Path.exists to return False so it tries to stream instead of reading from cache
-        with patch("pathlib.Path.exists", return_value=False):
-            # Call the method with patched _stream_content
-            with patch.object(
+        with (
+            patch("pathlib.Path.exists", return_value=False),
+            patch.object(
                 self.file_handler, "_stream_content", return_value=mock_response.content
-            ):
-                data = self.file_handler.read(path, size, offset, file_handle)
+            ),
+        ):
+            data = self.file_handler.read(path, size, offset, file_handle)
 
-                # Verify correct data was returned
-                self.assertEqual(data, mock_response.content)
+            # Verify correct data was returned
+            self.assertEqual(data, mock_response.content)
 
-                # Verify _stream_content was called with the right arguments
-                self.file_handler._stream_content.assert_called_once_with(
-                    stream_url,
-                    offset,
-                    size,
-                    path=path,
-                    auth_headers=None,
-                    cookies=None,
-                )
+            # Verify _stream_content was called with the right arguments
+            self.file_handler._stream_content.assert_called_once_with(
+                stream_url,
+                offset,
+                size,
+                path=path,
+                auth_headers=None,
+                cookies=None,
+            )
 
     def test_read_persists_sanitized_headers(self):
         """Ensure prepared headers (with Authorization) are cached for reuse."""
@@ -511,25 +512,26 @@ class TestFileHandler(unittest.TestCase):
         }
 
         # Patch Path.exists to return False so it tries to stream instead of reading from cache
-        with patch("pathlib.Path.exists", return_value=False):
-            # Call the method with patched _stream_content
-            with patch.object(
+        with (
+            patch("pathlib.Path.exists", return_value=False),
+            patch.object(
                 self.file_handler, "_stream_content", return_value=mock_response.content
-            ):
-                data = self.file_handler.read(path, size, offset, file_handle)
+            ),
+        ):
+            data = self.file_handler.read(path, size, offset, file_handle)
 
-                # Verify correct data was returned
-                self.assertEqual(data, mock_response.content)
+            # Verify correct data was returned
+            self.assertEqual(data, mock_response.content)
 
-                # Verify _stream_content was called with the right arguments
-                self.file_handler._stream_content.assert_called_once_with(
-                    stream_url,
-                    offset,
-                    size,
-                    path=path,
-                    auth_headers=None,
-                    cookies=None,
-                )
+            # Verify _stream_content was called with the right arguments
+            self.file_handler._stream_content.assert_called_once_with(
+                stream_url,
+                offset,
+                size,
+                path=path,
+                auth_headers=None,
+                cookies=None,
+            )
 
     def test_read_sanitizes_headers_and_cookies(self):
         """Stream metadata from yt-dlp should be normalised before use."""
@@ -760,6 +762,7 @@ class TestFileHandler(unittest.TestCase):
                             errno.EIO, f"Failed after {retries} attempts: {exc}"
                         )
                     time.sleep(2**attempt)
+            raise OSError(errno.EIO, f"Failed after {retries} attempts")
 
         # Use the patched method for this test
         self.file_handler._stream_content = patched_stream_content
@@ -829,7 +832,7 @@ class TestFileHandler(unittest.TestCase):
                     time.sleep(2**attempt)
 
             # Should not reach here
-            return None
+            return
 
         # Use the patched method for this test
         self.file_handler._stream_content = patched_stream_content

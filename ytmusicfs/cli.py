@@ -9,7 +9,7 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, ClassVar
 
 from ytmusicfs import __version__
 from ytmusicfs.config import ConfigManager
@@ -132,7 +132,7 @@ class MountCommandHandler:
             logger=logger,
         )
 
-    def resolve_mount_settings(self) -> Optional[tuple[Path, str]]:
+    def resolve_mount_settings(self) -> tuple[Path, str] | None:
         """Resolve mount settings from CLI options and saved config."""
         saved_config = self.config.load_user_config()
         mount_point_value = self.args.mount_point or saved_config.get(
@@ -222,7 +222,7 @@ class UnmountCommandHandler:
             logger=logger,
         )
 
-    def resolve_mount_point(self) -> Optional[Path]:
+    def resolve_mount_point(self) -> Path | None:
         """Resolve the mount point from CLI option or active mount state."""
         if self.args.mount_point:
             return Path(self.args.mount_point).expanduser().resolve()
@@ -276,7 +276,7 @@ class UnmountCommandHandler:
         return 0
 
     @staticmethod
-    def find_unmount_command() -> Optional[str]:
+    def find_unmount_command() -> str | None:
         """Find the FUSE unmount helper."""
         return shutil.which("fusermount") or shutil.which("fusermount3")
 
@@ -285,7 +285,7 @@ class MountInspector:
     """Read ytmusicfs mount state from the kernel mount table."""
 
     @staticmethod
-    def find_active_mount_point() -> Optional[Path]:
+    def find_active_mount_point() -> Path | None:
         mountinfo = Path("/proc/self/mountinfo")
         try:
             lines = mountinfo.read_text(encoding="utf-8").splitlines()
@@ -341,7 +341,7 @@ class StatusCommandHandler:
 class ConfigCommandHandler:
     """Show and update saved mount settings."""
 
-    VALID_KEYS = {
+    VALID_KEYS: ClassVar[dict[str, str]] = {
         "browser": "last_browser",
         "mount-point": "last_mount_point",
     }

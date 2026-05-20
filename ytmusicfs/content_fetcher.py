@@ -3,7 +3,8 @@
 import logging
 import time
 import traceback
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 from ytmusicfs.cache import CacheManager
 from ytmusicfs.processor import TrackProcessor
@@ -12,9 +13,6 @@ from ytmusicfs.yt_dlp_utils import YTDLPUtils
 
 class ContentFetcher:
     """Handles fetching and processing of YouTube Music content."""
-
-    # Initialize with empty registry - all entries will be added during initialization
-    PLAYLIST_REGISTRY = []
 
     def __init__(
         self,
@@ -47,8 +45,8 @@ class ContentFetcher:
         self.logger.info("Preloaded playlist registry at initialization")
 
     def get_playlist_id_from_name(
-        self, name: str, type_filter: Optional[str] = None
-    ) -> Optional[str]:
+        self, name: str, type_filter: str | None = None
+    ) -> str | None:
         """Get playlist ID from its name using the PLAYLIST_REGISTRY.
 
         Args:
@@ -59,12 +57,13 @@ class ContentFetcher:
             The playlist ID if found, None otherwise
         """
         for entry in self.PLAYLIST_REGISTRY:
-            if entry["name"] == name:
-                if type_filter is None or entry["type"] == type_filter:
-                    return entry["id"]
+            if entry["name"] == name and (
+                type_filter is None or entry["type"] == type_filter
+            ):
+                return entry["id"]
         return None
 
-    def get_playlist_entry_from_path(self, path: str) -> Optional[Dict[str, Any]]:
+    def get_playlist_entry_from_path(self, path: str) -> dict[str, Any] | None:
         """Get playlist entry from its path using the PLAYLIST_REGISTRY.
 
         Args:
@@ -86,7 +85,7 @@ class ContentFetcher:
         """
         # Check if registry refresh is needed
         cache_key = "playlist_registry"
-        last_refresh, status = self.cache.get_refresh_metadata(cache_key)
+        last_refresh, _status = self.cache.get_refresh_metadata(cache_key)
         refresh_interval = 3600  # 1 hour default
 
         if (
@@ -171,7 +170,7 @@ class ContentFetcher:
         path: str,
         limit: int = 10000,
         force_refresh: bool = False,
-    ) -> List[str]:
+    ) -> list[str]:
         """Fetch playlist content using yt-dlp with a specified limit and cache durations.
 
         Args:
@@ -214,8 +213,8 @@ class ContentFetcher:
         return [track["filename"] for track in tracks]
 
     def readdir_playlist_by_type(
-        self, playlist_type: str = None, directory_path: str = None
-    ) -> List[str]:
+        self, playlist_type: str | None = None, directory_path: str | None = None
+    ) -> list[str]:
         """List playlists/albums/liked_songs instantly using cached data."""
         if not directory_path:
             directory_path = {
@@ -231,9 +230,7 @@ class ContentFetcher:
         cached_listing = self.cache.get_directory_listing_with_attrs(directory_path)
         if cached_listing:
             self.logger.debug(f"Instant cache hit for {directory_path}")
-            return [".", ".."] + list(
-                self._filter_unavailable_listing(cached_listing).keys()
-            )
+            return [".", "..", *self._filter_unavailable_listing(cached_listing)]
 
         if playlist_type == "liked_songs":
             entry = next(
@@ -269,8 +266,8 @@ class ContentFetcher:
         return [".", ".."] + [e["name"] for e in entries]
 
     def _filter_unavailable_listing(
-        self, listing: Dict[str, Dict[str, Any]]
-    ) -> Dict[str, Dict[str, Any]]:
+        self, listing: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
         unavailable_ids = self.cache.get_unavailable_video_ids()
         return {
             filename: attrs
@@ -278,12 +275,12 @@ class ContentFetcher:
             if not attrs.get("videoId") or attrs["videoId"] not in unavailable_ids
         }
 
-    def _is_track_unavailable(self, track: Dict[str, Any]) -> bool:
+    def _is_track_unavailable(self, track: dict[str, Any]) -> bool:
         video_id = track.get("videoId")
         return bool(video_id and video_id in self.cache.get_unavailable_video_ids())
 
     def _cache_directory_listing_with_attrs(
-        self, dir_path: str, processed_tracks: List[Dict[str, Any]]
+        self, dir_path: str, processed_tracks: list[dict[str, Any]]
     ) -> None:
         """Cache directory listing with file attributes for efficient lookups.
 
@@ -327,19 +324,16 @@ class ContentFetcher:
             return True
         if status == "stale":
             return True
-        if now - last_refresh >= refresh_interval:
-            return True
-
-        return False
+        return now - last_refresh >= refresh_interval
 
     def refresh_content(
         self,
         cache_key: str,
-        fetch_func: Callable,
+        fetch_func: Callable[[int], list[dict[str, Any]]],
         path: str,
         limit: int = 10000,
         force_refresh: bool = False,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Refresh content for a given cache key if needed, returning processed tracks.
 
         Args:
@@ -464,7 +458,7 @@ class ContentFetcher:
             return result_tracks
 
         except Exception as e:
-            self.logger.error(f"Refresh failed for {path}: {str(e)}")
+            self.logger.error(f"Refresh failed for {path}: {e!s}")
             self.logger.error(traceback.format_exc())
             # Mark as stale since refresh failed
             self.cache.set_refresh_metadata(cache_key, time.time(), "stale")

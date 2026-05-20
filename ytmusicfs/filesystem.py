@@ -7,7 +7,7 @@ import os
 import stat
 import time
 import traceback
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fuse import FUSE, FuseOSError, Operations
 
@@ -34,7 +34,7 @@ class YouTubeMusicFS(Operations):
 
     def __init__(
         self,
-        cache_dir: Optional[str] = None,
+        cache_dir: str | None = None,
         browser: str = "",
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
@@ -184,19 +184,25 @@ class YouTubeMusicFS(Operations):
         # Use a unified approach for content fetching since all are just different playlist types
         self.router.register_dynamic(
             "/playlists/*",
-            lambda path, playlist_name: [".", ".."]
-            + self.fetcher.fetch_playlist_content(
-                self._get_playlist_id_from_name(playlist_name, "playlist"),
-                path,
-            ),
+            lambda path, playlist_name: [
+                ".",
+                "..",
+                *self.fetcher.fetch_playlist_content(
+                    self._get_playlist_id_from_name(playlist_name, "playlist"),
+                    path,
+                ),
+            ],
         )
         self.router.register_dynamic(
             "/albums/*",
-            lambda path, album_name: [".", ".."]
-            + self.fetcher.fetch_playlist_content(
-                self._get_playlist_id_from_name(album_name, "album"),
-                path,
-            ),
+            lambda path, album_name: [
+                ".",
+                "..",
+                *self.fetcher.fetch_playlist_content(
+                    self._get_playlist_id_from_name(album_name, "album"),
+                    path,
+                ),
+            ],
         )
 
         # Initialize path validation with common static paths
@@ -211,7 +217,7 @@ class YouTubeMusicFS(Operations):
         )
 
     def _cache_directory_listing_with_attrs(
-        self, dir_path: str, processed_tracks: List[Dict[str, Any]]
+        self, dir_path: str, processed_tracks: list[dict[str, Any]]
     ) -> None:
         """Cache directory listing with file attributes for efficient getattr lookups.
 
@@ -286,7 +292,7 @@ class YouTubeMusicFS(Operations):
         # Mark this directory as valid
         self.cache.mark_valid(dir_path, is_directory=True)
 
-    def readdir(self, path: str, fh: Optional[int] = None) -> List[str]:
+    def readdir(self, path: str, fh: int | None = None) -> list[str]:
         """Read directory contents with optimized caching.
 
         Args:
@@ -310,9 +316,9 @@ class YouTubeMusicFS(Operations):
             # Make a direct call to the appropriate content function
             if path == "/playlists":
                 return self.fetcher.readdir_playlist_by_type("playlist", "/playlists")
-            elif path == "/albums":
+            if path == "/albums":
                 return self.fetcher.readdir_playlist_by_type("album", "/albums")
-            elif path == "/liked_songs":
+            if path == "/liked_songs":
                 return self.fetcher.readdir_playlist_by_type(
                     "liked_songs", "/liked_songs"
                 )
@@ -322,9 +328,7 @@ class YouTubeMusicFS(Operations):
         directory_listing = self.cache.get(cache_key)
         if directory_listing:
             self.logger.debug(f"Using cached directory listing for readdir: {path}")
-            return [".", ".."] + list(
-                self._filter_unavailable_listing(directory_listing).keys()
-            )
+            return [".", "..", *self._filter_unavailable_listing(directory_listing)]
 
         # Priority 3: Check operation cooldown cache for very recent requests
         operation_key = f"readdir:{path}"
@@ -332,13 +336,14 @@ class YouTubeMusicFS(Operations):
 
         with self.last_access_lock:
             last_time = self.last_access_time.get(operation_key, 0)
-            if current_time - last_time < self.request_cooldown:
-                # Request is within cooldown period, return cached result if available
-                if operation_key in self.last_access_results:
-                    self.logger.debug(
-                        f"Using cached result for {operation_key} (within cooldown: {current_time - last_time:.3f}s)"
-                    )
-                    return self.last_access_results[operation_key]
+            if (
+                current_time - last_time < self.request_cooldown
+                and operation_key in self.last_access_results
+            ):
+                self.logger.debug(
+                    f"Using cached result for {operation_key} (within cooldown: {current_time - last_time:.3f}s)"
+                )
+                return self.last_access_results[operation_key]
 
             # Update the last access time for this operation
             self.last_access_time[operation_key] = current_time
@@ -435,7 +440,7 @@ class YouTubeMusicFS(Operations):
         """
         return self.metadata_manager.get_video_id(path)
 
-    def getattr(self, path: str, fh: Optional[int] = None) -> Dict[str, Any]:
+    def getattr(self, path: str, fh: int | None = None) -> dict[str, Any]:
         """Get file attributes with optimized caching.
 
         Args:
@@ -463,13 +468,14 @@ class YouTubeMusicFS(Operations):
         current_time = time.time()
         with self.last_access_lock:
             last_time = self.last_access_time.get(operation_key, 0)
-            if current_time - last_time < self.request_cooldown:
-                # Request is within cooldown period, return cached result if available
-                if operation_key in self.last_access_results:
-                    self.logger.debug(
-                        f"Using cached result for {operation_key} (within cooldown: {current_time - last_time:.3f}s)"
-                    )
-                    return self.last_access_results[operation_key]
+            if (
+                current_time - last_time < self.request_cooldown
+                and operation_key in self.last_access_results
+            ):
+                self.logger.debug(
+                    f"Using cached result for {operation_key} (within cooldown: {current_time - last_time:.3f}s)"
+                )
+                return self.last_access_results[operation_key]
 
             # Update the last access time for this operation
             self.last_access_time[operation_key] = current_time
@@ -721,8 +727,8 @@ class YouTubeMusicFS(Operations):
             raise FuseOSError(errno.EIO) from e
 
     def _filter_unavailable_listing(
-        self, listing: Dict[str, Dict[str, Any]]
-    ) -> Dict[str, Dict[str, Any]]:
+        self, listing: dict[str, dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
         unavailable_ids = self.cache.get_unavailable_video_ids()
         return {
             filename: attrs
@@ -755,13 +761,13 @@ class YouTubeMusicFS(Operations):
         with self.stats_lock:
             self.stats[name] = self.stats.get(name, 0) + 1
 
-    def _get_real_file_size(self, path: str) -> Optional[int]:
+    def _get_real_file_size(self, path: str) -> int | None:
         cached_size = self.cache.get(f"filesize:{path}")
         if isinstance(cached_size, int):
             return cached_size
         return None
 
-    def _get_advertised_file_size(self, path: str) -> Optional[int]:
+    def _get_advertised_file_size(self, path: str) -> int | None:
         real_size = self._get_real_file_size(path)
         if real_size is not None:
             return real_size
@@ -773,7 +779,7 @@ class YouTubeMusicFS(Operations):
         return None
 
     def _audio_size_for_path(
-        self, path: str, duration_seconds: Optional[float] = None
+        self, path: str, duration_seconds: float | None = None
     ) -> int:
         real_size = self._get_real_file_size(path)
         if real_size is not None:
@@ -900,8 +906,8 @@ class YouTubeMusicFS(Operations):
         self.logger.info("YTMusicFS destroyed successfully")
 
     def _get_playlist_id_from_name(
-        self, name: str, type_filter: str = None
-    ) -> Optional[str]:
+        self, name: str, type_filter: str | None = None
+    ) -> str | None:
         """Get playlist ID from its name using the ContentFetcher.
 
         Args:
@@ -916,7 +922,7 @@ class YouTubeMusicFS(Operations):
 
 def mount_ytmusicfs(
     mount_point: str,
-    cache_dir: Optional[str] = None,
+    cache_dir: str | None = None,
     foreground: bool = False,
     browser: str = "",
 ) -> None:

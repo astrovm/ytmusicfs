@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import hashlib
 import time
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 _YT_ORIGIN = "https://music.youtube.com"
 
@@ -14,7 +17,7 @@ _YT_ORIGIN = "https://music.youtube.com"
 _HEADER_BLOCKLIST = {"host", "content-length"}
 
 
-def _is_sapisidhash(value: Optional[str]) -> bool:
+def _is_sapisidhash(value: str | None) -> bool:
     """Return ``True`` when *value* looks like a SAPISID-derived signature."""
 
     if not value:
@@ -22,7 +25,7 @@ def _is_sapisidhash(value: Optional[str]) -> bool:
     return value.strip().lower().startswith("sapisidhash ")
 
 
-def sanitize_headers(headers: Optional[Mapping[str, Any]]) -> Dict[str, str]:
+def sanitize_headers(headers: Mapping[str, Any] | None) -> dict[str, str]:
     """Return a copy of *headers* safe for use with ``requests``.
 
     ``yt-dlp`` may include pseudo headers such as ``Host`` or keys with
@@ -34,7 +37,7 @@ def sanitize_headers(headers: Optional[Mapping[str, Any]]) -> Dict[str, str]:
     if not headers:
         return {}
 
-    sanitized: Dict[str, str] = {}
+    sanitized: dict[str, str] = {}
     for key, value in headers.items():
         if value is None:
             continue
@@ -45,12 +48,12 @@ def sanitize_headers(headers: Optional[Mapping[str, Any]]) -> Dict[str, str]:
     return sanitized
 
 
-def _ensure_origin_headers(headers: Dict[str, str]) -> Dict[str, str]:
+def _ensure_origin_headers(headers: dict[str, str]) -> dict[str, str]:
     """Augment *headers* with the defaults expected by YouTube's CDN.
 
     ``yt-dlp`` occasionally omits headers such as ``Origin`` or ``Referer`` in
     environments where authentication relies on browser cookies.  Google
-    requires these headers to validate the ``SAPISIDHASH`` signature – without
+    requires these headers to validate the ``SAPISIDHASH`` signature - without
     them the API rejects the request with ``HTTP 403``.  We therefore make sure
     the canonical YouTube Music origin headers are present before issuing the
     request.
@@ -78,8 +81,8 @@ def _ensure_origin_headers(headers: Dict[str, str]) -> Dict[str, str]:
 
 
 def _build_sapisidhash(
-    cookies: Optional[Mapping[str, Any]], origin: str = _YT_ORIGIN
-) -> Optional[str]:
+    cookies: Mapping[str, Any] | None, origin: str = _YT_ORIGIN
+) -> str | None:
     """Return an ``Authorization`` header value based on SAPISID cookies.
 
     When the browser cookies include ``SAPISID`` or ``__Secure-3PAPISID`` the
@@ -100,15 +103,15 @@ def _build_sapisidhash(
         return None
 
     timestamp = int(time.time())
-    data = f"{timestamp} {sapisid} {origin}".encode("utf-8")
+    data = f"{timestamp} {sapisid} {origin}".encode()
     digest = hashlib.sha1(data).hexdigest()
     return f"SAPISIDHASH {timestamp}_{digest}"
 
 
 def _set_sapisidhash_authorization(
-    headers: Dict[str, str],
-    existing_auth_key: Optional[str],
-    auth_source: Optional[Mapping[str, Any]],
+    headers: dict[str, str],
+    existing_auth_key: str | None,
+    auth_source: Mapping[str, Any] | None,
 ) -> None:
     if not auth_source:
         return
@@ -127,7 +130,7 @@ def _set_sapisidhash_authorization(
     headers["Authorization"] = auth_header
 
 
-def sanitize_cookies(cookies: Optional[Mapping[str, Any]]) -> Optional[Dict[str, str]]:
+def sanitize_cookies(cookies: Mapping[str, Any] | None) -> dict[str, str] | None:
     """Return cookie mapping compatible with ``requests``.
 
     ``yt-dlp`` may provide cookies with ``None`` values; ``requests`` treats
@@ -138,7 +141,7 @@ def sanitize_cookies(cookies: Optional[Mapping[str, Any]]) -> Optional[Dict[str,
     if not cookies:
         return None
 
-    sanitized: Dict[str, str] = {}
+    sanitized: dict[str, str] = {}
     for key, value in cookies.items():
         if value is None:
             continue
@@ -148,8 +151,8 @@ def sanitize_cookies(cookies: Optional[Mapping[str, Any]]) -> Optional[Dict[str,
 
 
 def merge_cookie_sources(
-    headers: Dict[str, str], cookies: Optional[Dict[str, str]]
-) -> Tuple[Dict[str, str], Optional[Dict[str, str]]]:
+    headers: dict[str, str], cookies: dict[str, str] | None
+) -> tuple[dict[str, str], dict[str, str] | None]:
     """Merge cookie information from headers and mapping for ``requests``.
 
     ``yt-dlp`` sometimes returns both a ``Cookie`` header string and an
@@ -161,7 +164,7 @@ def merge_cookie_sources(
     """
 
     existing_auth_key = next(
-        (key for key in headers.keys() if key.lower() == "authorization"),
+        (key for key in headers if key.lower() == "authorization"),
         None,
     )
 
@@ -177,7 +180,7 @@ def merge_cookie_sources(
         return headers, cookies
 
     cookie_header_value = headers.pop(cookie_header_key)
-    header_cookies: Dict[str, str] = {}
+    header_cookies: dict[str, str] = {}
     if cookie_header_value:
         for part in cookie_header_value.split(";"):
             name, sep, value = part.strip().partition("=")
@@ -188,7 +191,7 @@ def merge_cookie_sources(
     headers = _ensure_origin_headers(headers)
     if existing_auth_key is None:
         existing_auth_key = next(
-            (key for key in headers.keys() if key.lower() == "authorization"),
+            (key for key in headers if key.lower() == "authorization"),
             None,
         )
 
@@ -196,14 +199,11 @@ def merge_cookie_sources(
     if cookies:
         merged.update(cookies)
 
-    if merged:
-        auth_source = merged
-    else:
-        auth_source = cookies
+    auth_source = merged or cookies
 
     _set_sapisidhash_authorization(headers, existing_auth_key, auth_source)
 
-    cookie_result: Optional[Dict[str, str]]
+    cookie_result: dict[str, str] | None
     if merged:
         cookie_result = merged
     elif cookies:
@@ -215,9 +215,9 @@ def merge_cookie_sources(
 
 
 def ensure_headers_and_cookies(
-    headers: Optional[Mapping[str, Any]],
-    cookies: Optional[Mapping[str, Any]],
-) -> Tuple[Dict[str, str], Optional[Dict[str, str]]]:
+    headers: Mapping[str, Any] | None,
+    cookies: Mapping[str, Any] | None,
+) -> tuple[dict[str, str], dict[str, str] | None]:
     """Sanitise and augment the headers/cookies pair for outbound requests."""
 
     sanitized_headers = sanitize_headers(headers)

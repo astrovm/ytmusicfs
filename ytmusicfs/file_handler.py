@@ -4,8 +4,9 @@ import errno
 import logging
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any
 
 import requests
 
@@ -34,8 +35,8 @@ class FileHandler:
         update_file_size_callback: Callable[[str, int], None],
         yt_dlp_utils: YTDLPUtils,
         browser: str,
-        record_stat_callback: Optional[Callable[[str], None]] = None,
-        get_file_size_callback: Optional[Callable[[str], Optional[int]]] = None,
+        record_stat_callback: Callable[[str], None] | None = None,
+        get_file_size_callback: Callable[[str], int | None] | None = None,
     ):
         """Initialize the FileHandler.
 
@@ -72,7 +73,7 @@ class FileHandler:
         )
 
     @staticmethod
-    def _has_sapisid(cookies: Optional[Dict[str, str]]) -> bool:
+    def _has_sapisid(cookies: dict[str, str] | None) -> bool:
         if not cookies:
             return False
         return any(
@@ -81,9 +82,9 @@ class FileHandler:
 
     @staticmethod
     def _summarize_auth(
-        headers: Optional[Dict[str, str]],
-        cookies: Optional[Dict[str, str]],
-    ) -> Tuple[str, bool, list]:
+        headers: dict[str, str] | None,
+        cookies: dict[str, str] | None,
+    ) -> tuple[str, bool, list[str]]:
         preview = headers.get("Authorization") if headers else None
         if preview:
             if preview.startswith("SAPISIDHASH"):
@@ -143,9 +144,9 @@ class FileHandler:
         stream_url: str,
         offset: int,
         size: int,
-        path: Optional[str] = None,
-        auth_headers: Optional[dict] = None,
-        cookies: Optional[dict] = None,
+        path: str | None = None,
+        auth_headers: dict[str, str] | None = None,
+        cookies: dict[str, str] | None = None,
         retries: int = 3,
     ) -> bytes:
         """Stream content directly from URL when file is not yet cached.
@@ -221,7 +222,7 @@ class FileHandler:
             except Exception as e:
                 # Non-request related exceptions
                 self.logger.error(f"Unexpected streaming error: {e}")
-                raise OSError(errno.EIO, f"Streaming error: {str(e)}") from e
+                raise OSError(errno.EIO, f"Streaming error: {e!s}") from e
 
         # Should not reach here but just in case
         raise OSError(errno.EIO, "Failed to stream content after all retries")
@@ -335,7 +336,7 @@ class FileHandler:
                 if isinstance(cookies, dict):
                     cookies = dict(cookies)
                 elif isinstance(cookies, (list, tuple)):
-                    candidate: Dict[str, str] = {}
+                    candidate: dict[str, str] = {}
                     for item in cookies:
                         if hasattr(item, "name") and hasattr(item, "value"):
                             candidate[str(item.name)] = str(item.value)
@@ -434,7 +435,7 @@ class FileHandler:
         return data
 
     def _maybe_start_cache_download(
-        self, path: str, file_info: Dict[str, Any], bytes_read: int
+        self, path: str, file_info: dict[str, Any], bytes_read: int
     ) -> None:
         if bytes_read <= 0 or file_info.get("stream_url") == "cached":
             return
@@ -495,7 +496,7 @@ class FileHandler:
             self.update_file_size_callback(path, total)
 
     @staticmethod
-    def _content_range_total(value: Optional[str]) -> Optional[int]:
+    def _content_range_total(value: str | None) -> int | None:
         if not value or "/" not in value:
             return None
         total = value.rsplit("/", 1)[1]
@@ -545,7 +546,7 @@ class FileHandler:
         # First check for status file (most reliable)
         if status_path.exists():
             try:
-                with open(status_path, "r") as f:
+                with open(status_path) as f:
                     status = f.read().strip()
                 if status == "complete":
                     self.logger.debug(

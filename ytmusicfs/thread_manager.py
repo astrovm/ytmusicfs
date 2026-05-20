@@ -3,8 +3,10 @@
 import logging
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable, Dict, Optional
+from contextlib import suppress
+from typing import Any
 
 
 class ThreadManager:
@@ -15,7 +17,7 @@ class ThreadManager:
     ensures proper shutdown of all thread resources.
     """
 
-    def __init__(self, logger: Optional[logging.Logger] = None):
+    def __init__(self, logger: logging.Logger | None = None):
         """
         Initialize the ThreadManager.
 
@@ -26,7 +28,7 @@ class ThreadManager:
         self.logger.info("Initializing ThreadManager")
 
         # Thread pools for different operation types
-        self._pools: Dict[str, ThreadPoolExecutor] = {}
+        self._pools: dict[str, ThreadPoolExecutor] = {}
 
         # Default pool configurations
         self._default_configs = {
@@ -83,7 +85,9 @@ class ThreadManager:
             self._pools[pool_name] = pool
             return pool
 
-    def submit_task(self, pool_name: str, fn: Callable, *args, **kwargs):
+    def submit_task(
+        self, pool_name: str, fn: Callable[..., Any], *args: Any, **kwargs: Any
+    ):
         """
         Submit a task to the specified thread pool and track it.
 
@@ -131,7 +135,7 @@ class ThreadManager:
         """
         return threading.RLock()
 
-    def shutdown(self, wait: bool = True, timeout: Optional[float] = None) -> bool:
+    def shutdown(self, wait: bool = True, timeout: float | None = None) -> bool:
         """
         Shutdown all thread pools managed by this ThreadManager.
 
@@ -191,7 +195,5 @@ class ThreadManager:
         Ensure thread pools are shut down when the manager is deleted.
         """
         if not self._shutdown:
-            try:
+            with suppress(Exception):
                 self.shutdown(wait=False)
-            except Exception:
-                pass  # Don't raise exceptions in __del__

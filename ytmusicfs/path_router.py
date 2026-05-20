@@ -2,7 +2,10 @@
 
 import logging
 import re
-from typing import Callable, Dict, List
+from collections.abc import Callable
+from typing import Any
+
+RouteHandler = Callable[..., list[str]]
 
 
 class PathRouter:
@@ -10,9 +13,9 @@ class PathRouter:
 
     def __init__(self):
         """Initialize the path router with empty handler collections."""
-        self.handlers: Dict[str, Callable] = {}
-        self.subpath_handlers: List[tuple[str, Callable]] = []
-        self.pattern_handlers: List[tuple[str, Callable]] = []  # For wildcard patterns
+        self.handlers: dict[str, RouteHandler] = {}
+        self.subpath_handlers: list[tuple[str, RouteHandler]] = []
+        self.pattern_handlers: list[tuple[str, RouteHandler]] = []
 
         # Content fetcher will be set later by the filesystem
         self.fetcher = None
@@ -39,7 +42,7 @@ class PathRouter:
         """
         self.cache = cache
 
-    def register(self, path: str, handler: Callable) -> None:
+    def register(self, path: str, handler: RouteHandler) -> None:
         """Register a handler for an exact path match.
 
         Args:
@@ -52,7 +55,7 @@ class PathRouter:
         if self.cache:
             self.cache.mark_valid(path, is_directory=True)
 
-    def register_subpath(self, prefix: str, handler: Callable) -> None:
+    def register_subpath(self, prefix: str, handler: RouteHandler) -> None:
         """Register a handler for a path prefix match.
 
         Args:
@@ -65,7 +68,7 @@ class PathRouter:
         if self.cache:
             self.cache.mark_valid(prefix, is_directory=True)
 
-    def register_dynamic(self, pattern: str, handler: Callable) -> None:
+    def register_dynamic(self, pattern: str, handler: RouteHandler) -> None:
         """Register a handler for a path pattern with wildcards.
 
         Wildcards:
@@ -84,7 +87,9 @@ class PathRouter:
             if prefix:
                 self.cache.mark_valid(prefix, is_directory=True)
 
-    def _match_wildcard_pattern(self, pattern: str, path: str) -> tuple[bool, list]:
+    def _match_wildcard_pattern(
+        self, pattern: str, path: str
+    ) -> tuple[bool, list[Any]]:
         """Check if a path matches a wildcard pattern and extract wildcard values.
 
         Args:
@@ -182,7 +187,7 @@ class PathRouter:
 
         return True
 
-    def route(self, path: str) -> List[str]:
+    def route(self, path: str) -> list[str]:
         """Route a path to the appropriate handler.
 
         Args:

@@ -186,9 +186,9 @@ class TestYouTubeMusicFSIntegration(unittest.TestCase):
         def mock_readdir(path, fh=None):
             if path == "/":
                 return [".", "..", "playlists", "albums", "liked_songs"]
-            elif path == "/playlists":
+            if path == "/playlists":
                 return [".", "..", "My Playlist", "Favorites"]
-            elif path == "/playlists/My Playlist":
+            if path == "/playlists/My Playlist":
                 return [".", "..", "Song 1.m4a", "Song 2.m4a"]
             return original_readdir(path, fh)
 
@@ -198,11 +198,9 @@ class TestYouTubeMusicFSIntegration(unittest.TestCase):
         original_getattr = self.fs.getattr
 
         def mock_getattr(path):
-            if path == "/":
+            if path == "/" or path in ["/playlists", "/playlists/My Playlist"]:
                 return {"st_mode": 0o40555, "st_nlink": 2}
-            elif path in ["/playlists", "/playlists/My Playlist"]:
-                return {"st_mode": 0o40555, "st_nlink": 2}
-            elif path == "/playlists/My Playlist/Song 1.m4a":
+            if path == "/playlists/My Playlist/Song 1.m4a":
                 return {"st_mode": 0o100444, "st_nlink": 1, "st_size": 1024 * 1024}
             return original_getattr(path)
 
@@ -349,9 +347,8 @@ class TestYouTubeMusicFSIntegration(unittest.TestCase):
                 call_count += 1
                 if call_count == 1:
                     return [".", "..", "Old Song.m4a"]
-                else:
-                    # After the first call, simulate fetching updated content
-                    return [".", "..", "Old Song.m4a", "New Song.m4a"]
+                # After the first call, simulate fetching updated content
+                return [".", "..", "Old Song.m4a", "New Song.m4a"]
             # For any other path, use the original method
             return original_readdir(path, fh)
 

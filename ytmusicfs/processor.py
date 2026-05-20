@@ -2,13 +2,13 @@
 
 import logging
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Any
 
 
 class TrackProcessor:
     """Processor for handling track metadata."""
 
-    def __init__(self, logger: Optional[logging.Logger] = None, cache_manager=None):
+    def __init__(self, logger: logging.Logger | None = None, cache_manager=None):
         """Initialize the track processor.
 
         Args:
@@ -33,10 +33,9 @@ class TrackProcessor:
         sanitized = "".join("-" if c in invalid_chars else c for c in name.strip())
         # Remove leading/trailing dots or multiple consecutive hyphens
         sanitized = re.sub(r"^\.+|\.+$", "", sanitized)
-        sanitized = re.sub(r"-+", "-", sanitized)
-        return sanitized
+        return re.sub(r"-+", "-", sanitized)
 
-    def clean_artists(self, raw_artists: List[Dict]) -> str:
+    def clean_artists(self, raw_artists: list[dict[str, Any]]) -> str:
         """Format artist names from a list of artist dictionaries.
 
         Args:
@@ -62,7 +61,7 @@ class TrackProcessor:
         """
         return name[:-8] if name.endswith(" - Topic") else name
 
-    def parse_duration(self, track: Dict) -> Tuple[Optional[int], str]:
+    def parse_duration(self, track: dict[str, Any]) -> tuple[int | None, str]:
         """Parse track duration into seconds and formatted string.
 
         Args:
@@ -80,7 +79,7 @@ class TrackProcessor:
         duration_formatted = self._format_duration(duration_seconds or 0)
         return duration_seconds, duration_formatted
 
-    def _parse_duration_str(self, duration_str: str) -> Optional[int]:
+    def _parse_duration_str(self, duration_str: str) -> int | None:
         """Parse a duration string (e.g., 'MM:SS' or 'HH:MM:SS') into seconds.
 
         Args:
@@ -111,7 +110,7 @@ class TrackProcessor:
         minutes, secs = divmod(seconds, 60)
         return f"{minutes}:{secs:02d}"
 
-    def extract_album_info(self, track: Dict) -> Tuple[str, str]:
+    def extract_album_info(self, track: dict[str, Any]) -> tuple[str, str]:
         """Extract album name and artist from track data.
 
         Args:
@@ -131,7 +130,7 @@ class TrackProcessor:
         artist = self._extract_album_artist(album_obj)
         return album_name, artist
 
-    def _extract_album_artist(self, album_obj: Dict) -> str:
+    def _extract_album_artist(self, album_obj: dict[str, Any]) -> str:
         """Extract album artist from album object.
 
         Args:
@@ -148,7 +147,7 @@ class TrackProcessor:
         ) or "Unknown Artist"
         return self._clean_artist_name(name)
 
-    def extract_year(self, track: Dict) -> Optional[int]:
+    def extract_year(self, track: dict[str, Any]) -> int | None:
         """Extract year from track or album data.
 
         Args:
@@ -161,7 +160,7 @@ class TrackProcessor:
             isinstance(track.get("album"), dict) and track["album"].get("year")
         )
 
-    def extract_track_info(self, track: Dict) -> Dict:
+    def extract_track_info(self, track: dict[str, Any]) -> dict[str, Any]:
         """Extract and format track information from yt-dlp metadata.
 
         Args:
@@ -241,8 +240,8 @@ class TrackProcessor:
         }
 
     def process_tracks(
-        self, tracks: List[Dict], add_filename: bool = True
-    ) -> List[Dict]:
+        self, tracks: list[dict[str, Any]], add_filename: bool = True
+    ) -> list[dict[str, Any]]:
         """Process track data into a consistent format with filenames.
 
         Args:

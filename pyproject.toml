@@ -57,11 +57,32 @@ line-length = 88
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "A", "DTZ", "ISC", "ICN", "INP", "LOG", "Q", "TID", "TCH"]
+select = [
+  "E",
+  "F",
+  "W",
+  "I",
+  "B",
+  "A",
+  "C4",
+  "DTZ",
+  "ISC",
+  "ICN",
+  "INP",
+  "LOG",
+  "PIE",
+  "Q",
+  "RET",
+  "RUF",
+  "SIM",
+  "TID",
+  "TCH",
+  "UP",
+]
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["B904"]
+"tests/*" = ["ARG001", "ARG002", "ARG005", "B904"]
 
 [tool.mypy]
 python_version = "3.10"
@@ -69,6 +90,7 @@ ignore_missing_imports = true
 check_untyped_defs = true
 no_implicit_optional = true
 disallow_any_decorated = true
+disallow_any_generics = true
 warn_unused_ignores = true
 warn_redundant_casts = true
 warn_unreachable = true

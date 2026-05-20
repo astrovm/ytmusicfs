@@ -3,7 +3,7 @@
 import logging
 import time
 from json import JSONDecodeError
-from typing import Dict, List, Optional
+from typing import Any
 
 from ytmusicfs.auth_adapter import YTMusicAuthAdapter
 
@@ -21,7 +21,7 @@ class YouTubeMusicClient:
     def __init__(
         self,
         auth_adapter: YTMusicAuthAdapter,
-        logger: Optional[logging.Logger] = None,
+        logger: logging.Logger | None = None,
     ):
         """Initialize the YouTube Music API client.
 
@@ -33,7 +33,7 @@ class YouTubeMusicClient:
         self.ytmusic = auth_adapter
         self.logger.info("YouTubeMusicClient initialized with browser auth")
 
-    def get_library_playlists(self, limit: int = 100) -> List[Dict]:
+    def get_library_playlists(self, limit: int = 100) -> list[dict[Any, Any]]:
         """Fetch playlists from the user's library.
 
         Args:
@@ -48,7 +48,7 @@ class YouTubeMusicClient:
             limit=limit,
         )
 
-    def get_liked_songs(self, limit: int = 10000) -> Dict:
+    def get_liked_songs(self, limit: int = 10000) -> dict[Any, Any]:
         """Fetch liked songs from the user's library.
 
         Args:
@@ -63,7 +63,7 @@ class YouTubeMusicClient:
             limit=limit,
         )
 
-    def get_playlist(self, playlist_id: str, limit: int = 10000) -> Dict:
+    def get_playlist(self, playlist_id: str, limit: int = 10000) -> dict[Any, Any]:
         """Fetch a playlist by its ID.
 
         Args:
@@ -80,7 +80,7 @@ class YouTubeMusicClient:
             limit=limit,
         )
 
-    def get_library_artists(self, limit: int = 10000) -> List[Dict]:
+    def get_library_artists(self, limit: int = 10000) -> list[dict[Any, Any]]:
         """Fetch artists from the user's library.
 
         Args:
@@ -95,7 +95,7 @@ class YouTubeMusicClient:
             limit=limit,
         )
 
-    def get_artist(self, artist_id: str) -> Dict:
+    def get_artist(self, artist_id: str) -> dict[Any, Any]:
         """Fetch an artist by their ID.
 
         Args:
@@ -110,7 +110,7 @@ class YouTubeMusicClient:
             artist_id,
         )
 
-    def get_library_albums(self, limit: int = 10000) -> List[Dict]:
+    def get_library_albums(self, limit: int = 10000) -> list[dict[Any, Any]]:
         """Fetch albums from the user's library.
 
         Args:
@@ -125,7 +125,7 @@ class YouTubeMusicClient:
             limit=limit,
         )
 
-    def get_album(self, album_id: str) -> Dict:
+    def get_album(self, album_id: str) -> dict[Any, Any]:
         """Fetch an album by its ID.
 
         Args:
@@ -143,11 +143,11 @@ class YouTubeMusicClient:
     def search(
         self,
         query: str,
-        filter_type: Optional[str] = None,
-        scope: Optional[str] = None,
+        filter_type: str | None = None,
+        scope: str | None = None,
         limit: int = 100,
         ignore_spelling: bool = False,
-    ) -> List[Dict]:
+    ) -> list[dict[Any, Any]]:
         """Search YouTube Music.
 
         Args:

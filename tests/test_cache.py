@@ -522,7 +522,7 @@ class TestCacheManager(unittest.TestCase):
             }
 
             # Mark paths as valid
-            for path in [base_path] + related_paths:
+            for path in [base_path, *related_paths]:
                 test_cache.valid_paths.add(path)
                 test_cache.path_validation_cache[path] = {
                     "valid": True,
@@ -540,7 +540,7 @@ class TestCacheManager(unittest.TestCase):
             )
 
             # Verify paths are valid
-            for path in [base_path] + related_paths:
+            for path in [base_path, *related_paths]:
                 self.assertTrue(test_cache.is_valid_path(path))
 
             # Remove the base path from valid_paths
@@ -875,7 +875,7 @@ class TestCacheManager(unittest.TestCase):
             except Exception as e:
                 with results_lock:
                     results["failure"] += 1
-                    print(f"Thread {thread_id} error: {str(e)}")
+                    print(f"Thread {thread_id} error: {e!s}")
 
         # Create and start threads
         threads = []

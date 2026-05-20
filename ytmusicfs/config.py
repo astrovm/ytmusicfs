@@ -3,7 +3,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 class ConfigManager:
@@ -17,9 +17,9 @@ class ConfigManager:
 
     def __init__(
         self,
-        cache_dir: Optional[str] = None,
-        config_dir: Optional[str] = None,
-        logger: Optional[logging.Logger] = None,
+        cache_dir: str | None = None,
+        config_dir: str | None = None,
+        logger: logging.Logger | None = None,
     ):
         """Initialize with optional overrides for defaults."""
         self.logger = logger or logging.getLogger(__name__)
