@@ -16,6 +16,10 @@ YT_DLP_JS_RUNTIMES = {
     "bun": {},
     "quickjs": {},
 }
+UNAVAILABLE_ERRORS = (
+    "Video unavailable",
+    "This video is not available",
+)
 
 
 class YTDLPUtils:
@@ -290,5 +294,11 @@ class YTDLPUtils:
             result = self.extract_stream_url(video_id, browser)
             return {"status": "success", **result}
         except Exception as e:
-            self.logger.error(f"Error extracting stream URL for {video_id}: {str(e)}")
+            message = str(e)
+            if any(marker in message for marker in UNAVAILABLE_ERRORS):
+                self.logger.warning(f"Stream unavailable for {video_id}: {message}")
+            else:
+                self.logger.error(
+                    f"Error extracting stream URL for {video_id}: {message}"
+                )
             return {"status": "error", "error": str(e)}

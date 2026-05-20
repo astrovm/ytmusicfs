@@ -103,6 +103,25 @@ class TestCacheManager(unittest.TestCase):
         # Remove the temporary directory
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
+    def test_unavailable_track_helpers(self):
+        """Unavailable tracks should be stored under stable video IDs."""
+        self.cache.get.return_value = {
+            "videoId": "abc123",
+            "path": "/liked_songs/song.m4a",
+            "reason": "Video unavailable",
+            "timestamp": 123.0,
+        }
+
+        self.cache.mark_unavailable_track(
+            "abc123", "/liked_songs/song.m4a", "Video unavailable"
+        )
+
+        self.cache.set.assert_called_once()
+        key, value = self.cache.set.call_args.args
+        self.assertEqual(key, "unavailable:abc123")
+        self.assertEqual(value["videoId"], "abc123")
+        self.assertTrue(self.cache.is_track_unavailable("abc123"))
+
     def test_set_and_get(self):
         """Test setting and getting a value in the cache."""
         # Test data

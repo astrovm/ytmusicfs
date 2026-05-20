@@ -41,6 +41,7 @@ class TestYouTubeMusicFS(unittest.TestCase):
             self.mock_processor = mock_processor.return_value
             self.mock_cache = mock_cache.return_value
             self.mock_cache.cache_dir = "/tmp/cache_test"
+            self.mock_cache.is_track_unavailable.return_value = False
             self.mock_fetcher = mock_fetcher.return_value
             self.mock_router = mock_router.return_value
             self.mock_file_handler = mock_file_handler.return_value
@@ -287,6 +288,32 @@ class TestYouTubeMusicFS(unittest.TestCase):
             self.fs.read(file_path, 1024, 0, file_handle)
 
         self.assertEqual(context.exception.args[0], errno.ENOENT)
+
+    def test_read_failure_logs_once_per_cooldown(self):
+        file_path = "/playlists/my_playlist/song.m4a"
+        file_handle = 42
+        self.mock_file_handler.read.side_effect = OSError(errno.ENOENT, "missing")
+        self.fs.logger = Mock()
+
+        for _ in range(2):
+            with self.assertRaises(FuseOSError):
+                self.fs.read(file_path, 1024, 0, file_handle)
+
+        self.fs.logger.warning.assert_called_once()
+
+    def test_readdir_filters_unavailable_tracks_from_cached_listing(self):
+        directory = "/playlists/my_playlist"
+        self.mock_cache.get.return_value = {
+            "good.m4a": {"videoId": "good"},
+            "bad.m4a": {"videoId": "bad"},
+        }
+        self.mock_cache.is_track_unavailable.side_effect = lambda video_id: (
+            video_id == "bad"
+        )
+
+        result = self.fs.readdir(directory, None)
+
+        self.assertEqual(result, [".", "..", "good.m4a"])
 
     def test_release_file(self):
         """Test releasing (closing) a file."""

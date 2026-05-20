@@ -40,6 +40,7 @@ class TestContentFetcher(unittest.TestCase):
         self.cache.get_directory_listing_with_attrs.return_value = (
             {}
         )  # Empty directory listing
+        self.cache.is_track_unavailable.return_value = False
 
         # Create the instance to test
         self.fetcher = ContentFetcher(
@@ -321,6 +322,19 @@ class TestContentFetcher(unittest.TestCase):
         self.assertIn(".", result)
         self.assertIn("..", result)
         self.assertIn("my_album", result)
+
+    def test_readdir_playlist_by_type_filters_unavailable_tracks(self):
+        self.cache.get_directory_listing_with_attrs.return_value = {
+            "good.m4a": {"videoId": "good"},
+            "bad.m4a": {"videoId": "bad"},
+        }
+        self.cache.is_track_unavailable.side_effect = lambda video_id: (
+            video_id == "bad"
+        )
+
+        result = self.fetcher.readdir_playlist_by_type("liked_songs", "/liked_songs")
+
+        self.assertEqual(result, [".", "..", "good.m4a"])
 
     def test_get_playlist_id_from_name(self):
         """Test retrieving playlist ID from its name."""

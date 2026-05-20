@@ -103,6 +103,11 @@ class FileHandler:
         """
         self.logger.debug(f"Opening {path} with video_id {video_id}")
 
+        unavailable = self.cache.get_unavailable_track(video_id)
+        if unavailable:
+            reason = unavailable.get("reason", "Track unavailable")
+            raise OSError(errno.ENOENT, reason)
+
         cache_path = self.cache_dir / "audio" / f"{video_id}.m4a"
         cache_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -220,6 +225,11 @@ class FileHandler:
         file_info = self.open_files[fh]
         cache_path = Path(file_info["cache_path"])
         video_id = file_info["video_id"]
+
+        unavailable = self.cache.get_unavailable_track(video_id)
+        if unavailable:
+            reason = unavailable.get("reason", "Track unavailable")
+            raise OSError(errno.ENOENT, reason)
 
         # If there was an error, raise it
         if file_info["status"] == "error":
@@ -365,6 +375,7 @@ class FileHandler:
                     )
 
                 if error_code == errno.ENOENT:
+                    self._mark_unavailable_if_needed(video_id, path, error_msg)
                     self.logger.warning(log_message)
                 else:
                     self.logger.error(log_message)
@@ -420,6 +431,13 @@ class FileHandler:
         if any(marker in error_msg for marker in cls.UNAVAILABLE_ERRORS):
             return errno.ENOENT
         return errno.EIO
+
+    def _mark_unavailable_if_needed(
+        self, video_id: str, path: str, error_msg: str
+    ) -> None:
+        if self._stream_error_errno(error_msg) != errno.ENOENT:
+            return
+        self.cache.mark_unavailable_track(video_id, path, error_msg)
 
     def release(self, path: str, fh: int) -> int:
         """Release (close) a file handle but allow downloads to continue.

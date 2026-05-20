@@ -523,6 +523,7 @@ class CacheManager:
                 # Only commit every 50 writes or if it's a critical path
                 if (
                     key.startswith("valid_")
+                    or key.startswith("unavailable:")
                     or "_listing_with_attrs" in key
                     or random.random() < 0.02
                 ):
@@ -696,6 +697,60 @@ class CacheManager:
         if duration is not None:
             self.logger.debug(f"Retrieved cached duration for {video_id}: {duration}s")
         return duration
+
+    def mark_unavailable_track(
+        self, video_id: str, path: Optional[str], reason: str
+    ) -> None:
+        """Persist that a track cannot be streamed."""
+        if not video_id:
+            return
+        self.set(
+            f"unavailable:{video_id}",
+            {
+                "videoId": video_id,
+                "path": path,
+                "reason": reason,
+                "timestamp": time.time(),
+            },
+        )
+
+    def get_unavailable_track(self, video_id: str) -> Optional[Dict[str, Any]]:
+        """Return persisted unavailable-track metadata for a video ID."""
+        if not video_id:
+            return None
+        value = self.get(f"unavailable:{video_id}")
+        return value if isinstance(value, dict) else None
+
+    def is_track_unavailable(self, video_id: str) -> bool:
+        """Return whether a video ID is marked unavailable."""
+        return self.get_unavailable_track(video_id) is not None
+
+    def clear_unavailable_tracks(self) -> int:
+        """Delete all persisted unavailable-track entries."""
+        removed = 0
+        keys_to_remove = [
+            key
+            for key in list(self.hotcache.keys())
+            if str(key).startswith("hotcache:unavailable:")
+        ]
+        for key in keys_to_remove:
+            del self.hotcache[key]
+
+        try:
+            with self.lock:
+                self.cursor.execute(
+                    "DELETE FROM cache_entries WHERE key LIKE ?",
+                    (self.path_to_key("unavailable:") + "%",),
+                )
+                removed = self.cursor.rowcount
+                self.conn.commit()
+        except sqlite3.Error as e:
+            self.logger.warning(
+                "Failed to clear unavailable-track cache: %s: %s",
+                e.__class__.__name__,
+                e,
+            )
+        return removed
 
     def set_durations_batch(self, durations: Dict[str, int]) -> None:
         """Store multiple durations in a batch operation with optimized performance.

@@ -119,6 +119,8 @@ class YouTubeMusicFS(Operations):
         self.last_access_time = {}  # {operation_path: last_access_time}
         self.last_access_lock = self.thread_manager.create_lock()
         self.last_access_results = {}  # {operation_path: cached_result}
+        self.read_error_log_times = {}
+        self.read_error_log_cooldown = 60.0
 
         # Store the browser parameter
         self.browser = browser
@@ -206,6 +208,11 @@ class YouTubeMusicFS(Operations):
         valid_filenames = set()
 
         for track in processed_tracks:
+            video_id = track.get("videoId")
+            if video_id and self.cache.is_track_unavailable(video_id):
+                self.logger.debug("Skipping unavailable track in listing: %s", video_id)
+                continue
+
             filename = track.get("filename")
             if not filename:
                 self.logger.warning(
@@ -305,7 +312,9 @@ class YouTubeMusicFS(Operations):
         directory_listing = self.cache.get(cache_key)
         if directory_listing:
             self.logger.debug(f"Using cached directory listing for readdir: {path}")
-            return [".", ".."] + list(directory_listing.keys())
+            return [".", ".."] + list(
+                self._filter_unavailable_listing(directory_listing).keys()
+            )
 
         # Priority 3: Check operation cooldown cache for very recent requests
         operation_key = f"readdir:{path}"
@@ -699,11 +708,29 @@ class YouTubeMusicFS(Operations):
                 raise
             if isinstance(e, OSError):
                 error_code = e.errno or errno.EIO
-                self.logger.warning(f"Read failed for {path}: {e}")
+                self._log_read_failure(path, e)
                 raise FuseOSError(error_code) from e
             self.logger.error(f"Error reading {path}: {e}")
             self.logger.error(traceback.format_exc())
             raise FuseOSError(errno.EIO) from e
+
+    def _filter_unavailable_listing(
+        self, listing: Dict[str, Dict[str, Any]]
+    ) -> Dict[str, Dict[str, Any]]:
+        return {
+            filename: attrs
+            for filename, attrs in listing.items()
+            if not attrs.get("videoId")
+            or not self.cache.is_track_unavailable(attrs["videoId"])
+        }
+
+    def _log_read_failure(self, path: str, error: OSError) -> None:
+        now = time.time()
+        last_logged = self.read_error_log_times.get(path, 0)
+        if now - last_logged < self.read_error_log_cooldown:
+            return
+        self.read_error_log_times[path] = now
+        self.logger.warning(f"Read failed for {path}: {error}")
 
     def _get_status_json(self) -> bytes:
         """Return lightweight filesystem status for mounted debug reads."""

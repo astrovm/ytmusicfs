@@ -231,7 +231,9 @@ class ContentFetcher:
         cached_listing = self.cache.get_directory_listing_with_attrs(directory_path)
         if cached_listing:
             self.logger.debug(f"Instant cache hit for {directory_path}")
-            return [".", ".."] + list(cached_listing.keys())
+            return [".", ".."] + list(
+                self._filter_unavailable_listing(cached_listing).keys()
+            )
 
         if playlist_type == "liked_songs":
             entry = next(
@@ -247,7 +249,11 @@ class ContentFetcher:
                 ),
                 entry["path"],
             )
-            return [".", ".."] + [track["filename"] for track in tracks]
+            return [".", ".."] + [
+                track["filename"]
+                for track in tracks
+                if not self._is_track_unavailable(track)
+            ]
 
         # For playlists and albums, list directories
         entries = [p for p in self.PLAYLIST_REGISTRY if p["type"] == playlist_type]
@@ -261,6 +267,20 @@ class ContentFetcher:
         self._cache_directory_listing_with_attrs(directory_path, processed_entries)
         self.cache.set_refresh_metadata(cache_key, time.time(), "fresh")
         return [".", ".."] + [e["name"] for e in entries]
+
+    def _filter_unavailable_listing(
+        self, listing: Dict[str, Dict[str, Any]]
+    ) -> Dict[str, Dict[str, Any]]:
+        return {
+            filename: attrs
+            for filename, attrs in listing.items()
+            if not attrs.get("videoId")
+            or not self.cache.is_track_unavailable(attrs["videoId"])
+        }
+
+    def _is_track_unavailable(self, track: Dict[str, Any]) -> bool:
+        video_id = track.get("videoId")
+        return bool(video_id and self.cache.is_track_unavailable(video_id))
 
     def _cache_directory_listing_with_attrs(
         self, dir_path: str, processed_tracks: List[Dict[str, Any]]

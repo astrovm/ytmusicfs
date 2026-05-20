@@ -31,6 +31,8 @@ class TestFileHandler(unittest.TestCase):
         self.thread_manager.create_lock.return_value = threading.Lock()
 
         self.cache = Mock()
+        self.cache.get_unavailable_track.return_value = None
+        self.cache.is_track_unavailable.return_value = False
         self.logger = logging.getLogger("test")
         self.update_file_size_callback = Mock()
         self.yt_dlp_utils = Mock()
@@ -154,6 +156,21 @@ class TestFileHandler(unittest.TestCase):
             self.file_handler.open_files[file_handle]["video_id"], video_id
         )
         self.assertEqual(self.file_handler.path_to_fh[path], file_handle)
+
+    def test_open_rejects_cached_unavailable_video(self):
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "OFuzv2fm2PY"
+        self.cache.get_unavailable_track.return_value = {
+            "videoId": video_id,
+            "path": path,
+            "reason": "Video unavailable",
+            "timestamp": time.time(),
+        }
+
+        with self.assertRaises(OSError) as context:
+            self.file_handler.open(path, video_id)
+
+        self.assertEqual(context.exception.errno, errno.ENOENT)
 
     @patch("ytmusicfs.file_handler.requests.get")
     def test_read_file(self, mock_requests_get):
@@ -324,6 +341,27 @@ class TestFileHandler(unittest.TestCase):
             self.file_handler.read(path, size=1024, offset=0, fh=fh)
 
         self.assertEqual(context.exception.errno, errno.ENOENT)
+        self.cache.mark_unavailable_track.assert_called_once()
+        self.file_handler.downloader.download_file.assert_not_called()
+
+    def test_read_skips_yt_dlp_for_cached_unavailable_video(self):
+        """Unavailable cache should make repeated probes cheap."""
+
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "OFuzv2fm2PY"
+        fh = self.file_handler.open(path, video_id)
+        self.cache.get_unavailable_track.return_value = {
+            "videoId": video_id,
+            "path": path,
+            "reason": "Video unavailable",
+            "timestamp": time.time(),
+        }
+
+        with self.assertRaises(OSError) as context:
+            self.file_handler.read(path, size=1024, offset=0, fh=fh)
+
+        self.assertEqual(context.exception.errno, errno.ENOENT)
+        self.yt_dlp_utils.extract_stream_url_async.assert_not_called()
         self.file_handler.downloader.download_file.assert_not_called()
 
     @patch("ytmusicfs.file_handler.requests.get")
