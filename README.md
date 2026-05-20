@@ -91,6 +91,7 @@ ytmusicfs <command> [options]
 Available commands:
 
 - `mount`: Mount YouTube Music as a filesystem
+- `unmount`: Unmount the active YouTube Music filesystem
 
 ### Mount the Filesystem
 
@@ -101,6 +102,13 @@ access.
 ```bash
 mkdir -p ~/Music/ytmusic
 ytmusicfs mount --mount-point ~/Music/ytmusic --browser brave
+```
+
+YTMusicFS remembers the last mount point and browser. After the first successful
+mount, you can use:
+
+```bash
+ytmusicfs mount
 ```
 
 `--browser brave` tells `yt-dlp` which local browser profile to read cookies
@@ -140,7 +148,13 @@ mpv ~/Music/ytmusic/liked_songs/Artist\ -\ Song.m4a
 When you're done, unmount the filesystem:
 
 ```bash
-fusermount -u ~/Music/ytmusic
+ytmusicfs unmount
+```
+
+To unmount a specific path:
+
+```bash
+ytmusicfs unmount --mount-point ~/Music/ytmusic
 ```
 
 ## Filesystem Structure
@@ -154,8 +168,8 @@ fusermount -u ~/Music/ytmusic
 ### ytmusicfs mount
 
 ```
-usage: ytmusicfs mount [-h] --mount-point MOUNT_POINT [--cache-dir CACHE_DIR]
-                       [--foreground] [--debug] --browser BROWSER
+usage: ytmusicfs mount [-h] [--mount-point MOUNT_POINT] [--cache-dir CACHE_DIR]
+                       [--foreground] [--debug] [--browser BROWSER]
 
 Mount YouTube Music as a filesystem
 
@@ -164,11 +178,27 @@ Options:
   --mount-point, -m MOUNT_POINT
                         Directory where the filesystem will be mounted
   --cache-dir, -c CACHE_DIR
-                        Directory to store cache files
-                        (default: ~/.cache/ytmusicfs)
-  --foreground, -f      Run in the foreground (for debugging)
+                        Cache directory
+  --foreground, -f      Run in foreground
   --debug, -d           Enable debug logging
   --browser, -b BROWSER Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
+```
+
+### ytmusicfs unmount
+
+```
+usage: ytmusicfs unmount [-h] [--mount-point MOUNT_POINT] [--cache-dir CACHE_DIR]
+                         [--debug]
+
+Unmount YouTube Music filesystem
+
+Options:
+  -h, --help            Show this help message and exit
+  --mount-point, -m MOUNT_POINT
+                        Mount point directory. Defaults to the active ytmusicfs mount.
+  --cache-dir, -c CACHE_DIR
+                        Cache directory
+  --debug, -d           Enable debug logging
 ```
 
 ## Limitations

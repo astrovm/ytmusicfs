@@ -811,6 +811,7 @@ def mount_ytmusicfs(
     fuse_options = {
         "foreground": foreground,
         "nothreads": False,
+        "fsname": "ytmusicfs",
         "uid": os.getuid(),  # Set mount UID to current user
         "gid": os.getgid(),  # Set mount GID to current group
     }
