@@ -87,6 +87,19 @@ def test_mount_without_settings_fails(tmp_path):
     logger.error.assert_called_once()
 
 
+@patch("ytmusicfs.cli.mount_filesystem", side_effect=RuntimeError("auth failed"))
+def test_mount_failure_does_not_save_last_settings(mock_mount, tmp_path):
+    mount_point = tmp_path / "music"
+    args = make_mount_args(tmp_path, mount_point=str(mount_point), browser="brave")
+
+    result = MountCommandHandler(args, logging.getLogger("test")).execute()
+
+    config = ConfigManager(cache_dir=str(tmp_path / "cache"))
+    assert result == 1
+    assert config.load_user_config() == {}
+    assert config.load_mount_state() == {}
+
+
 @patch("ytmusicfs.cli.subprocess.run")
 @patch("ytmusicfs.cli.shutil.which", return_value="/usr/bin/fusermount")
 @patch("ytmusicfs.cli.os.path.ismount", return_value=True)

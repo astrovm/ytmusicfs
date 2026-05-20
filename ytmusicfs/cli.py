@@ -103,12 +103,6 @@ class MountCommandHandler:
         mount_point, browser = settings
         mount_point.mkdir(parents=True, exist_ok=True)
         mount_point = mount_point.resolve()
-        self.config.save_user_config(
-            {
-                "last_mount_point": str(mount_point),
-                "last_browser": browser,
-            }
-        )
         self.config.save_mount_state(
             {
                 "mount_point": str(mount_point),
@@ -124,6 +118,12 @@ class MountCommandHandler:
                 cache_dir=str(self.config.cache_dir),
                 foreground=self.args.foreground,
                 browser=browser,
+            )
+            self.config.save_user_config(
+                {
+                    "last_mount_point": str(mount_point),
+                    "last_browser": browser,
+                }
             )
             return 0
         except Exception as e:
