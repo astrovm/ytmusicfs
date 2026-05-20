@@ -10,6 +10,7 @@ from pathlib import Path
 from yt_dlp import YoutubeDL
 
 YOUTUBE_MUSIC_AUDIO_FORMAT = "141/140/bestaudio[ext=m4a]"
+PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT = "141"
 YT_DLP_JS_RUNTIMES = {
     "deno": {},
     "node": {},
@@ -59,11 +60,11 @@ class YTDLPUtils:
 
     def _cache_browser_cookies(self, browser, ydl):
         if not browser:
-            return
+            return False
 
         cookiejar = getattr(ydl, "cookiejar", None)
         if not cookiejar or not hasattr(cookiejar, "save"):
-            return
+            return False
 
         with self._cookie_lock:
             cookie_file = self._browser_cookie_files.get(browser)
@@ -76,6 +77,7 @@ class YTDLPUtils:
                 self._browser_cookie_files[browser] = cookie_file
 
         cookiejar.save(cookie_file, ignore_discard=True, ignore_expires=True)
+        return True
 
     def extract_browser_cookies(self, browser):
         """Return YouTube cookies from a local browser profile."""
@@ -222,41 +224,96 @@ class YTDLPUtils:
 
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            self._cache_browser_cookies(browser, ydl)
-            http_headers = info.get("http_headers") or {}
-            http_headers = dict(http_headers)
-            result = {"stream_url": info["url"], "http_headers": http_headers}
+            cached_cookies = self._cache_browser_cookies(browser, ydl)
 
-            cookies = info.get("cookies")
-            if cookies:
-                cookie_dict = None
-                try:
-                    cookie_dict = {cookie.name: cookie.value for cookie in cookies}
-                except Exception:
-                    if isinstance(cookies, dict):
-                        cookie_dict = dict(cookies)
-                    elif isinstance(cookies, (list, tuple)):
-                        try:
-                            cookie_dict = {
-                                cookie["name"]: cookie["value"]
-                                for cookie in cookies
-                                if isinstance(cookie, dict)
-                                and "name" in cookie
-                                and "value" in cookie
-                            }
-                        except Exception:
-                            cookie_dict = None
-                if cookie_dict:
-                    result["cookies"] = cookie_dict
+        result = self._stream_result_from_info(info)
+        if self._should_retry_with_cached_cookies(result, browser, cached_cookies):
+            retry_result = self._retry_stream_url_with_cached_cookies(video_id, browser)
+            if retry_result:
+                return retry_result
 
-            # Extract and include duration if available
-            if "duration" in info and info["duration"] is not None:
-                try:
-                    result["duration"] = int(info["duration"])
-                except (ValueError, TypeError):
-                    pass
+        return result
 
+    def _should_retry_with_cached_cookies(self, result, browser, cached_cookies):
+        return (
+            bool(browser)
+            and cached_cookies
+            and result.get("format_id") != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT
+        )
+
+    def _retry_stream_url_with_cached_cookies(self, video_id, browser):
+        with self._cookie_lock:
+            cookie_file = self._browser_cookie_files.get(browser)
+        if not cookie_file or not Path(cookie_file).exists():
+            return None
+
+        url = f"https://music.youtube.com/watch?v={video_id}"
+        ydl_opts = {
+            "format": YOUTUBE_MUSIC_AUDIO_FORMAT,
+            "extractor_args": {"youtube": {"formats": ["missing_pot"]}},
+            "js_runtimes": {
+                name: dict(config) for name, config in YT_DLP_JS_RUNTIMES.items()
+            },
+            "cookiefile": cookie_file,
+        }
+
+        try:
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                self._cache_browser_cookies(browser, ydl)
+            result = self._stream_result_from_info(info)
+        except Exception as exc:
+            self.logger.debug(
+                "Retry with cached cookies failed for %s: %s", video_id, exc
+            )
+            return None
+
+        if result.get("format_id") == PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT:
+            self.logger.debug(
+                "Cached-cookie retry upgraded %s to format %s",
+                video_id,
+                result["format_id"],
+            )
             return result
+        return None
+
+    def _stream_result_from_info(self, info):
+        http_headers = info.get("http_headers") or {}
+        http_headers = dict(http_headers)
+        result = {"stream_url": info["url"], "http_headers": http_headers}
+
+        if "format_id" in info and info["format_id"] is not None:
+            result["format_id"] = str(info["format_id"])
+
+        cookies = info.get("cookies")
+        if cookies:
+            cookie_dict = None
+            try:
+                cookie_dict = {cookie.name: cookie.value for cookie in cookies}
+            except Exception:
+                if isinstance(cookies, dict):
+                    cookie_dict = dict(cookies)
+                elif isinstance(cookies, (list, tuple)):
+                    try:
+                        cookie_dict = {
+                            cookie["name"]: cookie["value"]
+                            for cookie in cookies
+                            if isinstance(cookie, dict)
+                            and "name" in cookie
+                            and "value" in cookie
+                        }
+                    except Exception:
+                        cookie_dict = None
+            if cookie_dict:
+                result["cookies"] = cookie_dict
+
+        if "duration" in info and info["duration"] is not None:
+            try:
+                result["duration"] = int(info["duration"])
+            except (ValueError, TypeError):
+                pass
+
+        return result
 
     def extract_stream_url_async(self, video_id, browser=None) -> Future:
         """

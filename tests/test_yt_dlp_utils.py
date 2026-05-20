@@ -38,10 +38,12 @@ class TestYTDLPUtils(unittest.TestCase):
         first_info = {
             "url": "https://example.com/one.m4a",
             "http_headers": {},
+            "format_id": "141",
         }
         second_info = {
             "url": "https://example.com/two.m4a",
             "http_headers": {},
+            "format_id": "141",
         }
 
         first_ydl = MagicMock()
@@ -66,6 +68,101 @@ class TestYTDLPUtils(unittest.TestCase):
         utils.cleanup()
         self.assertFalse(utils._browser_cookie_files)
         self.assertFalse(Path(cookie_file).exists())
+
+    @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
+    def test_retries_lower_quality_first_stream_with_cached_cookies(
+        self, mock_youtube_dl
+    ):
+        first_info = {
+            "url": "https://example.com/low.m4a",
+            "http_headers": {},
+            "format_id": "140",
+        }
+        retry_info = {
+            "url": "https://example.com/high.m4a",
+            "http_headers": {},
+            "format_id": "141",
+        }
+
+        first_ydl = MagicMock()
+        first_ydl.extract_info.return_value = first_info
+        retry_ydl = MagicMock()
+        retry_ydl.extract_info.return_value = retry_info
+        mock_youtube_dl.return_value.__enter__.side_effect = [first_ydl, retry_ydl]
+
+        utils = YTDLPUtils()
+        result = utils.extract_stream_url("abc123", browser="brave")
+
+        self.assertEqual(result["stream_url"], "https://example.com/high.m4a")
+        self.assertEqual(result["format_id"], "141")
+        self.assertEqual(mock_youtube_dl.call_count, 2)
+
+        first_opts = mock_youtube_dl.call_args_list[0].args[0]
+        retry_opts = mock_youtube_dl.call_args_list[1].args[0]
+        self.assertEqual(first_opts["cookiesfrombrowser"], ("brave",))
+        self.assertNotIn("cookiesfrombrowser", retry_opts)
+        self.assertIn("cookiefile", retry_opts)
+
+        utils.cleanup()
+
+    @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
+    def test_does_not_retry_when_first_stream_is_preferred(self, mock_youtube_dl):
+        info = {
+            "url": "https://example.com/high.m4a",
+            "http_headers": {},
+            "format_id": "141",
+        }
+
+        ydl = MagicMock()
+        ydl.extract_info.return_value = info
+        mock_youtube_dl.return_value.__enter__.return_value = ydl
+
+        result = YTDLPUtils().extract_stream_url("abc123", browser="brave")
+
+        self.assertEqual(result["stream_url"], "https://example.com/high.m4a")
+        self.assertEqual(result["format_id"], "141")
+        self.assertEqual(mock_youtube_dl.call_count, 1)
+
+    @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
+    def test_retry_failure_returns_first_valid_stream(self, mock_youtube_dl):
+        first_info = {
+            "url": "https://example.com/low.m4a",
+            "http_headers": {},
+            "format_id": "140",
+        }
+
+        first_ydl = MagicMock()
+        first_ydl.extract_info.return_value = first_info
+        retry_ydl = MagicMock()
+        retry_ydl.extract_info.side_effect = RuntimeError("blocked")
+        mock_youtube_dl.return_value.__enter__.side_effect = [first_ydl, retry_ydl]
+
+        utils = YTDLPUtils()
+        result = utils.extract_stream_url("abc123", browser="brave")
+
+        self.assertEqual(result["stream_url"], "https://example.com/low.m4a")
+        self.assertEqual(result["format_id"], "140")
+        self.assertEqual(mock_youtube_dl.call_count, 2)
+
+        utils.cleanup()
+
+    @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
+    def test_does_not_retry_without_browser_cookies(self, mock_youtube_dl):
+        info = {
+            "url": "https://example.com/low.m4a",
+            "http_headers": {},
+            "format_id": "140",
+        }
+
+        ydl = MagicMock()
+        ydl.extract_info.return_value = info
+        mock_youtube_dl.return_value.__enter__.return_value = ydl
+
+        result = YTDLPUtils().extract_stream_url("abc123")
+
+        self.assertEqual(result["stream_url"], "https://example.com/low.m4a")
+        self.assertEqual(result["format_id"], "140")
+        self.assertEqual(mock_youtube_dl.call_count, 1)
 
     @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
     def test_extract_browser_cookies_filters_youtube_domains(self, mock_youtube_dl):
