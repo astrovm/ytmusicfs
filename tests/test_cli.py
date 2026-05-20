@@ -452,7 +452,13 @@ def test_logs_shows_custom_tail_count(tmp_path, monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert result == 0
-    assert captured.out.strip().splitlines() == ["line 15", "line 16", "line 17", "line 18", "line 19"]
+    assert captured.out.strip().splitlines() == [
+        "line 15",
+        "line 16",
+        "line 17",
+        "line 18",
+        "line 19",
+    ]
 
 
 def test_logs_path_shows_file_path(tmp_path, monkeypatch, capsys):

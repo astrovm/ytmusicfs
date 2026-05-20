@@ -3,6 +3,8 @@
 """Authentication adapter for ytmusicapi using browser cookies."""
 
 import logging
+import time
+from json import JSONDecodeError
 from typing import Any, Dict, Optional
 
 from ytmusicapi import YTMusic
@@ -10,6 +12,8 @@ from ytmusicapi import YTMusic
 from ytmusicfs.http_utils import _build_sapisidhash
 
 _YT_ORIGIN = "https://music.youtube.com"
+_VALIDATION_ATTEMPTS = 3
+_VALIDATION_RETRY_DELAY_SECONDS = 1.0
 
 
 class YTMusicAuthAdapter:
@@ -75,7 +79,26 @@ class YTMusicAuthAdapter:
 
     def _validate_client(self) -> None:
         # Perform a very small request so we fail fast if auth is invalid.
-        result = self.ytmusic.get_library_playlists(limit=1)
+        for attempt in range(1, _VALIDATION_ATTEMPTS + 1):
+            try:
+                result = self.ytmusic.get_library_playlists(limit=1)
+                break
+            except JSONDecodeError as exc:
+                if attempt == _VALIDATION_ATTEMPTS:
+                    raise RuntimeError(
+                        "YouTube Music auth validation returned an empty or "
+                        "non-JSON response after "
+                        f"{_VALIDATION_ATTEMPTS} attempts"
+                    ) from exc
+
+                self.logger.warning(
+                    "YouTube Music auth validation returned an empty or "
+                    "non-JSON response; retrying (%s/%s)",
+                    attempt,
+                    _VALIDATION_ATTEMPTS,
+                )
+                time.sleep(_VALIDATION_RETRY_DELAY_SECONDS)
+
         if not result:
             raise ValueError(
                 "YouTube Music returned an empty playlist list. "
