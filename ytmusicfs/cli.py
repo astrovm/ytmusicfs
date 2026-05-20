@@ -62,7 +62,6 @@ def mount_filesystem(
     cache_dir: str,
     foreground: bool,
     browser: str,
-    cache_streams: bool,
 ) -> None:
     """Import and mount the filesystem only when the mount command runs."""
     from ytmusicfs.filesystem import mount_ytmusicfs
@@ -72,7 +71,6 @@ def mount_filesystem(
         cache_dir=cache_dir,
         foreground=foreground,
         browser=browser,
-        cache_streams=cache_streams,
     )
 
 
@@ -162,7 +160,6 @@ class MountCommandHandler:
                 cache_dir=str(self.config.cache_dir),
                 foreground=self.args.foreground,
                 browser=browser,
-                cache_streams=self.args.cache_streams,
             )
             return 0
         except Exception as e:
@@ -571,11 +568,6 @@ def main() -> int:
         "--browser",
         "-b",
         help="Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')",
-    )
-    mount_parser.add_argument(
-        "--cache-streams",
-        action="store_true",
-        help="Download full audio files in the background while streaming",
     )
     mount_parser.set_defaults(
         func=lambda args: MountCommandHandler(args, setup_logging(args)).execute()

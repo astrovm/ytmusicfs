@@ -34,14 +34,12 @@ class YouTubeMusicFS(Operations):
         self,
         cache_dir: Optional[str] = None,
         browser: str = "",
-        cache_streams: bool = False,
     ):
         """Initialize the FUSE filesystem with YouTube Music API.
 
         Args:
             cache_dir: Directory for persistent cache (optional)
             browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
-            cache_streams: Download full audio files in the background after reads
         """
         # Get or create the logger
         self.logger = logging.getLogger("YTMusicFS")
@@ -134,7 +132,6 @@ class YouTubeMusicFS(Operations):
             update_file_size_callback=self._update_file_size,
             yt_dlp_utils=self.yt_dlp_utils,
             browser=self.browser,
-            cache_streams=cache_streams,
         )
 
         # Register exact path handlers
@@ -848,7 +845,6 @@ def mount_ytmusicfs(
     cache_dir: Optional[str] = None,
     foreground: bool = False,
     browser: str = "",
-    cache_streams: bool = False,
 ) -> None:
     """Mount the YouTube Music filesystem.
 
@@ -857,7 +853,6 @@ def mount_ytmusicfs(
         cache_dir: Directory to store cache files (default: None)
         foreground: Run in the foreground (for debugging)
         browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
-        cache_streams: Download full audio files in the background after reads
     """
     # Set fuse logger to WARNING level to suppress debug messages about unsupported operations
     logging.getLogger("fuse").setLevel(logging.WARNING)
@@ -875,7 +870,6 @@ def mount_ytmusicfs(
         YouTubeMusicFS(
             cache_dir=cache_dir,
             browser=browser,
-            cache_streams=cache_streams,
         ),
         mount_point,
         **fuse_options,
