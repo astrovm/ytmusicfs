@@ -650,18 +650,6 @@ def main() -> int:
         func=lambda args: CacheCommandHandler(args, setup_logging(args)).execute()
     )
 
-    refresh_parser = subparsers.add_parser(
-        "refresh", help="Clear cache so the next browse fetches fresh data"
-    )
-    refresh_parser.add_argument("--cache-dir", "-c", help="Cache directory")
-    refresh_parser.add_argument(
-        "--debug", "-d", action="store_true", help="Enable debug logging"
-    )
-    refresh_parser.set_defaults(
-        cache_action="refresh",
-        func=lambda args: CacheCommandHandler(args, setup_logging(args)).execute(),
-    )
-
     logs_parser = subparsers.add_parser("logs", help="Show recent logs")
     logs_parser.add_argument(
         "--tail",

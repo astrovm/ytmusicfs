@@ -96,7 +96,6 @@ Available commands:
 - `doctor`: Check local dependencies
 - `config`: Show or update saved mount settings
 - `cache`: Inspect or clear the persistent cache
-- `refresh`: Clear cache so the next browse fetches fresh data
 - `logs`: Show recent log lines (default last 50)
 - `service`: Manage an optional systemd user service
 
@@ -191,10 +190,10 @@ Inspect or clear the local metadata and audio cache:
 ```bash
 ytmusicfs cache stats
 ytmusicfs cache clear
-ytmusicfs refresh
+ytmusicfs cache refresh
 ```
 
-`cache clear` and `refresh` refuse to run while YTMusicFS is mounted.
+`cache clear` and `cache refresh` refuse to run while YTMusicFS is mounted.
 
 Show logs:
 
@@ -270,7 +269,7 @@ ytmusicfs config show
 ytmusicfs config set {browser,mount-point} VALUE
 ytmusicfs cache stats
 ytmusicfs cache clear
-ytmusicfs refresh [--cache-dir CACHE_DIR] [--debug]
+ytmusicfs cache refresh [--cache-dir CACHE_DIR] [--debug]
 ytmusicfs logs [--tail N] [--path] [--debug]
 ytmusicfs service {install,start,stop,restart,status} [--debug]
 ```

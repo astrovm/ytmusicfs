@@ -52,7 +52,7 @@
 - Status: `ytmusicfs status`
 - Doctor: `ytmusicfs doctor`
 - Saved config: `ytmusicfs config show`, `ytmusicfs config set browser brave`, `ytmusicfs config set mount-point ~/Music/ytmusic`
-- Cache: `ytmusicfs cache stats`, `ytmusicfs cache clear`, `ytmusicfs refresh`
+- Cache: `ytmusicfs cache stats`, `ytmusicfs cache clear`, `ytmusicfs cache refresh`
 - Logs: `ytmusicfs logs` (last 50 lines), `ytmusicfs logs --tail N`, `ytmusicfs logs --path`
 - Systemd user service: `ytmusicfs service install`, `ytmusicfs service start`, `ytmusicfs service stop`
 - Mounted debug status: `/.ytmusicfs/status.json`.
