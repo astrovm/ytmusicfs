@@ -418,6 +418,73 @@ class TestFileHandler(unittest.TestCase):
             video_id, "brave"
         )
 
+    def test_reopened_uncached_file_reuses_stream_info(self):
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        first_fh = self.file_handler.open(path, video_id)
+
+        future = Future()
+        future.set_result(
+            {
+                "status": "success",
+                "stream_url": "https://example.com/audio.m4a",
+                "http_headers": {"User-Agent": "UnitTest"},
+                "cookies": {"CONSENT": "YES+"},
+            }
+        )
+        self.yt_dlp_utils.extract_stream_url_async.return_value = future
+
+        with patch.object(
+            self.file_handler, "_stream_content", return_value=b"payload"
+        ):
+            self.assertEqual(
+                self.file_handler.read(path, size=1024, offset=0, fh=first_fh),
+                b"payload",
+            )
+
+        self.file_handler.release(path, first_fh)
+        second_fh = self.file_handler.open(path, video_id)
+        self.file_handler.record_stat_callback = Mock()
+
+        with patch.object(
+            self.file_handler, "_stream_content", return_value=b"again"
+        ) as mock_stream:
+            self.assertEqual(
+                self.file_handler.read(path, size=1024, offset=0, fh=second_fh),
+                b"again",
+            )
+
+        self.yt_dlp_utils.extract_stream_url_async.assert_called_once_with(
+            video_id, "brave"
+        )
+        file_info = self.file_handler.open_files[second_fh]
+        mock_stream.assert_called_once_with(
+            "https://example.com/audio.m4a",
+            0,
+            1024,
+            path=path,
+            auth_headers=file_info["headers"],
+            cookies=file_info["cookies"],
+        )
+        self.file_handler.record_stat_callback.assert_called_once_with(
+            "stream_info_cache_hits"
+        )
+
+    def test_timeout_error_message_is_not_empty(self):
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        fh = self.file_handler.open(path, video_id)
+
+        future = Mock()
+        future.result.side_effect = TimeoutError()
+        self.yt_dlp_utils.extract_stream_url_async.return_value = future
+
+        with self.assertRaises(OSError) as context:
+            self.file_handler.read(path, size=1024, offset=0, fh=fh)
+
+        self.assertEqual(context.exception.errno, errno.EIO)
+        self.assertEqual(context.exception.strerror, "TimeoutError")
+
     def test_read_maps_unavailable_video_to_not_found(self):
         """Unavailable YouTube videos should fail as missing files."""
 

@@ -108,8 +108,14 @@ class TestYouTubeMusicFS(unittest.TestCase):
 
         self.assertIn(b'"readdir": 1', status)
         self.assertIn(b'"getattr": 1', status)
-        self.assertIn(b'"open": 1', status)
-        self.assertIn(b'"read": 2', status)
+        self.assertIn(b'"open": 0', status)
+        self.assertIn(b'"read": 0', status)
+
+    def test_status_file_size_stays_stable_while_reading(self):
+        attrs = self.fs.getattr("/.ytmusicfs/status.json")
+        content = self.fs.read("/.ytmusicfs/status.json", attrs["st_size"], 0, 0)
+
+        self.assertEqual(len(content), attrs["st_size"])
 
     def test_readdir_playlists(self):
         """Test reading the contents of the playlists directory."""

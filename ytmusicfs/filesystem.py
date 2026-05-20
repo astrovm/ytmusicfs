@@ -450,7 +450,8 @@ class YouTubeMusicFS(Operations):
         Returns:
             File attributes
         """
-        self._record_stat("getattr")
+        if path != self.STATUS_FILE:
+            self._record_stat("getattr")
         # Start timing for performance analysis
         start_time = time.time()
         operation_key = f"getattr:{path}"
@@ -650,11 +651,11 @@ class YouTubeMusicFS(Operations):
             File handle
         """
         try:
-            self._record_stat("open")
             self.logger.debug(f"open: {path} (flags={flags})")
 
             if path == self.STATUS_FILE:
                 return 0
+            self._record_stat("open")
 
             # Check entry type from cache
             entry_type = self.cache.get_entry_type(path)
@@ -705,12 +706,12 @@ class YouTubeMusicFS(Operations):
             Bytes read from file
         """
         try:
-            self._record_stat("read")
             self.logger.debug(f"read: {path} (size={size}, offset={offset}, fh={fh})")
 
             if path == self.STATUS_FILE:
                 data = self._get_status_json()
                 return data[offset : offset + size]
+            self._record_stat("read")
 
             # Delegate to file handler
             return self.file_handler.read(path, size, offset, fh)

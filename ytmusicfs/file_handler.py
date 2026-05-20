@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ class FileHandler:
     CACHE_START_BYTES = 512 * 1024
     PROBE_EOF_OFFSET = 1024 * 1024
     PROBE_TAIL_BYTES = 512 * 1024
+    STREAM_INFO_TTL = 60 * 60
     UNAVAILABLE_ERRORS = (
         "Video unavailable",
         "This video is not available",
@@ -66,6 +68,7 @@ class FileHandler:
         self.file_handle_lock = thread_manager.create_lock()
         self.logger.debug("Using ThreadManager for lock creation in FileHandler")
         self.futures = {}  # Store futures for async operations by video_id
+        self.stream_info_cache = {}
 
         # Initialize Downloader
         self.downloader = Downloader(
@@ -297,127 +300,58 @@ class FileHandler:
                 raise OSError(errno.ENOENT, reason)
 
             # Otherwise, proceed with fetching the stream URL
-            self.logger.debug(f"Fetching stream URL on-demand for {video_id}")
+            if self._use_cached_stream_info(file_info):
+                self._record_stat("stream_info_cache_hits")
+            else:
+                self.logger.debug(f"Fetching stream URL on-demand for {video_id}")
 
-            # Use ThreadPoolExecutor-based async extraction
-            try:
-                # Check if we already have a future for this video_id
-                if video_id in self.futures:
-                    future = self.futures[video_id]
-                else:
-                    # Submit new extraction task
-                    self._record_stat("stream_extractions")
-                    future = self.yt_dlp_utils.extract_stream_url_async(
-                        video_id, self.browser
-                    )
-                    self.futures[video_id] = future
+                # Use ThreadPoolExecutor-based async extraction
+                try:
+                    result = self._get_stream_info(video_id)
+                    if result["status"] == "error":
+                        error_msg = result["error"]
+                        with self.file_handle_lock:
+                            file_info["status"] = "error"
+                            file_info["error"] = error_msg
+                        raise OSError(self._stream_error_errno(error_msg), error_msg)
 
-                # Wait for result with timeout
-                result = future.result(timeout=30)
+                    self._apply_stream_info(file_info, result)
+                    self._cache_stream_info(video_id, file_info)
 
-                # Clean up future reference
-                if video_id in self.futures:
-                    del self.futures[video_id]
+                    # Extract and cache duration if available in the result
+                    if "duration" in result and self.cache:
+                        duration = result["duration"]
+                        self.logger.debug(f"Got duration for {video_id}: {duration}s")
+                        self.cache.set_durations_batch({video_id: duration})
 
-                if result["status"] == "error":
-                    error_msg = result["error"]
+                except Exception as e:
+                    error_msg = self._error_message(e)
+                    if isinstance(e, OSError):
+                        error_code = e.errno or self._stream_error_errno(error_msg)
+                        log_message = f"Stream unavailable for {video_id}: {error_msg}"
+                    else:
+                        error_code = self._stream_error_errno(error_msg)
+                        log_message = (
+                            f"Error getting stream URL for {video_id}: {error_msg}"
+                        )
+
+                    if error_code == errno.ENOENT:
+                        self._mark_unavailable_if_needed(video_id, path, error_msg)
+                        self.logger.warning(log_message)
+                    else:
+                        self.logger.error(log_message)
+
                     with self.file_handle_lock:
                         file_info["status"] = "error"
                         file_info["error"] = error_msg
-                    raise OSError(self._stream_error_errno(error_msg), error_msg)
 
-                stream_url = result["stream_url"]
-                self.logger.debug(
-                    "yt-dlp stream url for %s: %s...",
-                    video_id,
-                    stream_url[:60],
-                )
-                cookies = result.get("cookies")
-                if isinstance(cookies, dict):
-                    cookies = dict(cookies)
-                elif isinstance(cookies, (list, tuple)):
-                    candidate: dict[str, str] = {}
-                    for item in cookies:
-                        if hasattr(item, "name") and hasattr(item, "value"):
-                            candidate[str(item.name)] = str(item.value)
-                        elif isinstance(item, dict):
-                            name = item.get("name") or item.get("key")
-                            value = item.get("value")
-                            if name and value is not None:
-                                candidate[str(name)] = str(value)
-                    cookies = candidate or None
-                raw_headers = dict(result.get("http_headers") or {})
-                if raw_headers:
-                    self.logger.debug(
-                        "yt-dlp headers for %s: %s",
-                        video_id,
-                        list(raw_headers.keys()),
-                    )
-                if "Cookie" in raw_headers or "cookie" in raw_headers:
-                    cookie_preview = raw_headers.get("Cookie") or raw_headers.get(
-                        "cookie"
-                    )
-                    self.logger.debug(
-                        "yt-dlp cookie header for %s: %s",
-                        video_id,
-                        cookie_preview[:120] if cookie_preview else "empty",
-                    )
-                auth_headers, cookies = ensure_headers_and_cookies(
-                    dict(raw_headers), cookies
-                )
-                auth_header_label, sapisid_present, cookie_keys = self._summarize_auth(
-                    auth_headers, cookies
-                )
-                self.logger.debug(
-                    "Prepared auth for %s: header=%s sapisid=%s cookies=%s",
-                    video_id,
-                    auth_header_label,
-                    sapisid_present,
-                    cookie_keys[:10],
-                )
-                with self.file_handle_lock:
-                    file_info["stream_url"] = stream_url
-                    # Persist the fully-prepared headers so subsequent reads
-                    # reuse the computed authentication metadata (e.g.
-                    # SAPISIDHASH).  Storing the raw yt-dlp headers caused
-                    # follow-up streaming requests to miss the Authorization
-                    # header which in turn triggered HTTP 403 responses.
-                    file_info["headers"] = auth_headers
-                    file_info["cookies"] = cookies
+                    if (
+                        not isinstance(e, FutureTimeoutError)
+                        and video_id in self.futures
+                    ):
+                        del self.futures[video_id]
 
-                # Extract and cache duration if available in the result
-                if "duration" in result and self.cache:
-                    duration = result["duration"]
-                    self.logger.debug(f"Got duration for {video_id}: {duration}s")
-                    # Use batch operation even for single duration
-                    self.cache.set_durations_batch({video_id: duration})
-
-            except Exception as e:
-                error_msg = e.strerror if isinstance(e, OSError) else str(e)
-                if isinstance(e, OSError):
-                    error_code = e.errno or self._stream_error_errno(error_msg)
-                    log_message = f"Stream unavailable for {video_id}: {error_msg}"
-                else:
-                    error_code = self._stream_error_errno(error_msg)
-                    log_message = (
-                        f"Error getting stream URL for {video_id}: {error_msg}"
-                    )
-
-                if error_code == errno.ENOENT:
-                    self._mark_unavailable_if_needed(video_id, path, error_msg)
-                    self.logger.warning(log_message)
-                else:
-                    self.logger.error(log_message)
-
-                with self.file_handle_lock:
-                    file_info["status"] = "error"
-                    file_info["error"] = error_msg
-
-                # Clean up future reference in case of error
-                if video_id in self.futures:
-                    del self.futures[video_id]
-
-                raise OSError(error_code, error_msg) from e
+                    raise OSError(error_code, error_msg) from e
 
         # If we are here, we need to stream directly from URL because:
         # 1. No cache file exists yet, or
@@ -457,6 +391,96 @@ class FileHandler:
         file_info["cache_started"] = True
         self._record_stat("background_downloads")
 
+    def _get_stream_info(self, video_id: str) -> dict[str, Any]:
+        if video_id in self.futures:
+            future = self.futures[video_id]
+        else:
+            self._record_stat("stream_extractions")
+            future = self.yt_dlp_utils.extract_stream_url_async(video_id, self.browser)
+            self.futures[video_id] = future
+
+        result = future.result(timeout=30)
+        if video_id in self.futures:
+            del self.futures[video_id]
+        return result
+
+    def _apply_stream_info(
+        self, file_info: dict[str, Any], result: dict[str, Any]
+    ) -> None:
+        video_id = file_info["video_id"]
+        stream_url = result["stream_url"]
+        self.logger.debug("yt-dlp stream url for %s: %s...", video_id, stream_url[:60])
+
+        raw_headers = dict(result.get("http_headers") or {})
+        if raw_headers:
+            self.logger.debug("yt-dlp headers for %s: %s", video_id, list(raw_headers))
+        if "Cookie" in raw_headers or "cookie" in raw_headers:
+            cookie_preview = raw_headers.get("Cookie") or raw_headers.get("cookie")
+            self.logger.debug(
+                "yt-dlp cookie header for %s: %s",
+                video_id,
+                cookie_preview[:120] if cookie_preview else "empty",
+            )
+
+        auth_headers, cookies = ensure_headers_and_cookies(
+            raw_headers, self._normalize_cookies(result.get("cookies"))
+        )
+        auth_header_label, sapisid_present, cookie_keys = self._summarize_auth(
+            auth_headers, cookies
+        )
+        self.logger.debug(
+            "Prepared auth for %s: header=%s sapisid=%s cookies=%s",
+            video_id,
+            auth_header_label,
+            sapisid_present,
+            cookie_keys[:10],
+        )
+        with self.file_handle_lock:
+            file_info["stream_url"] = stream_url
+            file_info["headers"] = auth_headers
+            file_info["cookies"] = cookies
+
+    @staticmethod
+    def _normalize_cookies(cookies: Any) -> dict[str, str] | None:
+        if isinstance(cookies, dict):
+            return dict(cookies)
+        if not isinstance(cookies, (list, tuple)):
+            return None
+
+        candidate: dict[str, str] = {}
+        for item in cookies:
+            if hasattr(item, "name") and hasattr(item, "value"):
+                candidate[str(item.name)] = str(item.value)
+            elif isinstance(item, dict):
+                name = item.get("name") or item.get("key")
+                value = item.get("value")
+                if name and value is not None:
+                    candidate[str(name)] = str(value)
+        return candidate or None
+
+    def _cache_stream_info(self, video_id: str, file_info: dict[str, Any]) -> None:
+        self.stream_info_cache[video_id] = {
+            "time": time.time(),
+            "stream_url": file_info["stream_url"],
+            "headers": file_info.get("headers"),
+            "cookies": file_info.get("cookies"),
+        }
+
+    def _use_cached_stream_info(self, file_info: dict[str, Any]) -> bool:
+        video_id = file_info["video_id"]
+        cached = self.stream_info_cache.get(video_id)
+        if not cached:
+            return False
+        if time.time() - cached["time"] > self.STREAM_INFO_TTL:
+            self.stream_info_cache.pop(video_id, None)
+            return False
+
+        with self.file_handle_lock:
+            file_info["stream_url"] = cached["stream_url"]
+            file_info["headers"] = cached.get("headers")
+            file_info["cookies"] = cached.get("cookies")
+        return True
+
     @classmethod
     def _stream_error_errno(cls, error_msg: str) -> int:
         if any(marker in error_msg for marker in cls.UNAVAILABLE_ERRORS):
@@ -469,6 +493,12 @@ class FileHandler:
         if self._stream_error_errno(error_msg) != errno.ENOENT:
             return
         self.cache.mark_unavailable_track(video_id, path, error_msg)
+
+    @staticmethod
+    def _error_message(error: Exception) -> str:
+        if isinstance(error, OSError) and error.strerror:
+            return str(error.strerror)
+        return str(error) or error.__class__.__name__
 
     def _record_stat(self, name: str) -> None:
         if self.record_stat_callback:
