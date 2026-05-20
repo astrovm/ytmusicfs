@@ -10,6 +10,7 @@ import pytest
 from ytmusicfs.cli import (
     CacheCommandHandler,
     ConfigCommandHandler,
+    LogsCommandHandler,
     MountCommandHandler,
     MountInspector,
     ServiceCommandHandler,
@@ -422,3 +423,58 @@ def test_service_install_requires_saved_settings(tmp_path, monkeypatch):
 
     assert result == 1
     assert not service_file.exists()
+
+
+def test_logs_shows_last_50_lines_by_default(tmp_path, monkeypatch, capsys):
+    log_file = tmp_path / "ytmusicfs.log"
+    lines = [f"line {i}" for i in range(60)]
+    log_file.write_text("\n".join(lines), encoding="utf-8")
+    monkeypatch.setattr("ytmusicfs.cli.LOG_FILE", log_file)
+    args = argparse.Namespace(tail=50, path=False)
+
+    result = LogsCommandHandler(args, logging.getLogger("test")).execute()
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert "line 10" in captured.out
+    assert "line 59" in captured.out
+    assert "line 0" not in captured.out
+
+
+def test_logs_shows_custom_tail_count(tmp_path, monkeypatch, capsys):
+    log_file = tmp_path / "ytmusicfs.log"
+    lines = [f"line {i}" for i in range(20)]
+    log_file.write_text("\n".join(lines), encoding="utf-8")
+    monkeypatch.setattr("ytmusicfs.cli.LOG_FILE", log_file)
+    args = argparse.Namespace(tail=5, path=False)
+
+    result = LogsCommandHandler(args, logging.getLogger("test")).execute()
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.out.strip().splitlines() == ["line 15", "line 16", "line 17", "line 18", "line 19"]
+
+
+def test_logs_path_shows_file_path(tmp_path, monkeypatch, capsys):
+    log_file = tmp_path / "ytmusicfs.log"
+    log_file.write_text("some log content", encoding="utf-8")
+    monkeypatch.setattr("ytmusicfs.cli.LOG_FILE", log_file)
+    args = argparse.Namespace(tail=50, path=True)
+
+    result = LogsCommandHandler(args, logging.getLogger("test")).execute()
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert str(log_file) in captured.out
+
+
+def test_logs_missing_file_returns_error(tmp_path, monkeypatch, capsys):
+    log_file = tmp_path / "nonexistent.log"
+    monkeypatch.setattr("ytmusicfs.cli.LOG_FILE", log_file)
+    args = argparse.Namespace(tail=50, path=False)
+
+    result = LogsCommandHandler(args, logging.getLogger("test")).execute()
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "No log file found" in captured.err

@@ -97,7 +97,7 @@ Available commands:
 - `config`: Show or update saved mount settings
 - `cache`: Inspect or clear the persistent cache
 - `refresh`: Clear cache so the next browse fetches fresh data
-- `logs`: Show the log path or recent log lines
+- `logs`: Show recent log lines (default last 50)
 - `service`: Manage an optional systemd user service
 
 ### Mount the Filesystem
@@ -199,8 +199,9 @@ ytmusicfs refresh
 Show logs:
 
 ```bash
-ytmusicfs logs
-ytmusicfs logs --tail 50
+ytmusicfs logs           # last 50 lines
+ytmusicfs logs --tail 20 # last 20 lines
+ytmusicfs logs --path    # print log file path
 ```
 
 ### Systemd User Service
@@ -270,7 +271,7 @@ ytmusicfs config set {browser,mount-point} VALUE
 ytmusicfs cache stats
 ytmusicfs cache clear
 ytmusicfs refresh [--cache-dir CACHE_DIR] [--debug]
-ytmusicfs logs [--tail N] [--debug]
+ytmusicfs logs [--tail N] [--path] [--debug]
 ytmusicfs service {install,start,stop,restart,status} [--debug]
 ```
 
