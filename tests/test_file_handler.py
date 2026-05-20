@@ -260,6 +260,50 @@ class TestFileHandler(unittest.TestCase):
         )
         self.file_handler.downloader.download_file.assert_not_called()
 
+    def test_read_starts_cache_download_after_playback_threshold(self):
+        """Playback-sized reads should cache the full song after probing phase."""
+
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        fh = self.file_handler.open(path, video_id)
+
+        future = Future()
+        future.set_result(
+            {
+                "status": "success",
+                "stream_url": "https://example.com/audio.m4a",
+                "http_headers": {"User-Agent": "UnitTest"},
+                "cookies": {"CONSENT": "YES+"},
+            }
+        )
+        self.yt_dlp_utils.extract_stream_url_async.return_value = future
+
+        first_read = b"a" * (FileHandler.CACHE_START_BYTES - 1)
+        second_read = b"b"
+
+        with patch.object(
+            self.file_handler,
+            "_stream_content",
+            side_effect=[first_read, second_read],
+        ) as mock_stream:
+            self.assertEqual(
+                self.file_handler.read(path, len(first_read), 0, fh), first_read
+            )
+            self.file_handler.downloader.download_file.assert_not_called()
+            self.assertEqual(
+                self.file_handler.read(path, 1, len(first_read), fh), second_read
+            )
+
+        file_info = self.file_handler.open_files[fh]
+        self.assertEqual(mock_stream.call_count, 2)
+        self.file_handler.downloader.download_file.assert_called_once_with(
+            video_id,
+            "https://example.com/audio.m4a",
+            path,
+            headers=file_info["headers"],
+            cookies=file_info["cookies"],
+        )
+
     @patch("ytmusicfs.file_handler.requests.get")
     def test_read_file_with_offset(self, mock_requests_get):
         """Test reading content from a file with an offset."""

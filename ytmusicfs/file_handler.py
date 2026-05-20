@@ -17,6 +17,8 @@ from ytmusicfs.yt_dlp_utils import YTDLPUtils
 class FileHandler:
     """Handles file operations for the YouTube Music filesystem."""
 
+    CACHE_START_BYTES = 512 * 1024
+
     def __init__(
         self,
         thread_manager: Any,  # ThreadManager
@@ -112,6 +114,8 @@ class FileHandler:
                 "status": "ready",
                 "error": None,
                 "path": path,
+                "bytes_read": 0,
+                "cache_started": False,
                 "initialized_event": threading.Event(),
             }
             self.open_files[fh]["initialized_event"].set()
@@ -366,13 +370,37 @@ class FileHandler:
         # 1. No cache file exists yet, or
         # 2. Download is in progress but hasn't reached the requested offset yet
         self.logger.debug(f"Streaming from URL for {video_id} at offset {offset}")
-        return self._stream_content(
+        data = self._stream_content(
             file_info["stream_url"],
             offset,
             size,
             auth_headers=file_info.get("headers"),
             cookies=file_info.get("cookies"),
         )
+        self._maybe_start_cache_download(path, file_info, len(data))
+        return data
+
+    def _maybe_start_cache_download(
+        self, path: str, file_info: Dict[str, Any], bytes_read: int
+    ) -> None:
+        if bytes_read <= 0 or file_info.get("stream_url") == "cached":
+            return
+
+        file_info["bytes_read"] = file_info.get("bytes_read", 0) + bytes_read
+        if file_info.get("cache_started"):
+            return
+        if file_info["bytes_read"] < self.CACHE_START_BYTES:
+            return
+
+        video_id = file_info["video_id"]
+        self.downloader.download_file(
+            video_id,
+            file_info["stream_url"],
+            path,
+            headers=file_info.get("headers"),
+            cookies=file_info.get("cookies"),
+        )
+        file_info["cache_started"] = True
 
     def release(self, path: str, fh: int) -> int:
         """Release (close) a file handle but allow downloads to continue.
