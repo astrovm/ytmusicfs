@@ -9,7 +9,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock, call, patch
 
 # Import the class to test
 from ytmusicfs.cache import CacheManager
@@ -122,6 +122,32 @@ class TestCacheManager(unittest.TestCase):
         self.assertEqual(value["videoId"], "abc123")
         self.assertTrue(self.cache.is_track_unavailable("abc123"))
         self.assertEqual(self.cache.get_unavailable_video_ids(), {"abc123"})
+
+    def test_mark_unavailable_track_invalidates_stale_path_caches(self):
+        path = "/liked_songs/song.m4a"
+        parent_dir = "/liked_songs"
+        self.cache.delete = Mock()
+        self.cache.valid_paths.add(path)
+        self.cache.path_types[path] = "file"
+        self.cache.path_validation_cache[path] = {"valid": True}
+        self.cache.attrs_cache[path] = {"st_size": 123}
+        self.cache.directory_listings_cache[parent_dir] = {"data": {}}
+
+        self.cache.mark_unavailable_track("abc123", path, "Video unavailable")
+
+        self.assertNotIn(path, self.cache.valid_paths)
+        self.assertNotIn(path, self.cache.path_types)
+        self.assertNotIn(path, self.cache.path_validation_cache)
+        self.assertNotIn(path, self.cache.attrs_cache)
+        self.assertNotIn(parent_dir, self.cache.directory_listings_cache)
+        self.cache.delete.assert_has_calls(
+            [
+                call(f"exact_path:{path}"),
+                call(f"video_id:{path}"),
+                call(f"valid_files:{parent_dir}"),
+                call(f"{parent_dir}_listing_with_attrs"),
+            ]
+        )
 
     def test_set_and_get(self):
         """Test setting and getting a value in the cache."""

@@ -605,9 +605,9 @@ class CacheManager:
             path: The path to delete from cache
         """
         # Remove from hot cache
-        hotcache_key = f"hotcache:{path}"
-        if hotcache_key in self.hotcache:
-            del self.hotcache[hotcache_key]
+        for hotcache_key in (f"hotcache:{path}", f"hot:{path}"):
+            if hotcache_key in self.hotcache:
+                del self.hotcache[hotcache_key]
 
         # Remove from database
         db_key = self.path_to_key(path)
@@ -735,6 +735,29 @@ class CacheManager:
                 "timestamp": time.time(),
             },
         )
+        self._invalidate_unavailable_track_path(path)
+
+    def _invalidate_unavailable_track_path(self, path: Optional[str]) -> None:
+        """Drop cached path/listing entries that can keep dead tracks visible."""
+        if not path:
+            return
+
+        parent_dir = os.path.dirname(path)
+        if not parent_dir:
+            return
+
+        listing_key = f"{parent_dir}_listing_with_attrs"
+
+        self.valid_paths.discard(path)
+        self.path_types.pop(path, None)
+        self.path_validation_cache.pop(path, None)
+        self.attrs_cache.pop(path, None)
+        self.directory_listings_cache.pop(parent_dir, None)
+
+        self.delete(f"exact_path:{path}")
+        self.delete(f"video_id:{path}")
+        self.delete(f"valid_files:{parent_dir}")
+        self.delete(listing_key)
 
     def get_unavailable_track(self, video_id: str) -> Optional[Dict[str, Any]]:
         """Return persisted unavailable-track metadata for a video ID."""
