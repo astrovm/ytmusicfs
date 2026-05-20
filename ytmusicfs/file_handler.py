@@ -26,6 +26,7 @@ class FileHandler:
         update_file_size_callback: Callable[[str, int], None],
         yt_dlp_utils: YTDLPUtils,
         browser: Optional[str] = None,
+        cache_streams: bool = False,
     ):
         """Initialize the FileHandler.
 
@@ -37,9 +38,11 @@ class FileHandler:
             update_file_size_callback: Callback to update file size in filesystem cache
             yt_dlp_utils: YTDLPUtils instance for YouTube interaction
             browser: Browser to use for cookies (e.g., 'chrome', 'firefox')
+            cache_streams: Download full audio files in the background after reads
         """
         self.cache_dir = cache_dir
         self.browser = browser
+        self.cache_streams = cache_streams
         self.cache = cache
         self.logger = logger
         self.update_file_size_callback = update_file_size_callback
@@ -347,10 +350,14 @@ class FileHandler:
                     # Use batch operation even for single duration
                     self.cache.set_durations_batch({video_id: duration})
 
-                # Always start download in background
-                self.downloader.download_file(
-                    video_id, stream_url, path, headers=auth_headers, cookies=cookies
-                )
+                if self.cache_streams:
+                    self.downloader.download_file(
+                        video_id,
+                        stream_url,
+                        path,
+                        headers=auth_headers,
+                        cookies=cookies,
+                    )
             except Exception as e:
                 error_msg = str(e)
                 self.logger.error(

@@ -242,8 +242,6 @@ class TestFileHandler(unittest.TestCase):
             }
         )
         self.file_handler.yt_dlp_utils.extract_stream_url_async.return_value = future
-        self.file_handler.downloader.download_file.return_value = True
-
         with patch.object(
             self.file_handler, "_stream_content", return_value=b"payload"
         ) as mock_stream:
@@ -260,6 +258,7 @@ class TestFileHandler(unittest.TestCase):
             auth_headers=file_info["headers"],
             cookies=file_info["cookies"],
         )
+        self.file_handler.downloader.download_file.assert_not_called()
 
     @patch("ytmusicfs.file_handler.requests.get")
     def test_read_file_with_offset(self, mock_requests_get):
@@ -371,12 +370,41 @@ class TestFileHandler(unittest.TestCase):
 
         self.assertEqual(cookies, {"CONSENT": "YES+"})
 
+        self.file_handler.downloader.download_file.assert_not_called()
+
+    def test_read_downloads_in_background_when_cache_streams_enabled(self):
+        """Opt-in stream caching keeps the old full-download behavior."""
+
+        self.file_handler.cache_streams = True
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        fh = self.file_handler.open(path, video_id)
+
+        future = Future()
+        future.set_result(
+            {
+                "status": "success",
+                "stream_url": "https://example.com/audio.m4a",
+                "http_headers": {"User-Agent": "UnitTest"},
+                "cookies": {"CONSENT": "YES+"},
+            }
+        )
+        self.yt_dlp_utils.extract_stream_url_async.return_value = future
+
+        with patch.object(
+            self.file_handler, "_stream_content", return_value=b"payload"
+        ) as mock_stream:
+            result = self.file_handler.read(path, size=1024, offset=0, fh=fh)
+
+        self.assertEqual(result, b"payload")
+        headers = mock_stream.call_args.kwargs["auth_headers"]
+        cookies = mock_stream.call_args.kwargs["cookies"]
         self.file_handler.downloader.download_file.assert_called_once_with(
             video_id,
             "https://example.com/audio.m4a",
             path,
             headers=headers,
-            cookies={"CONSENT": "YES+"},
+            cookies=cookies,
         )
 
     @patch("ytmusicfs.file_handler.requests.get")

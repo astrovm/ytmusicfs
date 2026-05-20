@@ -34,6 +34,7 @@ def make_mount_args(tmp_path, mount_point=None, browser=None):
         cache_dir=str(tmp_path / "cache"),
         foreground=True,
         debug=False,
+        cache_streams=False,
     )
 
 
@@ -74,6 +75,7 @@ def test_mount_saves_last_settings_and_active_state(
         cache_dir=str(tmp_path / "cache"),
         foreground=True,
         browser="brave",
+        cache_streams=False,
     )
 
 
@@ -112,6 +114,7 @@ def test_mount_reuses_saved_settings(mock_mount, mock_active_mount, tmp_path):
         cache_dir=str(tmp_path / "cache"),
         foreground=True,
         browser="brave",
+        cache_streams=False,
     )
 
 
