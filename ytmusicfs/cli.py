@@ -391,18 +391,10 @@ class DoctorCommandHandler:
             ("js runtime", any(shutil.which(runtime) for runtime in JS_RUNTIMES)),
             ("cache dir writable", os.access(self.config.cache_dir, os.W_OK)),
         ]
-        browser = self.config.load_user_config().get("last_browser")
-
         failed = False
         for name, ok in checks:
             print(f"{name}: {'ok' if ok else 'missing'}")
             failed = failed or not ok
-
-        if browser:
-            print(f"browser: {browser}")
-            print("auth: not checked (run a mount to verify YouTube Music cookies)")
-        else:
-            print("browser: not set")
 
         return 1 if failed else 0
 
