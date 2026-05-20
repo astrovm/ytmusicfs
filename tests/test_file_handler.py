@@ -343,11 +343,12 @@ class TestFileHandler(unittest.TestCase):
         video_id = "abc123"
         fh = self.file_handler.open(path, video_id)
         self.file_handler.record_stat_callback = Mock()
+        self.file_handler.get_file_size_callback = Mock(return_value=2 * 1024 * 1024)
 
         result = self.file_handler.read(
             path,
             size=4096,
-            offset=FileHandler.PROBE_EOF_OFFSET,
+            offset=(2 * 1024 * 1024) - 4096,
             fh=fh,
         )
 
@@ -355,6 +356,38 @@ class TestFileHandler(unittest.TestCase):
         self.yt_dlp_utils.extract_stream_url_async.assert_not_called()
         self.file_handler.record_stat_callback.assert_called_once_with(
             "probe_eof_skips"
+        )
+
+    def test_high_offset_uncached_read_extracts_when_not_tail_probe(self):
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        fh = self.file_handler.open(path, video_id)
+        self.file_handler.get_file_size_callback = Mock(return_value=8 * 1024 * 1024)
+
+        future = Future()
+        future.set_result(
+            {
+                "status": "success",
+                "stream_url": "https://example.com/audio.m4a",
+                "http_headers": {},
+                "cookies": {},
+            }
+        )
+        self.yt_dlp_utils.extract_stream_url_async.return_value = future
+
+        with patch.object(
+            self.file_handler, "_stream_content", return_value=b"payload"
+        ):
+            result = self.file_handler.read(
+                path,
+                size=4096,
+                offset=2 * 1024 * 1024,
+                fh=fh,
+            )
+
+        self.assertEqual(result, b"payload")
+        self.yt_dlp_utils.extract_stream_url_async.assert_called_once_with(
+            video_id, None
         )
 
     def test_offset_zero_uncached_read_extracts_stream(self):

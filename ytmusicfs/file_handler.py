@@ -19,6 +19,7 @@ class FileHandler:
 
     CACHE_START_BYTES = 512 * 1024
     PROBE_EOF_OFFSET = 1024 * 1024
+    PROBE_TAIL_BYTES = 512 * 1024
     UNAVAILABLE_ERRORS = (
         "Video unavailable",
         "This video is not available",
@@ -34,6 +35,7 @@ class FileHandler:
         yt_dlp_utils: YTDLPUtils,
         browser: Optional[str] = None,
         record_stat_callback: Optional[Callable[[str], None]] = None,
+        get_file_size_callback: Optional[Callable[[str], Optional[int]]] = None,
     ):
         """Initialize the FileHandler.
 
@@ -52,6 +54,7 @@ class FileHandler:
         self.logger = logger
         self.update_file_size_callback = update_file_size_callback
         self.record_stat_callback = record_stat_callback
+        self.get_file_size_callback = get_file_size_callback
         self.thread_manager = thread_manager
         self.yt_dlp_utils = yt_dlp_utils
 
@@ -279,7 +282,7 @@ class FileHandler:
                     f.seek(offset)
                     return f.read(size)
 
-            if offset >= self.PROBE_EOF_OFFSET:
+            if self._is_uncached_probe_read(path, offset):
                 self._record_stat("probe_eof_skips")
                 self.logger.debug(
                     "Skipping high-offset probe for %s at offset %s", video_id, offset
@@ -469,6 +472,16 @@ class FileHandler:
     def _record_stat(self, name: str) -> None:
         if self.record_stat_callback:
             self.record_stat_callback(name)
+
+    def _is_uncached_probe_read(self, path: str, offset: int) -> bool:
+        if offset < self.PROBE_EOF_OFFSET or not self.get_file_size_callback:
+            return False
+
+        advertised_size = self.get_file_size_callback(path)
+        if not advertised_size or advertised_size <= self.PROBE_EOF_OFFSET:
+            return False
+
+        return offset >= advertised_size - self.PROBE_TAIL_BYTES
 
     def _update_size_from_response(
         self, path: str, response: requests.Response, offset: int

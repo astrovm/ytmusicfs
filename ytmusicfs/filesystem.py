@@ -29,7 +29,8 @@ class YouTubeMusicFS(Operations):
 
     METADATA_DIR = "/.ytmusicfs"
     STATUS_FILE = "/.ytmusicfs/status.json"
-    UNCACHED_AUDIO_SIZE = 1024 * 1024
+    MIN_AUDIO_SIZE = 1024 * 1024
+    ESTIMATED_BYTES_PER_SECOND = 16 * 1024
 
     def __init__(
         self,
@@ -148,6 +149,7 @@ class YouTubeMusicFS(Operations):
             yt_dlp_utils=self.yt_dlp_utils,
             browser=self.browser,
             record_stat_callback=self._record_stat,
+            get_file_size_callback=self._get_advertised_file_size,
         )
 
         # Register exact path handlers
@@ -259,12 +261,10 @@ class YouTubeMusicFS(Operations):
                     "st_mtime": now,
                     "st_nlink": 1,
                 }
-                attrs["st_size"] = self.UNCACHED_AUDIO_SIZE
-
-                file_size_cache_key = f"filesize:{dir_path}/{filename}"
-                cached_size = self.cache.get(file_size_cache_key)
-                if isinstance(cached_size, int):
-                    attrs["st_size"] = cached_size
+                attrs["st_size"] = self._audio_size_for_path(
+                    f"{dir_path}/{filename}",
+                    track.get("duration_seconds"),
+                )
 
             # Preserve important metadata fields from the original track
             for key, value in track.items():
@@ -583,12 +583,9 @@ class YouTubeMusicFS(Operations):
             # For normal files, we need to set appropriate metadata
             if path.endswith(".m4a"):
                 # Audio files
-                size = self.UNCACHED_AUDIO_SIZE
-
-                file_size_cache_key = f"filesize:{path}"
-                cached_size = self.cache.get(file_size_cache_key)
-                if isinstance(cached_size, int):
-                    size = cached_size
+                video_id = self.fetcher.processor.extract_video_id_from_path(path)
+                duration = self.cache.get_duration(video_id) if video_id else None
+                size = self._audio_size_for_path(path, duration)
 
                 # Set file mode and type
                 mode = stat.S_IFREG | 0o444  # Regular file, read-only
@@ -757,6 +754,36 @@ class YouTubeMusicFS(Operations):
     def _record_stat(self, name: str) -> None:
         with self.stats_lock:
             self.stats[name] = self.stats.get(name, 0) + 1
+
+    def _get_real_file_size(self, path: str) -> Optional[int]:
+        cached_size = self.cache.get(f"filesize:{path}")
+        if isinstance(cached_size, int):
+            return cached_size
+        return None
+
+    def _get_advertised_file_size(self, path: str) -> Optional[int]:
+        real_size = self._get_real_file_size(path)
+        if real_size is not None:
+            return real_size
+        cached_attrs = self.cache.get_file_attrs_from_parent_dir(path)
+        if cached_attrs:
+            size = cached_attrs.get("st_size")
+            if isinstance(size, int):
+                return size
+        return None
+
+    def _audio_size_for_path(
+        self, path: str, duration_seconds: Optional[float] = None
+    ) -> int:
+        real_size = self._get_real_file_size(path)
+        if real_size is not None:
+            return real_size
+        if duration_seconds:
+            return max(
+                int(duration_seconds * self.ESTIMATED_BYTES_PER_SECOND),
+                self.MIN_AUDIO_SIZE,
+            )
+        return self.MIN_AUDIO_SIZE
 
     def release(self, path: str, fh: int) -> int:
         """Close the file.
