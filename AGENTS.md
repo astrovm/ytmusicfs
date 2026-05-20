@@ -45,8 +45,10 @@
 - Refresh local app after changes: `pipx install --force .`
 - Check CLI: `ytmusicfs --version`
 - Mount: `ytmusicfs mount --mount-point ~/Music/ytmusic --browser brave`
+- Mount with saved settings after first successful mount: `ytmusicfs mount`
 - Debug mount with browser cookies: `ytmusicfs mount --mount-point ~/Music/ytmusic --browser brave --foreground --debug`
-- Unmount: `fusermount -u ~/Music/ytmusic`
+- Unmount active mount: `ytmusicfs unmount`
+- Unmount explicit path: `ytmusicfs unmount --mount-point ~/Music/ytmusic`
 - Tests: `pipx run --spec '.[dev]' pytest -q`
 - Verbose tests: `pipx run --spec '.[dev]' pytest -v`
 - Focused tests: `pipx run --spec '.[dev]' pytest -k path_router -q`
@@ -142,6 +144,8 @@
 
 - Never commit credentials, browser cookies, or local auth captures.
 - Cache: `~/.cache/ytmusicfs`.
+- Saved mount defaults: `~/.config/ytmusicfs/config.json`.
+- Active mount state: `~/.cache/ytmusicfs/mount.json`.
 - Logs: `~/.local/share/ytmusicfs/logs`.
 - Use `--foreground` and `--debug` when diagnosing mount issues.
 - Environment variables are only for secrets and external credentials.
