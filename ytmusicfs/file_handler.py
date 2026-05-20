@@ -18,6 +18,10 @@ class FileHandler:
     """Handles file operations for the YouTube Music filesystem."""
 
     CACHE_START_BYTES = 512 * 1024
+    UNAVAILABLE_ERRORS = (
+        "Video unavailable",
+        "This video is not available",
+    )
 
     def __init__(
         self,
@@ -219,7 +223,8 @@ class FileHandler:
 
         # If there was an error, raise it
         if file_info["status"] == "error":
-            raise OSError(errno.EIO, file_info.get("error", "Unknown error"))
+            error_msg = file_info.get("error", "Unknown error")
+            raise OSError(self._stream_error_errno(error_msg), error_msg)
 
         # First try to read from the cache - fully downloaded files
         if cache_path.exists():
@@ -277,13 +282,10 @@ class FileHandler:
 
                 if result["status"] == "error":
                     error_msg = result["error"]
-                    self.logger.error(
-                        f"Error fetching stream URL for {video_id}: {error_msg}"
-                    )
                     with self.file_handle_lock:
                         file_info["status"] = "error"
                         file_info["error"] = error_msg
-                    raise OSError(errno.EIO, error_msg)
+                    raise OSError(self._stream_error_errno(error_msg), error_msg)
 
                 stream_url = result["stream_url"]
                 self.logger.debug(
@@ -352,10 +354,21 @@ class FileHandler:
                     self.cache.set_durations_batch({video_id: duration})
 
             except Exception as e:
-                error_msg = str(e)
-                self.logger.error(
-                    f"Error getting stream URL for {video_id}: {error_msg}"
-                )
+                error_msg = e.strerror if isinstance(e, OSError) else str(e)
+                if isinstance(e, OSError):
+                    error_code = e.errno or self._stream_error_errno(error_msg)
+                    log_message = f"Stream unavailable for {video_id}: {error_msg}"
+                else:
+                    error_code = self._stream_error_errno(error_msg)
+                    log_message = (
+                        f"Error getting stream URL for {video_id}: {error_msg}"
+                    )
+
+                if error_code == errno.ENOENT:
+                    self.logger.warning(log_message)
+                else:
+                    self.logger.error(log_message)
+
                 with self.file_handle_lock:
                     file_info["status"] = "error"
                     file_info["error"] = error_msg
@@ -364,7 +377,7 @@ class FileHandler:
                 if video_id in self.futures:
                     del self.futures[video_id]
 
-                raise OSError(errno.EIO, error_msg) from e
+                raise OSError(error_code, error_msg) from e
 
         # If we are here, we need to stream directly from URL because:
         # 1. No cache file exists yet, or
@@ -401,6 +414,12 @@ class FileHandler:
             cookies=file_info.get("cookies"),
         )
         file_info["cache_started"] = True
+
+    @classmethod
+    def _stream_error_errno(cls, error_msg: str) -> int:
+        if any(marker in error_msg for marker in cls.UNAVAILABLE_ERRORS):
+            return errno.ENOENT
+        return errno.EIO
 
     def release(self, path: str, fh: int) -> int:
         """Release (close) a file handle but allow downloads to continue.

@@ -304,6 +304,28 @@ class TestFileHandler(unittest.TestCase):
             cookies=file_info["cookies"],
         )
 
+    def test_read_maps_unavailable_video_to_not_found(self):
+        """Unavailable YouTube videos should fail as missing files."""
+
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "OFuzv2fm2PY"
+        fh = self.file_handler.open(path, video_id)
+
+        future = Future()
+        future.set_result(
+            {
+                "status": "error",
+                "error": "ERROR: [youtube] OFuzv2fm2PY: Video unavailable. This video is not available",
+            }
+        )
+        self.yt_dlp_utils.extract_stream_url_async.return_value = future
+
+        with self.assertRaises(OSError) as context:
+            self.file_handler.read(path, size=1024, offset=0, fh=fh)
+
+        self.assertEqual(context.exception.errno, errno.ENOENT)
+        self.file_handler.downloader.download_file.assert_not_called()
+
     @patch("ytmusicfs.file_handler.requests.get")
     def test_read_file_with_offset(self, mock_requests_get):
         """Test reading content from a file with an offset."""

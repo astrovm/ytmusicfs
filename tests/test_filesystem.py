@@ -276,6 +276,18 @@ class TestYouTubeMusicFS(unittest.TestCase):
             file_path, size, offset, file_handle
         )
 
+    def test_read_preserves_os_error_code(self):
+        """Filesystem read should pass through file-handler errno."""
+
+        file_path = "/playlists/my_playlist/song.m4a"
+        file_handle = 42
+        self.mock_file_handler.read.side_effect = OSError(errno.ENOENT, "missing")
+
+        with self.assertRaises(FuseOSError) as context:
+            self.fs.read(file_path, 1024, 0, file_handle)
+
+        self.assertEqual(context.exception.args[0], errno.ENOENT)
+
     def test_release_file(self):
         """Test releasing (closing) a file."""
         # Configure mocks

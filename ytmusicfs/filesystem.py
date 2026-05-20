@@ -697,6 +697,10 @@ class YouTubeMusicFS(Operations):
         except Exception as e:
             if isinstance(e, FuseOSError):
                 raise
+            if isinstance(e, OSError):
+                error_code = e.errno or errno.EIO
+                self.logger.warning(f"Read failed for {path}: {e}")
+                raise FuseOSError(error_code) from e
             self.logger.error(f"Error reading {path}: {e}")
             self.logger.error(traceback.format_exc())
             raise FuseOSError(errno.EIO) from e
