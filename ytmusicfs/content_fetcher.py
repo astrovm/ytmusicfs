@@ -128,7 +128,9 @@ class ContentFetcher:
                 )
                 continue
 
-            sanitized_name = self.processor.sanitize_filename(p["title"])
+            sanitized_name = self._sanitize_registry_name(
+                p["title"], "playlist", playlist_id
+            )
             if not sanitized_name:
                 self.logger.warning("Skipping playlist with empty title: %s", p)
                 continue
@@ -149,7 +151,7 @@ class ContentFetcher:
             if not album_id:
                 self.logger.warning("Skipping album without browseId: %s", a)
                 continue
-            sanitized_name = self.processor.sanitize_filename(a["title"])
+            sanitized_name = self._sanitize_registry_name(a["title"], "album", album_id)
             if not sanitized_name:
                 self.logger.warning("Skipping album with empty title: %s", a)
                 continue
@@ -169,6 +171,20 @@ class ContentFetcher:
 
         # Record refresh time with status
         self.cache.set_refresh_metadata(cache_key, time.time(), "fresh")
+
+    def _sanitize_registry_name(self, title: str, item_type: str, item_id: str) -> str:
+        sanitized_name = self.processor.sanitize_filename(title)
+        if sanitized_name:
+            return sanitized_name
+
+        fallback = self.processor.sanitize_filename(f"{item_type}_{item_id}")
+        self.logger.warning(
+            "Using fallback name %s for %s with filesystem-reserved title: %r",
+            fallback,
+            item_type,
+            title,
+        )
+        return fallback
 
     def fetch_playlist_content(
         self,

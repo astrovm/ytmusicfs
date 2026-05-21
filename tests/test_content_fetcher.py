@@ -159,23 +159,26 @@ class TestContentFetcher(unittest.TestCase):
         )
         self.mock_initialize = self.patcher_initialize.start()
 
-    def test_initialize_playlist_registry_skips_entries_without_ids(self):
+    def test_initialize_playlist_registry_handles_malformed_entries(self):
         """Malformed library entries should not poison route lookups with None IDs."""
         self.patcher_initialize.stop()
 
         self.client.get_library_playlists.return_value = [
             {"title": "Broken Playlist"},
-            {"title": "///", "playlistId": "PL_EMPTY"},
+            {"title": ".", "playlistId": "PL_EMPTY"},
             {"title": "Good Playlist", "playlistId": "PL123"},
         ]
         self.client.get_library_albums.return_value = [
             {"title": "Broken Album"},
-            {"title": "///", "browseId": "MPREb_EMPTY"},
+            {"title": ".", "browseId": "MPREb_EMPTY"},
             {"title": "Good Album", "browseId": "MPREb_456"},
         ]
         self.cache.get_refresh_metadata.return_value = (
             time.time() - 7200,
             "stale",
+        )
+        self.processor.sanitize_filename.side_effect = lambda title: (
+            "" if title == "." else title.lower().replace(" ", "_")
         )
         self.fetcher.PLAYLIST_REGISTRY = []
 
@@ -194,6 +197,18 @@ class TestContentFetcher(unittest.TestCase):
         )
         self.assertIsNone(
             self.fetcher.get_playlist_id_from_name("", type_filter="album")
+        )
+        self.assertEqual(
+            self.fetcher.get_playlist_id_from_name(
+                "playlist_pl_empty", type_filter="playlist"
+            ),
+            "PL_EMPTY",
+        )
+        self.assertEqual(
+            self.fetcher.get_playlist_id_from_name(
+                "album_mpreb_empty", type_filter="album"
+            ),
+            "MPREb_EMPTY",
         )
         self.assertEqual(
             self.fetcher.get_playlist_id_from_name(
