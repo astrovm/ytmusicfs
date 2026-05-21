@@ -7,6 +7,7 @@ import threading
 from concurrent.futures import Future
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 from yt_dlp import YoutubeDL
 
@@ -22,6 +23,8 @@ UNAVAILABLE_ERRORS = (
     "Video unavailable",
     "This video is not available",
 )
+PARTIAL_PLAYLIST_RETRY_ATTEMPTS = 4
+PARTIAL_PLAYLIST_COMPLETE_RATIO = 0.95
 
 
 class YTDLPUtils:
@@ -45,6 +48,7 @@ class YTDLPUtils:
         self.logger = logger or logging.getLogger("YTDLPUtils")
         self._browser_cookie_files = {}
         self._cookie_lock = threading.Lock()
+        self._playlist_total_counts = {}
         self.logger.debug("YTDLPUtils initialized")
 
     def _add_cookie_options(self, ydl_opts, browser):
@@ -185,36 +189,62 @@ class YTDLPUtils:
             "quiet": True,
             "no_warnings": True,
             "ignoreerrors": True,
-            "playlistitems": f"1-{limit}",
+            "playlist_items": f"1-{limit}",
             "extractor_args": {"youtubetab": {"skip": ["authcheck"]}},
         }
         self._add_cookie_options(ydl_opts, browser)
 
-        try:
-            with YoutubeDL(ydl_opts) as ydl:
-                result = ydl.extract_info(url, download=False)
-                self._cache_browser_cookies(browser, ydl)
-                if not result or "entries" not in result:
-                    self.logger.warning(
-                        f"No tracks found for {'album' if is_album else 'playlist'} ID: {playlist_id}"
-                    )
-                    return []
+        best_tracks = []
+        best_playlist_count = None
+        for attempt in range(1, PARTIAL_PLAYLIST_RETRY_ATTEMPTS + 1):
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    result = ydl.extract_info(url, download=False)
+                    self._cache_browser_cookies(browser, ydl)
+            except Exception as e:
+                self.logger.warning(f"Error extracting content: {e}")
+                return best_tracks
 
-                tracks = result.get("entries", [])[:limit]
-                playlist_count = result.get("playlist_count")
-                if playlist_count and len(tracks) < playlist_count * 0.8:
-                    self.logger.warning(
-                        f"Playlist {playlist_id} returned {len(tracks)} of "
-                        f"{playlist_count} tracks. YouTube rate limiting may "
-                        "have reduced the result."
-                    )
+            if not result or "entries" not in result:
+                self.logger.warning(
+                    f"No tracks found for {'album' if is_album else 'playlist'} ID: {playlist_id}"
+                )
+                return best_tracks
+
+            tracks = result.get("entries", [])[:limit]
+            playlist_count = result.get("playlist_count")
+            self._playlist_total_counts[playlist_id] = playlist_count
+            if len(tracks) > len(best_tracks):
+                best_tracks = tracks
+                best_playlist_count = playlist_count
+
+            if not self._is_partial_playlist(tracks, playlist_count):
                 self.logger.debug(
                     f"Found {len(tracks)} tracks from {'album' if is_album else 'playlist'}"
                 )
                 return tracks
-        except Exception as e:
-            self.logger.warning(f"Error extracting content: {e}")
-            return []
+
+            self.logger.warning(
+                f"Playlist {playlist_id} returned {len(tracks)} of "
+                f"{playlist_count} tracks on attempt {attempt}. "
+                "YouTube rate limiting may have reduced the result."
+            )
+
+        if best_playlist_count:
+            self._playlist_total_counts[playlist_id] = best_playlist_count
+        return best_tracks
+
+    def _is_partial_playlist(
+        self, tracks: list[dict[str, Any]], playlist_count: int | None
+    ) -> bool:
+        return bool(
+            playlist_count
+            and len(tracks) < playlist_count * PARTIAL_PLAYLIST_COMPLETE_RATIO
+        )
+
+    def get_last_playlist_total_count(self, playlist_id: str) -> int | None:
+        total_count = self._playlist_total_counts.get(playlist_id)
+        return total_count if isinstance(total_count, int) else None
 
     def extract_stream_url(self, video_id, browser: str):
         """

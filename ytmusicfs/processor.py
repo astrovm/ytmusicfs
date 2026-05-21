@@ -50,7 +50,7 @@ class TrackProcessor:
         ]
         return ", ".join(artists)
 
-    def _clean_artist_name(self, name: str) -> str:
+    def _clean_artist_name(self, name: str | None) -> str:
         """Clean a single artist name by removing '- Topic' suffix.
 
         Args:
@@ -59,6 +59,8 @@ class TrackProcessor:
         Returns:
             The cleaned artist name.
         """
+        if not name:
+            return "Unknown Artist"
         return name[:-8] if name.endswith(" - Topic") else name
 
     def parse_duration(self, track: dict[str, Any]) -> tuple[int | None, str]:

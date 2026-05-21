@@ -171,7 +171,7 @@ class ContentFetcher:
         limit: int = 10000,
         force_refresh: bool = False,
     ) -> list[str]:
-        """Fetch playlist content using yt-dlp with a specified limit and cache durations.
+        """Fetch playlist content with a specified limit and cache durations.
 
         Args:
             playlist_id: Playlist ID (e.g., 'PL123', 'LM', 'MPREb_abc123')
@@ -200,15 +200,14 @@ class ContentFetcher:
             self.logger.error("Missing playlist ID for %s", path)
             return []
 
-        # Define the fetch function to be passed to refresh_content
-        def fetch_tracks(lim):
-            return self.yt_dlp_utils.extract_playlist_content(
-                playlist_id, lim, self.browser
-            )
-
         # Use the centralized refresh method
         tracks = self.refresh_content(
-            cache_key, fetch_tracks, path, limit, force_refresh
+            cache_key,
+            lambda lim: self._fetch_playlist_tracks(playlist_id, lim),
+            path,
+            limit,
+            force_refresh,
+            expected_total_func=lambda: self._get_expected_total_count(playlist_id),
         )
 
         # Return just the filenames
@@ -246,10 +245,9 @@ class ContentFetcher:
                 return [".", ".."]
             tracks = self.refresh_content(
                 f"{entry['path']}_processed",
-                lambda lim: self.yt_dlp_utils.extract_playlist_content(
-                    entry["id"], lim, self.browser
-                ),
+                lambda lim: self._fetch_playlist_tracks(entry["id"], lim),
                 entry["path"],
+                expected_total_func=lambda: self._get_expected_total_count(entry["id"]),
             )
             return [".", ".."] + [
                 track["filename"]
@@ -283,6 +281,41 @@ class ContentFetcher:
     def _is_track_unavailable(self, track: dict[str, Any]) -> bool:
         video_id = track.get("videoId")
         return bool(video_id and video_id in self.cache.get_unavailable_video_ids())
+
+    def _fetch_playlist_tracks(
+        self, playlist_id: str, limit: int
+    ) -> list[dict[str, Any]]:
+        return self.yt_dlp_utils.extract_playlist_content(
+            playlist_id, limit, self.browser
+        )
+
+    def _get_expected_total_count(self, playlist_id: str) -> int | None:
+        if not playlist_id:
+            return None
+        total_count = self.yt_dlp_utils.get_last_playlist_total_count(playlist_id)
+        return total_count if isinstance(total_count, int) else None
+
+    def _process_track_entry(self, entry: dict[str, Any]) -> dict[str, Any] | None:
+        video_id = entry.get("videoId") or entry.get("id")
+        if not video_id:
+            return None
+
+        track_info = dict(entry)
+        track_info["videoId"] = video_id
+
+        duration = entry.get("duration")
+        if "duration_seconds" not in track_info and isinstance(duration, int):
+            track_info["duration_seconds"] = duration
+
+        if "artist" not in track_info and "artists" not in track_info:
+            track_info["artist"] = entry.get("uploader", "Unknown Artist")
+
+        processed_track = self.processor.extract_track_info(track_info)
+        processed_track["filename"] = self.processor.sanitize_filename(
+            f"{processed_track['artist']} - {processed_track['title']}.m4a"
+        )
+        processed_track["is_directory"] = False
+        return processed_track
 
     def _cache_directory_listing_with_attrs(
         self, dir_path: str, processed_tracks: list[dict[str, Any]]
@@ -338,6 +371,7 @@ class ContentFetcher:
         path: str,
         limit: int = 10000,
         force_refresh: bool = False,
+        expected_total_func: Callable[[], int | None] | None = None,
     ) -> list[dict[str, Any]]:
         """Refresh content for a given cache key if needed, returning processed tracks.
 
@@ -383,6 +417,15 @@ class ContentFetcher:
             # Fetch new content
             tracks = fetch_func(limit)
             self.logger.info(f"Fetched {len(tracks)} items for {path}")
+            expected_total = expected_total_func() if expected_total_func else None
+            is_partial_fetch = bool(
+                expected_total and len(tracks) < expected_total * 0.8
+            )
+            if is_partial_fetch:
+                self.logger.warning(
+                    f"Partial fetch returned {len(tracks)} of {expected_total} "
+                    f"tracks for {path}"
+                )
 
             # If no tracks were returned and we have existing tracks, return them
             if not tracks and existing_tracks:
@@ -405,40 +448,20 @@ class ContentFetcher:
                 if not entry:
                     continue
 
-                video_id = entry.get("id")
-
                 # Skip if we already have this track and we're doing a force refresh
+                video_id = entry.get("videoId") or entry.get("id")
                 if force_refresh and video_id in existing_ids:
                     continue
 
                 # Process duration for batch update
-                duration_seconds = (
-                    int(entry.get("duration", 0))
-                    if entry.get("duration") is not None
-                    else None
-                )
+                duration = entry.get("duration")
+                duration_seconds = int(duration) if isinstance(duration, int) else None
                 if video_id and duration_seconds is not None:
                     durations_batch[video_id] = duration_seconds
 
-                # Create track info
-                track_info = {
-                    "title": entry.get("title", "Unknown Title"),
-                    "artist": entry.get("uploader", "Unknown Artist"),
-                    "videoId": video_id,
-                    "duration_seconds": duration_seconds,
-                    "is_directory": False,
-                }
-
-                # Process the track info
-                processed_track = self.processor.extract_track_info(track_info)
-
-                # Generate filename
-                filename = self.processor.sanitize_filename(
-                    f"{processed_track['artist']} - {processed_track['title']}.m4a"
-                )
-                processed_track["filename"] = filename
-                processed_track["is_directory"] = False
-                new_tracks.append(processed_track)
+                processed_track = self._process_track_entry(entry)
+                if processed_track:
+                    new_tracks.append(processed_track)
 
             # If the new fetch is much smaller than our existing cache,
             # YouTube rate limiting likely truncated the result. Keep
@@ -455,16 +478,28 @@ class ContentFetcher:
                 self.cache.set_refresh_metadata(cache_key, time.time(), "stale")
                 return existing_tracks
 
+            if (
+                is_partial_fetch
+                and existing_tracks
+                and len(new_tracks) < len(existing_tracks)
+            ):
+                self.logger.warning(
+                    f"Partial fetch returned {len(new_tracks)} tracks "
+                    f"vs {len(existing_tracks)} cached. Keeping cached data."
+                )
+                self.cache.set_refresh_metadata(cache_key, time.time(), "stale")
+                return existing_tracks
+
             # Update durations cache
             if durations_batch:
                 self.cache.set_durations_batch(durations_batch)
 
             # Update the cache
-            if force_refresh and existing_tracks:
-                # Merge new tracks with existing ones (new tracks first)
-                result_tracks = new_tracks + existing_tracks
+            if existing_tracks and (force_refresh or is_partial_fetch):
+                result_tracks = self._merge_tracks(new_tracks, existing_tracks)
                 self.logger.info(
-                    f"Added {len(new_tracks)} new tracks to existing {len(existing_tracks)} cached tracks"
+                    f"Merged {len(new_tracks)} fetched tracks with "
+                    f"{len(existing_tracks)} cached tracks for {path}"
                 )
             else:
                 # Just use the new tracks
@@ -475,7 +510,9 @@ class ContentFetcher:
             self._cache_directory_listing_with_attrs(path, result_tracks)
 
             # Update refresh metadata
-            self.cache.set_refresh_metadata(cache_key, time.time(), "fresh")
+            self.cache.set_refresh_metadata(
+                cache_key, time.time(), "stale" if is_partial_fetch else "fresh"
+            )
 
             return result_tracks
 
@@ -486,3 +523,19 @@ class ContentFetcher:
             self.cache.set_refresh_metadata(cache_key, time.time(), "stale")
             # Return cached data if available
             return existing_tracks if existing_tracks else []
+
+    def _merge_tracks(
+        self, new_tracks: list[dict[str, Any]], existing_tracks: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        merged = []
+        seen_ids = set()
+
+        for track in [*new_tracks, *existing_tracks]:
+            video_id = track.get("videoId")
+            if video_id:
+                if video_id in seen_ids:
+                    continue
+                seen_ids.add(video_id)
+            merged.append(track)
+
+        return merged

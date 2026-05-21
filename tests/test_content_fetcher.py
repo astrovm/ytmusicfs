@@ -3,7 +3,7 @@
 import logging
 import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 # Import the class to test
 from ytmusicfs.content_fetcher import ContentFetcher
@@ -261,6 +261,133 @@ class TestContentFetcher(unittest.TestCase):
 
         self.assertEqual(result, ["cached_song.m4a"])
         self.yt_dlp_utils.extract_playlist_content.assert_not_called()
+
+    def test_liked_songs_use_yt_dlp_with_total_count_guard(self):
+        self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
+        self.yt_dlp_utils.extract_playlist_content.return_value = [
+            {"id": "vid1", "title": "Song 1", "uploader": "Artist 1", "duration": 180}
+        ]
+        self.yt_dlp_utils.get_last_playlist_total_count.return_value = 1
+        self.processor.extract_track_info.return_value = {
+            "title": "Song 1",
+            "artist": "Artist 1",
+            "videoId": "vid1",
+            "duration_seconds": 180,
+        }
+
+        result = self.fetcher.fetch_playlist_content("LM", "/liked_songs", limit=10000)
+
+        self.assertEqual(result, ["artist_1_-_song_1.m4a"])
+        self.client.get_liked_songs.assert_not_called()
+        self.yt_dlp_utils.extract_playlist_content.assert_called_once_with(
+            "LM", 10000, "brave"
+        )
+
+    def test_known_partial_fetch_stays_stale(self):
+        self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
+        self.yt_dlp_utils.extract_playlist_content.return_value = [
+            {"id": "vid1", "title": "Song 1", "uploader": "Artist 1", "duration": 180}
+        ]
+        self.yt_dlp_utils.get_last_playlist_total_count.return_value = 10
+        self.processor.extract_track_info.return_value = {
+            "title": "Song 1",
+            "artist": "Artist 1",
+            "videoId": "vid1",
+            "duration_seconds": 180,
+        }
+
+        result = self.fetcher.fetch_playlist_content(
+            "PL123", "/playlists/test", limit=10000
+        )
+
+        self.assertEqual(result, ["artist_1_-_song_1.m4a"])
+        self.cache.set_refresh_metadata.assert_any_call(
+            "/playlists/test_processed", ANY, "stale"
+        )
+
+    def test_known_partial_fetch_does_not_replace_larger_cache(self):
+        cached_tracks = [
+            {"filename": f"cached_{i}.m4a", "videoId": f"cached_{i}"} for i in range(5)
+        ]
+        self.cache.get.return_value = cached_tracks
+        self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
+        self.yt_dlp_utils.extract_playlist_content.return_value = [
+            {"id": "vid1", "title": "Song 1", "uploader": "Artist 1", "duration": 180}
+        ]
+        self.yt_dlp_utils.get_last_playlist_total_count.return_value = 10
+        self.processor.extract_track_info.return_value = {
+            "title": "Song 1",
+            "artist": "Artist 1",
+            "videoId": "vid1",
+            "duration_seconds": 180,
+        }
+
+        result = self.fetcher.fetch_playlist_content(
+            "PL123", "/playlists/test", limit=10000
+        )
+
+        self.assertEqual(result, [track["filename"] for track in cached_tracks])
+        self.cache.set.assert_not_called()
+
+    def test_known_partial_fetch_merges_with_smaller_cache(self):
+        cached_tracks = [
+            {"filename": "cached_1.m4a", "videoId": "cached_1"},
+            {"filename": "old_dup.m4a", "videoId": "vid1"},
+        ]
+        fetched_tracks = [
+            {"id": "vid1", "title": "Song 1", "uploader": "Artist 1", "duration": 180},
+            {"id": "vid2", "title": "Song 2", "uploader": "Artist 2", "duration": 180},
+            {"id": "vid3", "title": "Song 3", "uploader": "Artist 3", "duration": 180},
+        ]
+        processed_tracks = [
+            {
+                "title": "Song 1",
+                "artist": "Artist 1",
+                "videoId": "vid1",
+                "duration_seconds": 180,
+            },
+            {
+                "title": "Song 2",
+                "artist": "Artist 2",
+                "videoId": "vid2",
+                "duration_seconds": 180,
+            },
+            {
+                "title": "Song 3",
+                "artist": "Artist 3",
+                "videoId": "vid3",
+                "duration_seconds": 180,
+            },
+        ]
+        self.cache.get.return_value = cached_tracks
+        self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
+        self.yt_dlp_utils.extract_playlist_content.return_value = fetched_tracks
+        self.yt_dlp_utils.get_last_playlist_total_count.return_value = 10
+        self.processor.extract_track_info.side_effect = processed_tracks
+
+        result = self.fetcher.fetch_playlist_content(
+            "PL123", "/playlists/test", limit=10000
+        )
+
+        self.assertEqual(
+            result,
+            [
+                "artist_1_-_song_1.m4a",
+                "artist_2_-_song_2.m4a",
+                "artist_3_-_song_3.m4a",
+                "cached_1.m4a",
+            ],
+        )
+        cached_value = self.cache.set.call_args.args[1]
+        self.assertEqual(
+            [track["videoId"] for track in cached_value],
+            [
+                "vid1",
+                "vid2",
+                "vid3",
+                "cached_1",
+            ],
+        )
 
     def test_readdir_playlist_by_type(self):
         """Test listing directory contents for a playlist type."""

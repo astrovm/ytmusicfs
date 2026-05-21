@@ -10,6 +10,55 @@ from ytmusicfs.yt_dlp_utils import YTDLPUtils
 
 class TestYTDLPUtils(unittest.TestCase):
     @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
+    def test_playlist_extraction_retries_known_partial_results(self, mock_youtube_dl):
+        first_ydl = MagicMock()
+        first_ydl.extract_info.return_value = {
+            "entries": [{"id": "one"}],
+            "playlist_count": 10,
+        }
+        second_ydl = MagicMock()
+        second_ydl.extract_info.return_value = {
+            "entries": [{"id": str(index)} for index in range(10)],
+            "playlist_count": 10,
+        }
+        mock_youtube_dl.return_value.__enter__.side_effect = [first_ydl, second_ydl]
+
+        utils = YTDLPUtils()
+        result = utils.extract_playlist_content("LM", 10000, "brave")
+
+        self.assertEqual(len(result), 10)
+        self.assertEqual(mock_youtube_dl.call_count, 2)
+        self.assertEqual(utils.get_last_playlist_total_count("LM"), 10)
+        opts = mock_youtube_dl.call_args.args[0]
+        self.assertEqual(opts["playlist_items"], "1-10000")
+
+    @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
+    def test_playlist_extraction_returns_best_partial_result(self, mock_youtube_dl):
+        results = [
+            {"entries": [{"id": "one"}], "playlist_count": 10},
+            {
+                "entries": [{"id": str(index)} for index in range(3)],
+                "playlist_count": 10,
+            },
+            {"entries": [{"id": "one"}], "playlist_count": 10},
+            {
+                "entries": [{"id": str(index)} for index in range(2)],
+                "playlist_count": 10,
+            },
+        ]
+        contexts = []
+        for result in results:
+            ydl = MagicMock()
+            ydl.extract_info.return_value = result
+            contexts.append(ydl)
+        mock_youtube_dl.return_value.__enter__.side_effect = contexts
+
+        result = YTDLPUtils().extract_playlist_content("LM", 10000, "brave")
+
+        self.assertEqual([entry["id"] for entry in result], ["0", "1", "2"])
+        self.assertEqual(mock_youtube_dl.call_count, 4)
+
+    @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
     def test_stream_extraction_enables_ejs_runtime(self, mock_youtube_dl):
         info = {
             "url": "https://example.com/audio.m4a",
