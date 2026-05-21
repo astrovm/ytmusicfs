@@ -49,6 +49,7 @@ class Downloader:
         video_id: str,
         stream_url: str,
         path: str,
+        format_id: str,
         headers: dict[str, Any] | None = None,
         cookies: dict[str, Any] | None = None,
         retries: int = 3,
@@ -72,7 +73,7 @@ class Downloader:
         audio_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Check if download is already complete with valid file
-        if self._is_download_complete(video_id):
+        if self._is_download_complete(video_id, format_id):
             self.logger.debug(f"Download already complete for {video_id}")
             return True
 
@@ -93,6 +94,7 @@ class Downloader:
             video_id,
             stream_url,
             path,
+            format_id,
             headers,
             cookies,
             retries,
@@ -105,6 +107,7 @@ class Downloader:
         video_id: str,
         stream_url: str,
         path: str,
+        format_id: str,
         headers: dict[str, Any] | None = None,
         cookies: dict[str, Any] | None = None,
         retries: int = 3,
@@ -142,10 +145,10 @@ class Downloader:
             }
 
         with status_path.open("w") as sf:
-            sf.write("downloading")
+            sf.write(f"downloading:{format_id}")
 
-        # Check existing file size for potential resume
-        downloaded = audio_path.stat().st_size if audio_path.exists() else 0
+        # Unknown or lower-quality files must never seed a preferred download.
+        downloaded = 0
 
         base_headers, cookies_data = ensure_headers_and_cookies(headers, cookies)
 
@@ -225,7 +228,7 @@ class Downloader:
                             # Periodically update status file (but not on every chunk to reduce I/O)
                             if downloaded % (chunk_size * 50) == 0:
                                 with status_path.open("w") as sf:
-                                    sf.write("downloading")
+                                    sf.write(f"downloading:{format_id}")
 
                 # Verify the download is complete
                 if temp_path.stat().st_size < expected_total:
@@ -242,7 +245,7 @@ class Downloader:
 
                 # Mark as complete in status file first (most important for recovery)
                 with status_path.open("w") as sf:
-                    sf.write("complete")
+                    sf.write(f"complete:{format_id}")
 
                 with self.lock:
                     self.active_downloads[video_id]["status"] = "complete"
@@ -285,7 +288,7 @@ class Downloader:
 
         return False
 
-    def _is_download_complete(self, video_id: str) -> bool:
+    def _is_download_complete(self, video_id: str, format_id: str) -> bool:
         """Check if download is already complete with a valid file.
 
         Args:
@@ -303,7 +306,7 @@ class Downloader:
                 with status_path.open("r") as f:
                     status = f.read().strip()
                 if (
-                    status == "complete"
+                    status == f"complete:{format_id}"
                     and audio_path.exists()
                     and self._validate_file_format(audio_path)
                 ):
@@ -325,15 +328,11 @@ class Downloader:
             and self._validate_file_format(audio_path)
         ):
             # File exists and passes validation, mark as complete
-            with status_path.open("w") as sf:
-                sf.write("complete")
-            with self.lock:
-                self.active_downloads[video_id] = {
-                    "status": "complete",
-                    "progress": audio_path.stat().st_size,
-                    "total": audio_path.stat().st_size,
-                }
-            return True
+            self.logger.debug(
+                "Ignoring unmarked cached audio for %s while checking format %s",
+                video_id,
+                format_id,
+            )
 
         return False
 

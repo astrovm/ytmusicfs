@@ -222,6 +222,7 @@ class TestFileHandler(unittest.TestCase):
         self.file_handler.open_files[file_handle] = {
             "video_id": video_id,
             "stream_url": stream_url,
+            "format_id": "141",
             "offset": 0,
             "cache_path": cache_path,
             "headers": None,
@@ -292,6 +293,7 @@ class TestFileHandler(unittest.TestCase):
             {
                 "status": "success",
                 "stream_url": "https://example.com/stream.m4a",
+                "format_id": "141",
                 "http_headers": {"Cookie": "SAPISID=abc123"},
                 "cookies": {"SAPISID": "abc123", "foo": "bar"},
             }
@@ -328,6 +330,7 @@ class TestFileHandler(unittest.TestCase):
             {
                 "status": "success",
                 "stream_url": "https://example.com/audio.m4a",
+                "format_id": "141",
                 "http_headers": {"User-Agent": "UnitTest"},
                 "cookies": {"CONSENT": "YES+"},
             }
@@ -356,9 +359,50 @@ class TestFileHandler(unittest.TestCase):
             video_id,
             "https://example.com/audio.m4a",
             path,
+            "141",
             headers=file_info["headers"],
             cookies=file_info["cookies"],
         )
+
+    def test_fallback_stream_does_not_write_audio_or_range_cache(self):
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        fh = self.file_handler.open(path, video_id)
+
+        future = Future()
+        future.set_result(
+            {
+                "status": "success",
+                "stream_url": "https://example.com/audio.m4a",
+                "format_id": "140",
+                "http_headers": {},
+                "cookies": {},
+            }
+        )
+        self.yt_dlp_utils.extract_stream_url_async.return_value = future
+
+        with patch.object(
+            self.file_handler,
+            "_stream_content",
+            return_value=b"a" * FileHandler.CACHE_START_BYTES,
+        ):
+            self.file_handler.read(path, FileHandler.CACHE_START_BYTES, 0, fh)
+
+        self.file_handler.downloader.download_file.assert_not_called()
+        self.assertFalse((self.cache_dir / "ranges").exists())
+
+    def test_cached_audio_requires_preferred_format_status(self):
+        video_id = "abc123"
+        audio_dir = self.cache_dir / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        (audio_dir / f"{video_id}.m4a").write_bytes(b"audio")
+        status_path = audio_dir / f"{video_id}.status"
+
+        status_path.write_text("complete")
+        self.assertFalse(self.original_check_cached(video_id))
+
+        status_path.write_text("complete:141")
+        self.assertTrue(self.original_check_cached(video_id))
 
     def test_high_offset_uncached_read_skips_yt_dlp(self):
         path = "/playlists/my_playlist/song.m4a"
@@ -391,6 +435,7 @@ class TestFileHandler(unittest.TestCase):
             {
                 "status": "success",
                 "stream_url": "https://example.com/audio.m4a",
+                "format_id": "141",
                 "http_headers": {},
                 "cookies": {},
             }
@@ -422,6 +467,7 @@ class TestFileHandler(unittest.TestCase):
             {
                 "status": "success",
                 "stream_url": "https://example.com/audio.m4a",
+                "format_id": "141",
                 "http_headers": {},
                 "cookies": {},
             }
@@ -448,6 +494,7 @@ class TestFileHandler(unittest.TestCase):
             {
                 "status": "success",
                 "stream_url": "https://example.com/audio.m4a",
+                "format_id": "141",
                 "http_headers": {"User-Agent": "UnitTest"},
                 "cookies": {"CONSENT": "YES+"},
             }
@@ -495,6 +542,7 @@ class TestFileHandler(unittest.TestCase):
         self.file_handler.open_files[first_fh][
             "stream_url"
         ] = "https://example.com/audio.m4a"
+        self.file_handler.open_files[first_fh]["format_id"] = "141"
 
         with patch.object(self.file_handler, "_stream_content", return_value=b"prefix"):
             self.assertEqual(
@@ -520,6 +568,7 @@ class TestFileHandler(unittest.TestCase):
         self.file_handler.open_files[first_fh][
             "stream_url"
         ] = "https://example.com/audio.m4a"
+        self.file_handler.open_files[first_fh]["format_id"] = "141"
 
         with patch.object(self.file_handler, "_stream_content", return_value=b"end"):
             self.assertEqual(
@@ -627,6 +676,7 @@ class TestFileHandler(unittest.TestCase):
         self.file_handler.open_files[file_handle] = {
             "video_id": video_id,
             "stream_url": stream_url,
+            "format_id": "141",
             "offset": 0,
             "cache_path": cache_path,
             "headers": None,
@@ -677,6 +727,7 @@ class TestFileHandler(unittest.TestCase):
             {
                 "status": "success",
                 "stream_url": "https://example.com/audio.m4a",
+                "format_id": "141",
                 "http_headers": {
                     "User-Agent": "UnitTest",
                     "Host": "music.youtube.com",

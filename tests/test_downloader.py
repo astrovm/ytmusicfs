@@ -58,6 +58,7 @@ class TestDownloaderCookieMerging(unittest.TestCase):
             video_id=video_id,
             stream_url=stream_url,
             path=path,
+            format_id="141",
             headers={
                 "User-Agent": "UnitTest",
                 "Cookie": "SID=headerSid; HSID=headerHsid",

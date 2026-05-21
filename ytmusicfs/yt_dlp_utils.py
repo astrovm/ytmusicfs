@@ -290,8 +290,18 @@ class YTDLPUtils:
         if self._should_retry_with_cached_cookies(result, cached_cookies):
             retry_result = self._retry_stream_url_with_cached_cookies(video_id, browser)
             if retry_result:
+                self.logger.info(
+                    "Selected stream format %s for %s after quality retry",
+                    retry_result.get("format_id", "unknown"),
+                    video_id,
+                )
                 return retry_result
 
+        self.logger.info(
+            "Selected stream format %s for %s",
+            result.get("format_id", "unknown"),
+            video_id,
+        )
         return result
 
     def _should_retry_with_cached_cookies(self, result, cached_cookies):
@@ -323,18 +333,23 @@ class YTDLPUtils:
                 self._cache_browser_cookies(browser, ydl)
             result = self._stream_result_from_info(info)
         except Exception as exc:
-            self.logger.debug(
+            self.logger.warning(
                 "Retry with cached cookies failed for %s: %s", video_id, exc
             )
             return None
 
         if result.get("format_id") == PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT:
-            self.logger.debug(
+            self.logger.info(
                 "Cached-cookie retry upgraded %s to format %s",
                 video_id,
                 result["format_id"],
             )
             return result
+        self.logger.warning(
+            "Quality retry kept fallback stream format %s for %s",
+            result.get("format_id", "unknown"),
+            video_id,
+        )
         return None
 
     def _stream_result_from_info(self, info):

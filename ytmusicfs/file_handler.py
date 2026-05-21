@@ -14,7 +14,7 @@ import requests
 
 from ytmusicfs.downloader import Downloader
 from ytmusicfs.http_utils import ensure_headers_and_cookies
-from ytmusicfs.yt_dlp_utils import YTDLPUtils
+from ytmusicfs.yt_dlp_utils import PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT, YTDLPUtils
 
 
 class FileHandler:
@@ -118,9 +118,10 @@ class FileHandler:
 
         cache_path = self.cache_dir / "audio" / f"{video_id}.m4a"
         cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cached_audio = self._check_cached_audio(video_id)
 
         unavailable = self.cache.get_unavailable_track(video_id)
-        if unavailable and not self._check_cached_audio(video_id):
+        if unavailable and not cached_audio:
             reason = unavailable.get("reason", "Track unavailable")
             raise OSError(errno.ENOENT, reason)
 
@@ -130,7 +131,10 @@ class FileHandler:
             self.open_files[fh] = {
                 "cache_path": str(cache_path),
                 "video_id": video_id,
-                "stream_url": "cached" if self._check_cached_audio(video_id) else None,
+                "stream_url": "cached" if cached_audio else None,
+                "format_id": (
+                    PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT if cached_audio else None
+                ),
                 "headers": None,
                 "cookies": None,
                 "status": "ready",
@@ -287,7 +291,7 @@ class FileHandler:
                     f.seek(offset)
                     return f.read(size)
 
-        range_data = self._read_cached_range(path, video_id, offset, size)
+        range_data = self._read_cached_range(path, file_info, offset, size)
         if range_data is not None:
             self._record_stat("range_cache_hits")
             return range_data
@@ -376,11 +380,15 @@ class FileHandler:
             file_info["stream_url"],
             offset,
             size,
-            path=path,
+            path=(
+                path
+                if file_info.get("format_id") == PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT
+                else None
+            ),
             auth_headers=file_info.get("headers"),
             cookies=file_info.get("cookies"),
         )
-        self._cache_range(video_id, offset, data)
+        self._cache_range(file_info, offset, data)
         self._maybe_start_cache_download(path, file_info, len(data))
         return data
 
@@ -397,10 +405,19 @@ class FileHandler:
             return
 
         video_id = file_info["video_id"]
+        if file_info.get("format_id") != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT:
+            self.logger.info(
+                "Not caching fallback stream for %s format %s",
+                file_info["video_id"],
+                file_info.get("format_id", "unknown"),
+            )
+            return
+
         self.downloader.download_file(
             video_id,
             file_info["stream_url"],
             path,
+            file_info["format_id"],
             headers=file_info.get("headers"),
             cookies=file_info.get("cookies"),
         )
@@ -424,6 +441,15 @@ class FileHandler:
         self, file_info: dict[str, Any], result: dict[str, Any]
     ) -> None:
         video_id = file_info["video_id"]
+        format_id = result.get("format_id")
+        if (
+            file_info.get("format_id") == PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT
+            and format_id != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT
+        ):
+            raise OSError(
+                errno.EIO,
+                f"Refusing fallback format {format_id} after cached preferred ranges",
+            )
         stream_url = result["stream_url"]
         self.logger.debug("yt-dlp stream url for %s: %s...", video_id, stream_url[:60])
 
@@ -453,6 +479,7 @@ class FileHandler:
         )
         with self.file_handle_lock:
             file_info["stream_url"] = stream_url
+            file_info["format_id"] = format_id
             file_info["headers"] = auth_headers
             file_info["cookies"] = cookies
 
@@ -480,6 +507,7 @@ class FileHandler:
             "stream_url": file_info["stream_url"],
             "headers": file_info.get("headers"),
             "cookies": file_info.get("cookies"),
+            "format_id": file_info.get("format_id"),
         }
 
     def _use_cached_stream_info(self, file_info: dict[str, Any]) -> bool:
@@ -495,6 +523,7 @@ class FileHandler:
             file_info["stream_url"] = cached["stream_url"]
             file_info["headers"] = cached.get("headers")
             file_info["cookies"] = cached.get("cookies")
+            file_info["format_id"] = cached.get("format_id")
         return True
 
     @classmethod
@@ -520,16 +549,17 @@ class FileHandler:
         if self.record_stat_callback:
             self.record_stat_callback(name)
 
-    def _range_cache_dir(self, video_id: str) -> Path:
-        return self.cache_dir / self.RANGE_CACHE_DIR / video_id
+    def _range_cache_dir(self, video_id: str, format_id: str) -> Path:
+        return self.cache_dir / self.RANGE_CACHE_DIR / format_id / video_id
 
     def _read_cached_range(
-        self, fuse_path: str, video_id: str, offset: int, size: int
+        self, fuse_path: str, file_info: dict[str, Any], offset: int, size: int
     ) -> bytes | None:
         if size <= 0:
             return b""
 
-        range_dir = self._range_cache_dir(video_id)
+        format_id = file_info.get("format_id") or PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT
+        range_dir = self._range_cache_dir(file_info["video_id"], format_id)
         if not range_dir.exists():
             return None
 
@@ -553,17 +583,20 @@ class FileHandler:
                 cached.seek(offset - start)
                 data = cached.read(size)
             if len(data) == size:
+                file_info["format_id"] = format_id
                 return data
 
             if known_size and end == known_size and offset + len(data) == known_size:
+                file_info["format_id"] = format_id
                 return data
         return None
 
-    def _cache_range(self, video_id: str, offset: int, data: bytes) -> None:
-        if not data:
+    def _cache_range(self, file_info: dict[str, Any], offset: int, data: bytes) -> None:
+        format_id = file_info.get("format_id")
+        if not data or format_id != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT:
             return
 
-        range_dir = self._range_cache_dir(video_id)
+        range_dir = self._range_cache_dir(file_info["video_id"], format_id)
         range_dir.mkdir(parents=True, exist_ok=True)
         end = offset + len(data)
         path = range_dir / f"{offset}-{end}.part"
@@ -643,6 +676,7 @@ class FileHandler:
                     "stream_extracted": self.open_files[fh].get(
                         "stream_extracted", False
                     ),
+                    "format_id": self.open_files[fh].get("format_id"),
                     "cache_started": self.open_files[fh].get("cache_started", False),
                     "open_ms": int(
                         (
@@ -672,27 +706,24 @@ class FileHandler:
         Returns:
             True if file is cached completely, False otherwise
         """
-        cache_path = Path(self.cache_dir) / "audio" / f"{video_id}.m4a"
-        status_path = Path(self.cache_dir) / "audio" / f"{video_id}.status"
+        audio_dir = Path(self.cache_dir) / "audio"
+        cache_path = audio_dir / f"{video_id}.m4a"
+        status_path = audio_dir / f"{video_id}.status"
 
         # First check for status file (most reliable)
         if status_path.exists():
             try:
                 with open(status_path) as f:
                     status = f.read().strip()
-                if status == "complete":
+                if (
+                    status == f"complete:{PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT}"
+                    and cache_path.exists()
+                ):
                     self.logger.debug(
                         f"Found status file indicating {video_id} is complete"
                     )
                     return True
             except Exception as e:
                 self.logger.debug(f"Error reading status file for {video_id}: {e}")
-
-        # Fall back to checking if the file exists and has content
-        if cache_path.exists() and cache_path.stat().st_size > 0:
-            self.logger.debug(
-                f"Found existing audio file for {video_id}, marking as complete"
-            )
-            return True
 
         return False
