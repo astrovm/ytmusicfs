@@ -153,7 +153,8 @@ For Audacious, enable `Settings` > `Advanced` > `Do not load metadata for
 songs until played` before adding large directories such as `/liked_songs`.
 Otherwise Audacious may probe many uncached audio files while building the
 playlist, which is much slower than loading cached paths and streaming songs
-when they are played.
+when they are played. Also disable `Settings` > `Song Info` > `Show popup
+information` so Audacious does not request extra song details while browsing.
 
 ### Unmount
 
