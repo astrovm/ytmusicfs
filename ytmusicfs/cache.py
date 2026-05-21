@@ -1012,11 +1012,10 @@ class CacheManager:
             return attrs
 
         # For special file paths like /playlists/playlist_name, check the appropriate registry
-        if (
-            parent_dir in ["/playlists", "/albums", "/liked_songs"]
-            and len(path.split("/")) == 3
-            and self.is_valid_path(path)
-        ):
+        if parent_dir in ["/playlists", "/albums"] and len(path.split("/")) == 3:
+            if not self.is_valid_path(path):
+                self.stats["misses"] += 1
+                return None
             # This might be a playlist/album entry - create minimal attrs for directories
             attrs = self._create_directory_attrs()
             # Cache for future lookups

@@ -590,7 +590,7 @@ class YouTubeMusicFS(Operations):
             # For normal files, we need to set appropriate metadata
             if path.endswith(".m4a"):
                 # Audio files
-                video_id = self.fetcher.processor.extract_video_id_from_path(path)
+                video_id = self._get_video_id(path)
                 duration = self.cache.get_duration(video_id) if video_id else None
                 size = self._audio_size_for_path(path, duration)
 

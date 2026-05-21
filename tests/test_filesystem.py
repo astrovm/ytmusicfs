@@ -263,11 +263,12 @@ class TestYouTubeMusicFS(unittest.TestCase):
         self.mock_cache.get_file_attrs_from_parent_dir.return_value = None
         self.mock_cache.get.return_value = None
         self.mock_router.validate_path.return_value = True
-        self.mock_fetcher.processor.extract_video_id_from_path.return_value = "abc123"
+        self.mock_metadata.get_video_id.return_value = "abc123"
         self.mock_cache.get_duration.return_value = 180
 
         attrs = self.fs.getattr(file_path, None)
 
+        self.mock_metadata.get_video_id.assert_called_once_with(file_path)
         self.assertEqual(attrs["st_size"], 180 * self.fs.ESTIMATED_BYTES_PER_SECOND)
 
     def test_getattr_audio_uses_cached_real_size(self):

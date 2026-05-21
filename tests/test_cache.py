@@ -590,6 +590,21 @@ class TestCacheManager(unittest.TestCase):
         self.assertEqual(result.get("st_mode"), dir_listing[file_name]["st_mode"])
         self.assertEqual(result.get("st_size"), dir_listing[file_name]["st_size"])
 
+    def test_liked_song_child_without_listing_is_not_directory(self):
+        real_cache = CacheManager(
+            thread_manager=self.thread_manager,
+            cache_dir=self.temp_dir,
+            logger=self.logger,
+        )
+        path = "/liked_songs/song.m4a"
+        real_cache.mark_valid("/liked_songs", is_directory=True)
+        real_cache.mark_valid(path, is_directory=False)
+
+        result = real_cache.get_file_attrs_from_parent_dir(path)
+
+        real_cache.close()
+        self.assertIsNone(result)
+
     @patch("time.time")
     def test_refresh_metadata_behavior(self, mock_time):
         """Test setting and getting refresh metadata with time control."""
