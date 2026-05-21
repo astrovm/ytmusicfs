@@ -260,6 +260,26 @@ class TestFileHandler(unittest.TestCase):
                 cookies=None,
             )
 
+    def test_release_reports_recent_read_ranges(self):
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        fh = self.file_handler.open(path, video_id)
+        self.file_handler.open_files[fh]["stream_url"] = "https://example.com/audio.m4a"
+
+        with patch.object(self.file_handler, "_stream_content", return_value=b"audio"):
+            self.file_handler.read(path, size=1024, offset=0, fh=fh)
+            self.file_handler.read(path, size=2048, offset=4096, fh=fh)
+
+        self.file_handler.release(path, fh)
+
+        self.assertEqual(
+            self.file_handler.get_recent_handles()[-1]["read_ranges"],
+            [[0, 1024], [4096, 2048]],
+        )
+        self.assertEqual(
+            self.file_handler.get_recent_handles()[-1]["requested_bytes"], 3072
+        )
+
     def test_read_persists_sanitized_headers(self):
         """Ensure prepared headers (with Authorization) are cached for reuse."""
 
@@ -466,9 +486,54 @@ class TestFileHandler(unittest.TestCase):
             auth_headers=file_info["headers"],
             cookies=file_info["cookies"],
         )
-        self.file_handler.record_stat_callback.assert_called_once_with(
-            "stream_info_cache_hits"
+        self.file_handler.record_stat_callback.assert_any_call("stream_info_cache_hits")
+
+    def test_reopened_probe_read_uses_range_cache_before_stream_extraction(self):
+        path = "/liked_songs/song.m4a"
+        video_id = "abc123"
+        first_fh = self.file_handler.open(path, video_id)
+        self.file_handler.open_files[first_fh][
+            "stream_url"
+        ] = "https://example.com/audio.m4a"
+
+        with patch.object(self.file_handler, "_stream_content", return_value=b"prefix"):
+            self.assertEqual(
+                self.file_handler.read(path, size=6, offset=0, fh=first_fh),
+                b"prefix",
+            )
+
+        self.file_handler.release(path, first_fh)
+        self.file_handler.stream_info_cache.clear()
+        self.file_handler.record_stat_callback = Mock()
+        second_fh = self.file_handler.open(path, video_id)
+
+        self.assertEqual(
+            self.file_handler.read(path, size=6, offset=0, fh=second_fh), b"prefix"
         )
+        self.yt_dlp_utils.extract_stream_url_async.assert_not_called()
+        self.file_handler.record_stat_callback.assert_called_with("range_cache_hits")
+
+    def test_range_cache_serves_short_eof_read(self):
+        path = "/liked_songs/song.m4a"
+        video_id = "abc123"
+        first_fh = self.file_handler.open(path, video_id)
+        self.file_handler.open_files[first_fh][
+            "stream_url"
+        ] = "https://example.com/audio.m4a"
+
+        with patch.object(self.file_handler, "_stream_content", return_value=b"end"):
+            self.assertEqual(
+                self.file_handler.read(path, size=6, offset=100, fh=first_fh), b"end"
+            )
+
+        self.file_handler.release(path, first_fh)
+        self.file_handler.get_file_size_callback = Mock(return_value=103)
+        second_fh = self.file_handler.open(path, video_id)
+
+        self.assertEqual(
+            self.file_handler.read(path, size=6, offset=100, fh=second_fh), b"end"
+        )
+        self.yt_dlp_utils.extract_stream_url_async.assert_not_called()
 
     def test_timeout_error_message_is_not_empty(self):
         path = "/playlists/my_playlist/song.m4a"

@@ -134,6 +134,8 @@ class YouTubeMusicFS(Operations):
             "probe_eof_skips": 0,
             "range_416_eof": 0,
             "background_downloads": 0,
+            "range_cache_hits": 0,
+            "range_cache_writes": 0,
             "unavailable_cache_hits": 0,
         }
 
@@ -763,6 +765,7 @@ class YouTubeMusicFS(Operations):
             "cache_dir": str(self.cache.cache_dir),
             "generated_at": int(time.time()),
             "stats": stats,
+            "recent_handles": self.file_handler.get_recent_handles(),
         }
         return (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
 

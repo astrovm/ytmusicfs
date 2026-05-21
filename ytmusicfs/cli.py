@@ -407,7 +407,7 @@ class CacheCommandHandler:
     """Inspect or clear persistent cache files."""
 
     CACHE_FILES = ("cache.db", "cache.db-wal", "cache.db-shm")
-    CACHE_DIRS = ("audio",)
+    CACHE_DIRS = ("audio", "ranges")
 
     def __init__(self, args: argparse.Namespace, logger: logging.Logger):
         self.args = args

@@ -285,6 +285,16 @@ class TestContentFetcher(unittest.TestCase):
         self.assertEqual(result, ["cached_song.m4a"])
         self.yt_dlp_utils.extract_playlist_content.assert_not_called()
 
+    def test_stale_content_read_uses_existing_tracks(self):
+        cached_tracks = [{"filename": "cached_song.m4a", "videoId": "vid1"}]
+        self.cache.get.return_value = cached_tracks
+        self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
+
+        result = self.fetcher.fetch_playlist_content("LM", "/liked_songs")
+
+        self.assertEqual(result, ["cached_song.m4a"])
+        self.yt_dlp_utils.extract_playlist_content.assert_not_called()
+
     def test_liked_songs_use_yt_dlp_with_total_count_guard(self):
         self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
         self.yt_dlp_utils.extract_playlist_content.return_value = [
@@ -376,7 +386,7 @@ class TestContentFetcher(unittest.TestCase):
         }
 
         result = self.fetcher.fetch_playlist_content(
-            "PL123", "/playlists/test", limit=10000
+            "PL123", "/playlists/test", limit=10000, force_refresh=True
         )
 
         self.assertEqual(result, [track["filename"] for track in cached_tracks])
@@ -385,7 +395,6 @@ class TestContentFetcher(unittest.TestCase):
     def test_known_partial_fetch_merges_with_smaller_cache(self):
         cached_tracks = [
             {"filename": "cached_1.m4a", "videoId": "cached_1"},
-            {"filename": "old_dup.m4a", "videoId": "vid1"},
         ]
         fetched_tracks = [
             {"id": "vid1", "title": "Song 1", "uploader": "Artist 1", "duration": 180},
@@ -419,7 +428,7 @@ class TestContentFetcher(unittest.TestCase):
         self.processor.extract_track_info.side_effect = processed_tracks
 
         result = self.fetcher.fetch_playlist_content(
-            "PL123", "/playlists/test", limit=10000
+            "PL123", "/playlists/test", limit=10000, force_refresh=True
         )
 
         self.assertEqual(

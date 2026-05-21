@@ -46,6 +46,7 @@ class TestYouTubeMusicFS(unittest.TestCase):
             self.mock_fetcher = mock_fetcher.return_value
             self.mock_router = mock_router.return_value
             self.mock_file_handler = mock_file_handler.return_value
+            self.mock_file_handler.get_recent_handles.return_value = []
             self.mock_metadata = mock_metadata.return_value
 
             # Create the instance to test
@@ -96,6 +97,7 @@ class TestYouTubeMusicFS(unittest.TestCase):
         self.assertEqual(result, [".", "..", "status.json"])
         self.assertEqual(attrs["st_mode"], stat.S_IFREG | 0o444)
         self.assertIn(b'"browser": "brave"', content)
+        self.assertIn(b'"recent_handles"', content)
         self.assertIn(b'"stats"', content)
 
     def test_status_counts_filesystem_operations(self):

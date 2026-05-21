@@ -355,31 +355,6 @@ class ContentFetcher:
                 "No callback set for caching directory listings with attributes"
             )
 
-    def check_refresh_needed(
-        self, cache_key: str, refresh_interval: int = 3600
-    ) -> bool:
-        """Check if a cache entry needs refreshing based on its age.
-
-        Args:
-            cache_key: The cache key to check
-            refresh_interval: Time in seconds before refresh is needed (default: 3600s = 1 hour)
-
-        Returns:
-            True if refresh is needed, False otherwise
-        """
-        now = time.time()
-        last_refresh, status = self.cache.get_refresh_metadata(cache_key)
-
-        # Refresh is needed if:
-        # - Never refreshed (last_refresh is None)
-        # - Older than refresh_interval
-        # - Status is "stale"
-        if not last_refresh:
-            return True
-        if status == "stale":
-            return True
-        return now - last_refresh >= refresh_interval
-
     def refresh_content(
         self,
         cache_key: str,
@@ -401,16 +376,15 @@ class ContentFetcher:
         Returns:
             List of processed tracks with metadata
         """
-        # Check if refresh is needed
-        needs_refresh = force_refresh or self.check_refresh_needed(cache_key)
-
         # Get existing cached tracks
         existing_tracks = self.cache.get(cache_key)
         if not isinstance(existing_tracks, list):
             existing_tracks = []
 
-        # If no refresh needed and we have data, use it
-        if not needs_refresh and existing_tracks:
+        # Directory reads must stay local once content exists. Media players can
+        # readdir repeatedly while scanning thousands of entries; blocking that
+        # path on a stale YouTube refresh makes cached libraries unusable.
+        if existing_tracks and not force_refresh:
             last_refresh, _ = self.cache.get_refresh_metadata(cache_key)
             last_refresh_age = (
                 "unknown"

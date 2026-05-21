@@ -4,6 +4,7 @@ import errno
 import logging
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
@@ -23,6 +24,7 @@ class FileHandler:
     PROBE_EOF_OFFSET = 1024 * 1024
     PROBE_TAIL_BYTES = 512 * 1024
     STREAM_INFO_TTL = 60 * 60
+    RANGE_CACHE_DIR = "ranges"
     UNAVAILABLE_ERRORS = (
         "Video unavailable",
         "This video is not available",
@@ -69,6 +71,7 @@ class FileHandler:
         self.logger.debug("Using ThreadManager for lock creation in FileHandler")
         self.futures = {}  # Store futures for async operations by video_id
         self.stream_info_cache = {}
+        self.recent_handles: deque[dict[str, Any]] = deque(maxlen=100)
 
         # Initialize Downloader
         self.downloader = Downloader(
@@ -135,6 +138,11 @@ class FileHandler:
                 "path": path,
                 "bytes_read": 0,
                 "cache_started": False,
+                "stream_extracted": False,
+                "read_calls": 0,
+                "requested_bytes": 0,
+                "read_ranges": [],
+                "opened_at": time.time(),
                 "initialized_event": threading.Event(),
             }
             self.open_files[fh]["initialized_event"].set()
@@ -248,6 +256,7 @@ class FileHandler:
         file_info = self.open_files[fh]
         cache_path = Path(file_info["cache_path"])
         video_id = file_info["video_id"]
+        self._record_read_request(file_info, size, offset)
 
         # If there was an error, raise it
         if file_info["status"] == "error":
@@ -277,6 +286,11 @@ class FileHandler:
                 with cache_path.open("rb") as f:
                     f.seek(offset)
                     return f.read(size)
+
+        range_data = self._read_cached_range(path, video_id, offset, size)
+        if range_data is not None:
+            self._record_stat("range_cache_hits")
+            return range_data
 
         # If we still lack a stream URL (and it's not cached), fetch it on-demand
         if not file_info["stream_url"] or file_info["stream_url"] == "cached":
@@ -308,6 +322,7 @@ class FileHandler:
                 # Use ThreadPoolExecutor-based async extraction
                 try:
                     result = self._get_stream_info(video_id)
+                    file_info["stream_extracted"] = True
                     if result["status"] == "error":
                         error_msg = result["error"]
                         with self.file_handle_lock:
@@ -365,6 +380,7 @@ class FileHandler:
             auth_headers=file_info.get("headers"),
             cookies=file_info.get("cookies"),
         )
+        self._cache_range(video_id, offset, data)
         self._maybe_start_cache_download(path, file_info, len(data))
         return data
 
@@ -504,6 +520,70 @@ class FileHandler:
         if self.record_stat_callback:
             self.record_stat_callback(name)
 
+    def _range_cache_dir(self, video_id: str) -> Path:
+        return self.cache_dir / self.RANGE_CACHE_DIR / video_id
+
+    def _read_cached_range(
+        self, fuse_path: str, video_id: str, offset: int, size: int
+    ) -> bytes | None:
+        if size <= 0:
+            return b""
+
+        range_dir = self._range_cache_dir(video_id)
+        if not range_dir.exists():
+            return None
+
+        requested_end = offset + size
+        known_size = (
+            self.get_file_size_callback(fuse_path)
+            if self.get_file_size_callback
+            else None
+        )
+        for path in range_dir.glob("*.part"):
+            try:
+                start_text, end_text = path.stem.split("-", 1)
+                start = int(start_text)
+                end = int(end_text)
+            except ValueError:
+                continue
+            cached_to_eof = bool(known_size and end == known_size)
+            if start > offset or (end < requested_end and not cached_to_eof):
+                continue
+            with path.open("rb") as cached:
+                cached.seek(offset - start)
+                data = cached.read(size)
+            if len(data) == size:
+                return data
+
+            if known_size and end == known_size and offset + len(data) == known_size:
+                return data
+        return None
+
+    def _cache_range(self, video_id: str, offset: int, data: bytes) -> None:
+        if not data:
+            return
+
+        range_dir = self._range_cache_dir(video_id)
+        range_dir.mkdir(parents=True, exist_ok=True)
+        end = offset + len(data)
+        path = range_dir / f"{offset}-{end}.part"
+        if path.exists():
+            return
+        path.write_bytes(data)
+        self._record_stat("range_cache_writes")
+
+    @staticmethod
+    def _record_read_request(file_info: dict[str, Any], size: int, offset: int) -> None:
+        file_info["read_calls"] = file_info.get("read_calls", 0) + 1
+        file_info["requested_bytes"] = file_info.get("requested_bytes", 0) + size
+        ranges = file_info.setdefault("read_ranges", [])
+        if len(ranges) < 12:
+            ranges.append([offset, size])
+
+    def get_recent_handles(self) -> list[dict[str, Any]]:
+        with self.file_handle_lock:
+            return list(self.recent_handles)
+
     def _is_uncached_probe_read(self, path: str, offset: int) -> bool:
         if offset < self.PROBE_EOF_OFFSET or not self.get_file_size_callback:
             return False
@@ -551,6 +631,28 @@ class FileHandler:
 
             # Don't stop the download - let it continue in the background
             # This ensures files are fully downloaded even after the handle is closed
+
+            self.recent_handles.append(
+                {
+                    "path": path,
+                    "video_id": self.open_files[fh]["video_id"],
+                    "read_calls": self.open_files[fh].get("read_calls", 0),
+                    "requested_bytes": self.open_files[fh].get("requested_bytes", 0),
+                    "read_ranges": self.open_files[fh].get("read_ranges", []),
+                    "bytes_read": self.open_files[fh].get("bytes_read", 0),
+                    "stream_extracted": self.open_files[fh].get(
+                        "stream_extracted", False
+                    ),
+                    "cache_started": self.open_files[fh].get("cache_started", False),
+                    "open_ms": int(
+                        (
+                            time.time()
+                            - self.open_files[fh].get("opened_at", time.time())
+                        )
+                        * 1000
+                    ),
+                }
+            )
 
             # Just remove the file handle from our tracking
             del self.open_files[fh]
