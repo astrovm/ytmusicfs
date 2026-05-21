@@ -7,6 +7,7 @@ import os
 import stat
 import time
 import traceback
+from contextlib import suppress
 from typing import Any
 
 from fuse import FUSE, FuseOSError, Operations
@@ -465,6 +466,13 @@ class YouTubeMusicFS(Operations):
             "st_ctime": time.time(),
         }
 
+        audio_video_id = None
+        if path.endswith(".m4a"):
+            with suppress(OSError):
+                audio_video_id = self._get_video_id(path)
+            if audio_video_id and self.cache.is_track_unavailable(audio_video_id):
+                raise FuseOSError(errno.ENOENT)
+
         # CHECK COOLDOWN CACHE FIRST for frequent requests
         current_time = time.time()
         with self.last_access_lock:
@@ -590,7 +598,7 @@ class YouTubeMusicFS(Operations):
             # For normal files, we need to set appropriate metadata
             if path.endswith(".m4a"):
                 # Audio files
-                video_id = self._get_video_id(path)
+                video_id = audio_video_id or self._get_video_id(path)
                 duration = self.cache.get_duration(video_id) if video_id else None
                 size = self._audio_size_for_path(path, duration)
 

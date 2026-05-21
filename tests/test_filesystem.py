@@ -271,6 +271,21 @@ class TestYouTubeMusicFS(unittest.TestCase):
         self.mock_metadata.get_video_id.assert_called_once_with(file_path)
         self.assertEqual(attrs["st_size"], 180 * self.fs.ESTIMATED_BYTES_PER_SECOND)
 
+    def test_getattr_rejects_unavailable_audio_before_cooldown_cache(self):
+        file_path = "/liked_songs/song.m4a"
+        self.fs.last_access_results[f"getattr:{file_path}"] = {
+            "st_mode": stat.S_IFREG | 0o644,
+            "st_size": 123,
+        }
+        self.fs.last_access_time[f"getattr:{file_path}"] = time.time()
+        self.mock_metadata.get_video_id.return_value = "abc123"
+        self.mock_cache.is_track_unavailable.return_value = True
+
+        with self.assertRaises(FuseOSError) as cm:
+            self.fs.getattr(file_path, None)
+
+        self.assertEqual(cm.exception.errno, errno.ENOENT)
+
     def test_getattr_audio_uses_cached_real_size(self):
         file_path = "/liked_songs/song.m4a"
         self.mock_cache.get_file_attrs_from_parent_dir.return_value = None
