@@ -165,10 +165,12 @@ class TestContentFetcher(unittest.TestCase):
 
         self.client.get_library_playlists.return_value = [
             {"title": "Broken Playlist"},
+            {"title": "///", "playlistId": "PL_EMPTY"},
             {"title": "Good Playlist", "playlistId": "PL123"},
         ]
         self.client.get_library_albums.return_value = [
             {"title": "Broken Album"},
+            {"title": "///", "browseId": "MPREb_EMPTY"},
             {"title": "Good Album", "browseId": "MPREb_456"},
         ]
         self.cache.get_refresh_metadata.return_value = (
@@ -186,6 +188,12 @@ class TestContentFetcher(unittest.TestCase):
         )
         self.assertIsNone(
             self.fetcher.get_playlist_id_from_name("broken_album", type_filter="album")
+        )
+        self.assertIsNone(
+            self.fetcher.get_playlist_id_from_name("", type_filter="playlist")
+        )
+        self.assertIsNone(
+            self.fetcher.get_playlist_id_from_name("", type_filter="album")
         )
         self.assertEqual(
             self.fetcher.get_playlist_id_from_name(
