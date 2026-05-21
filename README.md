@@ -149,6 +149,12 @@ audacious ~/Music/ytmusic/playlists/MyFavorites/Song.m4a
 mpv ~/Music/ytmusic/liked_songs/Artist\ -\ Song.m4a
 ```
 
+For Audacious, enable `Settings` > `Advanced` > `Do not load metadata for
+songs until played` before adding large directories such as `/liked_songs`.
+Otherwise Audacious may probe many uncached audio files while building the
+playlist, which is much slower than loading cached paths and streaming songs
+when they are played.
+
 ### Unmount
 
 When you're done, unmount the filesystem:
