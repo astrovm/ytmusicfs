@@ -23,8 +23,10 @@ UNAVAILABLE_ERRORS = (
     "Video unavailable",
     "This video is not available",
 )
+TRANSIENT_STREAM_ERRORS = ("Requested format is not available",)
 PARTIAL_PLAYLIST_RETRY_ATTEMPTS = 4
 PARTIAL_PLAYLIST_COMPLETE_RATIO = 0.95
+STREAM_EXTRACTION_ATTEMPTS = 3
 
 
 class YTDLPUtils:
@@ -260,9 +262,29 @@ class YTDLPUtils:
         url = f"https://music.youtube.com/watch?v={video_id}"
         ydl_opts = self._stream_extraction_options(browser)
 
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            cached_cookies = self._cache_browser_cookies(browser, ydl)
+        info = None
+        cached_cookies = False
+        for attempt in range(1, STREAM_EXTRACTION_ATTEMPTS + 1):
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    cached_cookies = self._cache_browser_cookies(browser, ydl)
+                break
+            except Exception as exc:
+                if not self._is_transient_stream_error(exc):
+                    raise
+                if attempt == STREAM_EXTRACTION_ATTEMPTS:
+                    raise
+                self.logger.warning(
+                    "Transient stream extraction failure for %s on attempt %s/%s: %s",
+                    video_id,
+                    attempt,
+                    STREAM_EXTRACTION_ATTEMPTS,
+                    exc,
+                )
+
+        if info is None:
+            raise RuntimeError(f"Failed to extract stream URL for {video_id}")
 
         result = self._stream_result_from_info(info)
         if self._should_retry_with_cached_cookies(result, cached_cookies):
@@ -277,6 +299,12 @@ class YTDLPUtils:
             cached_cookies
             and result.get("format_id") != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT
         )
+
+    def _is_transient_stream_error(self, exc: Exception) -> bool:
+        error = str(exc)
+        if any(unavailable in error for unavailable in UNAVAILABLE_ERRORS):
+            return False
+        return any(transient in error for transient in TRANSIENT_STREAM_ERRORS)
 
     def _retry_stream_url_with_cached_cookies(self, video_id, browser: str):
         with self._cookie_lock:

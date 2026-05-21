@@ -173,6 +173,38 @@ class TestYTDLPUtils(unittest.TestCase):
         self.assertEqual(mock_youtube_dl.call_count, 1)
 
     @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
+    def test_retries_transient_stream_format_failure(self, mock_youtube_dl):
+        info = {
+            "url": "https://example.com/high.m4a",
+            "http_headers": {},
+            "format_id": "141",
+        }
+
+        first_ydl = MagicMock()
+        first_ydl.extract_info.side_effect = RuntimeError(
+            "Requested format is not available"
+        )
+        second_ydl = MagicMock()
+        second_ydl.extract_info.return_value = info
+        mock_youtube_dl.return_value.__enter__.side_effect = [first_ydl, second_ydl]
+
+        result = YTDLPUtils().extract_stream_url("abc123", browser="brave")
+
+        self.assertEqual(result["stream_url"], "https://example.com/high.m4a")
+        self.assertEqual(mock_youtube_dl.call_count, 2)
+
+    @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
+    def test_does_not_retry_unavailable_stream(self, mock_youtube_dl):
+        ydl = MagicMock()
+        ydl.extract_info.side_effect = RuntimeError("Video unavailable")
+        mock_youtube_dl.return_value.__enter__.return_value = ydl
+
+        with self.assertRaisesRegex(RuntimeError, "Video unavailable"):
+            YTDLPUtils().extract_stream_url("abc123", browser="brave")
+
+        self.assertEqual(mock_youtube_dl.call_count, 1)
+
+    @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
     def test_retry_failure_returns_first_valid_stream(self, mock_youtube_dl):
         first_info = {
             "url": "https://example.com/low.m4a",
