@@ -8,7 +8,7 @@ from typing import Any
 
 from ytmusicfs.cache import CacheManager
 from ytmusicfs.processor import TrackProcessor
-from ytmusicfs.yt_dlp_utils import YTDLPUtils
+from ytmusicfs.yt_dlp_utils import PARTIAL_PLAYLIST_COMPLETE_RATIO, YTDLPUtils
 
 
 class ContentFetcher:
@@ -419,7 +419,8 @@ class ContentFetcher:
             self.logger.info(f"Fetched {len(tracks)} items for {path}")
             expected_total = expected_total_func() if expected_total_func else None
             is_partial_fetch = bool(
-                expected_total and len(tracks) < expected_total * 0.8
+                expected_total
+                and len(tracks) < expected_total * PARTIAL_PLAYLIST_COMPLETE_RATIO
             )
             if is_partial_fetch:
                 self.logger.warning(

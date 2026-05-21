@@ -305,6 +305,36 @@ class TestContentFetcher(unittest.TestCase):
             "/playlists/test_processed", ANY, "stale"
         )
 
+    def test_fetch_below_retry_complete_ratio_stays_stale(self):
+        fetched_tracks = [
+            {
+                "id": f"vid{i}",
+                "title": f"Song {i}",
+                "uploader": "Artist",
+                "duration": 180,
+            }
+            for i in range(9)
+        ]
+        processed_tracks = [
+            {
+                "title": f"Song {i}",
+                "artist": "Artist",
+                "videoId": f"vid{i}",
+                "duration_seconds": 180,
+            }
+            for i in range(9)
+        ]
+        self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
+        self.yt_dlp_utils.extract_playlist_content.return_value = fetched_tracks
+        self.yt_dlp_utils.get_last_playlist_total_count.return_value = 10
+        self.processor.extract_track_info.side_effect = processed_tracks
+
+        self.fetcher.fetch_playlist_content("PL123", "/playlists/test", limit=10000)
+
+        self.cache.set_refresh_metadata.assert_any_call(
+            "/playlists/test_processed", ANY, "stale"
+        )
+
     def test_known_partial_fetch_does_not_replace_larger_cache(self):
         cached_tracks = [
             {"filename": f"cached_{i}.m4a", "videoId": f"cached_{i}"} for i in range(5)
