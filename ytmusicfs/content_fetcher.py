@@ -131,9 +131,6 @@ class ContentFetcher:
             sanitized_name = self._sanitize_registry_name(
                 p["title"], "playlist", playlist_id
             )
-            if not sanitized_name:
-                self.logger.warning("Skipping playlist with empty title: %s", p)
-                continue
             path = f"/playlists/{sanitized_name}"
             self.PLAYLIST_REGISTRY.append(
                 {
@@ -152,9 +149,6 @@ class ContentFetcher:
                 self.logger.warning("Skipping album without browseId: %s", a)
                 continue
             sanitized_name = self._sanitize_registry_name(a["title"], "album", album_id)
-            if not sanitized_name:
-                self.logger.warning("Skipping album with empty title: %s", a)
-                continue
             path = f"/albums/{sanitized_name}"
             self.PLAYLIST_REGISTRY.append(
                 {
