@@ -378,7 +378,6 @@ class FileHandler:
                                     file_info["stream_url"] = None
                                     file_info["status"] = "ready"
                                     file_info["error"] = None
-                                    file_info["stream_extracted"] = False
                                 if video_id in self.futures:
                                     del self.futures[video_id]
                                 # Retry stream extraction with new ID

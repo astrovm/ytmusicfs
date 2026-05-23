@@ -1223,8 +1223,13 @@ class CacheManager:
     def _atomic_write(self, path: Path, content: str) -> None:
         """Write content atomically via a temp file and rename."""
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(content, encoding="utf-8")
-        tmp.rename(path)
+        try:
+            tmp.write_text(content, encoding="utf-8")
+            tmp.rename(path)
+        except Exception:
+            with suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            raise
 
     def record_repair_trigger(self, repairs: list[dict[str, Any]]) -> None:
         """Write a repair trigger file for the mount process to pick up.

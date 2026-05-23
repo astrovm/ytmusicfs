@@ -44,13 +44,17 @@ class LikedSongsRepairer:
         self.logger = logger or logging.getLogger("YTMusicFS")
 
     def repair(self) -> dict[str, int]:
-        repairs, stats = self.plan_repairs()
+        repairs, dead_tracks, stats = self.plan_repairs()
         stats["repaired"] = self.apply_repairs(repairs)
+        stats["removed"] = self.apply_removals(dead_tracks)
         return stats
 
-    def plan_repairs(self) -> tuple[list[LikedSongRepair], dict[str, int]]:
+    def plan_repairs(
+        self,
+    ) -> tuple[list[LikedSongRepair], list[tuple[str, str]], dict[str, int]]:
         stats = {"checked": 0, "repaired": 0, "skipped": 0, "failed": 0, "removed": 0}
-        repairs = []
+        repairs: list[LikedSongRepair] = []
+        dead_tracks: list[tuple[str, str]] = []
         unavailable_tracks = [
             track
             for track in self.cache.get_unavailable_tracks()
@@ -66,17 +70,9 @@ class LikedSongsRepairer:
                 else:
                     video_id = str(unavailable.get("videoId") or "")
                     if self.cache.is_no_replacement(video_id):
-                        # Confirmed dead with no replacement
-                        if self.sync_account:
-                            self.client.rate_song(video_id, "INDIFFERENT")
-                            self.logger.info(
-                                "Removed dead track from account: %s",
-                                unavailable.get("path"),
-                            )
-                        self._remove_dead_track_from_cache(
-                            video_id, str(unavailable.get("path") or "")
+                        dead_tracks.append(
+                            (video_id, str(unavailable.get("path") or ""))
                         )
-                        stats["removed"] += 1
                     else:
                         stats["skipped"] += 1
             except Exception as exc:
@@ -86,7 +82,7 @@ class LikedSongsRepairer:
                     unavailable.get("path") or unavailable.get("videoId"),
                     exc,
                 )
-        return repairs, stats
+        return repairs, dead_tracks, stats
 
     def apply_repairs(self, repairs: list[LikedSongRepair]) -> int:
         repaired = 0
@@ -121,6 +117,25 @@ class LikedSongsRepairer:
                 ]
             )
         return repaired
+
+    def apply_removals(self, dead_tracks: list[tuple[str, str]]) -> int:
+        """Remove confirmed dead tracks from account and local cache.
+
+        Args:
+            dead_tracks: List of (video_id, path) tuples.
+
+        Returns:
+            Number of tracks removed.
+        """
+        removed = 0
+        for video_id, path in dead_tracks:
+            if self.sync_account:
+                self.client.rate_song(video_id, "INDIFFERENT")
+                self.logger.info("Removed dead track from account: %s", path)
+            self._remove_dead_track_from_cache(video_id, path)
+            removed += 1
+            self.logger.info("Removed dead track from cache: %s", path)
+        return removed
 
     def _plan_one(self, unavailable: dict[str, Any]) -> LikedSongRepair | None:
         old_video_id = str(unavailable.get("videoId") or "")
@@ -256,14 +271,9 @@ class LikedSongsRepairer:
         tracks = self.cache.get("/liked_songs_processed")
         if not isinstance(tracks, list):
             return
-        filename = Path(path).name
         before = len(tracks)
         updated = [
-            t
-            for t in tracks
-            if isinstance(t, dict)
-            and t.get("videoId") != video_id
-            and t.get("filename") != filename
+            t for t in tracks if isinstance(t, dict) and t.get("videoId") != video_id
         ]
         if len(updated) < before:
             self.cache.set("/liked_songs_processed", updated)

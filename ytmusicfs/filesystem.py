@@ -834,7 +834,7 @@ class YouTubeMusicFS(Operations):
         Returns:
             New video_id if a verified replacement was found, None otherwise.
         """
-        if not path.startswith(("/liked_songs/", "/albums/")):
+        if not path.startswith("/liked_songs/"):
             return None
 
         if self.cache.is_no_replacement(video_id):
