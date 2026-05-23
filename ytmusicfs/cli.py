@@ -428,6 +428,17 @@ class CacheCommandHandler:
         return self.remove_cache_entries("refresh", include_audio=False)
 
     def remove_cache_entries(self, action: str, include_audio: bool) -> int:
+        active_mount = MountInspector.find_active_mount_point()
+        if active_mount:
+            self._send_cache_trigger(action)
+            print(f"Cache {action}: trigger sent to mount at {active_mount}")
+            return 0
+
+        removed = self._remove_local_cache_entries(action, include_audio)
+        print(f"Cache {action}: removed {removed} files from {self.config.cache_dir}")
+        return 0
+
+    def _send_cache_trigger(self, action: str) -> None:
         from ytmusicfs.cache import CacheManager
         from ytmusicfs.thread_manager import ThreadManager
 
@@ -443,12 +454,13 @@ class CacheCommandHandler:
             cache.close()
             thread_manager.shutdown(wait=True, timeout=5.0)
 
-        active_mount = MountInspector.find_active_mount_point()
-        if active_mount:
-            print(f"Cache {action}: trigger sent to mount at {active_mount}")
-            return 0
-
+    def _remove_local_cache_entries(self, action: str, include_audio: bool) -> int:
         removed = 0
+        for trigger in (".clear_trigger", ".refresh_trigger"):
+            path = self.config.cache_dir / trigger
+            if path.exists():
+                path.unlink()
+                removed += 1
         for name in self.CACHE_FILES:
             path = self.config.cache_dir / name
             if path.exists():
@@ -461,8 +473,7 @@ class CacheCommandHandler:
                     shutil.rmtree(path)
                     removed += 1
 
-        print(f"Cache {action}: removed {removed} files from {self.config.cache_dir}")
-        return 0
+        return removed
 
     def stats(self) -> int:
         db_path = self.config.cache_dir / "cache.db"

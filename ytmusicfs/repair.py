@@ -64,12 +64,13 @@ class LikedSongsRepairer:
         for unavailable in unavailable_tracks:
             stats["checked"] += 1
             try:
+                video_id = str(unavailable.get("videoId") or "")
+                known_no_replacement = self.cache.is_no_replacement(video_id)
                 repair = self._plan_one(unavailable)
                 if repair:
                     repairs.append(repair)
                 else:
-                    video_id = str(unavailable.get("videoId") or "")
-                    if self.cache.is_no_replacement(video_id):
+                    if known_no_replacement:
                         dead_tracks.append(
                             (video_id, str(unavailable.get("path") or ""))
                         )
@@ -153,7 +154,7 @@ class LikedSongsRepairer:
         if replacement is None:
             self.cache.mark_no_replacement(old_video_id, path)
             self.logger.info(
-                "No replacement found for %s, marked as permanently dead", path
+                "No verified replacement found for %s, marked for future skip", path
             )
             return None
 

@@ -357,6 +357,8 @@ def test_cache_clear_removes_sqlite_files(mock_active_mount, tmp_path):
         (cache_dir / name).exists() for name in CacheCommandHandler.CACHE_FILES
     )
     assert not audio_dir.exists()
+    assert not (cache_dir / ".clear_trigger").exists()
+    assert not (cache_dir / ".refresh_trigger").exists()
 
 
 @patch("ytmusicfs.cli.MountInspector.find_active_mount_point", return_value=None)
@@ -379,10 +381,14 @@ def test_cache_refresh_removes_sqlite_files_but_keeps_audio(
         (cache_dir / name).exists() for name in CacheCommandHandler.CACHE_FILES
     )
     assert audio_file.exists()
+    assert not (cache_dir / ".clear_trigger").exists()
+    assert not (cache_dir / ".refresh_trigger").exists()
 
 
+@patch("ytmusicfs.cli.MountInspector.find_active_mount_point")
 @pytest.mark.parametrize("cache_action", ["clear", "refresh"])
-def test_cache_mutation_works_while_mounted(tmp_path, cache_action):
+def test_cache_mutation_works_while_mounted(mock_active_mount, tmp_path, cache_action):
+    mock_active_mount.return_value = tmp_path / "music"
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
     db_path = cache_dir / "cache.db"

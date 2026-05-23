@@ -11,6 +11,7 @@ class TestLikedSongsRepairer(unittest.TestCase):
         self.cache = Mock()
         self.processor = Mock()
         self.yt_dlp_utils = Mock()
+        self.cache.is_no_replacement.return_value = False
         self.repairer = LikedSongsRepairer(
             client=self.client,
             cache=self.cache,
@@ -100,7 +101,38 @@ class TestLikedSongsRepairer(unittest.TestCase):
         self.client.rate_song.assert_not_called()
         self.cache.clear_unavailable_track.assert_not_called()
 
-    def test_repair_removes_dead_track_when_no_replacement(self):
+    def test_repair_skips_when_replacement_stream_is_not_highest_quality(self):
+        self.cache.get_unavailable_tracks.return_value = [
+            {"videoId": "old", "path": "/liked_songs/Artist - Song.m4a"}
+        ]
+        self.cache.get.return_value = [
+            {
+                "videoId": "old",
+                "artist": "Artist",
+                "title": "Song",
+                "filename": "Artist - Song.m4a",
+            }
+        ]
+        self.client.search.return_value = [
+            {
+                "videoId": "new",
+                "title": "Song",
+                "artists": [{"name": "Artist"}],
+            }
+        ]
+        self.yt_dlp_utils.extract_stream_url.return_value = {"format_id": "140"}
+
+        stats = self.repairer.repair()
+
+        self.assertEqual(
+            stats,
+            {"checked": 1, "repaired": 0, "removed": 0, "skipped": 1, "failed": 0},
+        )
+        self.client.rate_song.assert_not_called()
+        self.cache.mark_no_replacement.assert_called_once()
+
+    def test_repair_removes_previously_confirmed_no_replacement_track(self):
+        self.cache.is_no_replacement.return_value = True
         self.cache.get_unavailable_tracks.return_value = [
             {"videoId": "old", "path": "/liked_songs/Artist - Song.m4a"}
         ]
@@ -128,7 +160,6 @@ class TestLikedSongsRepairer(unittest.TestCase):
             {"checked": 1, "repaired": 0, "removed": 1, "skipped": 0, "failed": 0},
         )
         self.client.rate_song.assert_called_once_with("old", "INDIFFERENT")
-        self.cache.mark_no_replacement.assert_called_once()
 
     def test_local_repair_does_not_mutate_account(self):
         self.repairer.sync_account = False
