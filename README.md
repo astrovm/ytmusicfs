@@ -207,8 +207,8 @@ ytmusicfs cache refresh
 ```
 
 `cache clear` removes metadata and cached audio. `cache refresh` removes
-metadata only and keeps cached audio. Both refuse to run while YTMusicFS is
-mounted.
+metadata only and keeps cached audio. Both work while YTMusicFS is mounted —
+the mount process applies the change on the next `/liked_songs` access.
 
 When `/liked_songs` contains a dead backing video ID, YTMusicFS tries to repair
 the local cached path automatically by searching for a verified playable
@@ -218,8 +218,10 @@ To also fix the liked state in your account, run:
 
 ```bash
 ytmusicfs repair
-ytmusicfs cache refresh
 ```
+
+Repair works while the filesystem is mounted. The mount process picks up the
+change on the next `/liked_songs` access without needing a remount.
 
 `repair` only handles tracks already marked unavailable in
 `/liked_songs`. For each one, it searches YouTube Music by artist and title,
