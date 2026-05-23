@@ -96,7 +96,7 @@ Available commands:
 - `doctor`: Check local dependencies
 - `config`: Show or update saved mount settings
 - `cache`: Inspect or clear the persistent cache
-- `repair-liked-songs`: Replace unavailable liked-song IDs with playable matches
+- `repair`: Replace unavailable liked-song IDs with playable matches
 - `logs`: Show recent log lines (default last 50)
 - `service`: Manage an optional systemd user service
 
@@ -205,14 +205,18 @@ ytmusicfs cache refresh
 metadata only and keeps cached audio. Both refuse to run while YTMusicFS is
 mounted.
 
-Repair liked songs that YouTube Music returns with dead backing video IDs:
+When `/liked_songs` contains a dead backing video ID, YTMusicFS tries to repair
+the local cached path automatically by searching for a verified playable
+replacement. That automatic repair does not change your YouTube Music account.
+
+To also fix the liked state in your account, run:
 
 ```bash
-ytmusicfs repair-liked-songs
+ytmusicfs repair
 ytmusicfs cache refresh
 ```
 
-`repair-liked-songs` only handles tracks already marked unavailable in
+`repair` only handles tracks already marked unavailable in
 `/liked_songs`. For each one, it searches YouTube Music by artist and title,
 verifies the replacement can stream in the preferred high quality format, likes
 the replacement video, removes the like from the unavailable video, and updates
@@ -294,7 +298,7 @@ ytmusicfs config set {browser,mount-point} VALUE
 ytmusicfs cache stats
 ytmusicfs cache clear
 ytmusicfs cache refresh [--cache-dir CACHE_DIR] [--debug]
-ytmusicfs repair-liked-songs [--cache-dir CACHE_DIR] [--debug]
+ytmusicfs repair [--cache-dir CACHE_DIR] [--debug]
 ytmusicfs logs [--tail N] [--path] [--debug]
 ytmusicfs service {install,start,stop,restart,status} [--debug]
 ```
@@ -318,8 +322,10 @@ ytmusicfs service {install,start,stop,restart,status} [--debug]
 - Some players may not handle streaming URLs well; try different players
 - If audio stops, the stream URL may have expired; simply restart playback
 - If a liked song exists in YouTube Music but ytmusicfs reports `No such file or
-  directory`, its cached video ID may be unavailable. Run
-  `ytmusicfs repair-liked-songs`, then `ytmusicfs cache refresh` and remount.
+  directory`, its cached video ID may be unavailable. Browse `/liked_songs`
+  again to let YTMusicFS repair the local cache automatically. Run
+  `ytmusicfs repair` only when you also want to update your account
+  likes.
 
 ### Performance Issues
 

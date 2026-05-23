@@ -22,6 +22,7 @@ class LikedSongsRepairer:
         processor: TrackProcessor,
         yt_dlp_utils: YTDLPUtils,
         browser: str,
+        sync_account: bool = False,
         logger: logging.Logger | None = None,
     ) -> None:
         self.client = client
@@ -29,6 +30,7 @@ class LikedSongsRepairer:
         self.processor = processor
         self.yt_dlp_utils = yt_dlp_utils
         self.browser = browser
+        self.sync_account = sync_account
         self.logger = logger or logging.getLogger("YTMusicFS")
 
     def repair(self) -> dict[str, int]:
@@ -73,13 +75,15 @@ class LikedSongsRepairer:
             return False
 
         new_video_id = str(replacement["videoId"])
-        self.client.rate_song(new_video_id, "LIKE")
-        self.client.rate_song(old_video_id, "INDIFFERENT")
+        if self.sync_account:
+            self.client.rate_song(new_video_id, "LIKE")
+            self.client.rate_song(old_video_id, "INDIFFERENT")
         self._replace_cached_liked_track(old_video_id, path, old_track, replacement)
         self.cache.clear_unavailable_track(old_video_id, path)
         self.logger.info(
-            "Repaired liked song %s: %s -> %s",
+            "Repaired liked song %s locally%s: %s -> %s",
             path,
+            " and in account" if self.sync_account else "",
             old_video_id,
             new_video_id,
         )

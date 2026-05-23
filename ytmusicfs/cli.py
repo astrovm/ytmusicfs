@@ -492,7 +492,7 @@ class CacheCommandHandler:
         return stats
 
 
-class RepairLikedSongsCommandHandler:
+class RepairCommandHandler:
     """Repair unavailable liked-song video IDs in the user's account."""
 
     def __init__(self, args: argparse.Namespace, logger: logging.Logger):
@@ -538,6 +538,7 @@ class RepairLikedSongsCommandHandler:
                 processor=processor,
                 yt_dlp_utils=yt_dlp_utils,
                 browser=str(browser),
+                sync_account=True,
                 logger=self.logger,
             )
             stats = repairer.repair()
@@ -722,14 +723,12 @@ def main() -> int:
     )
 
     repair_parser = subparsers.add_parser(
-        "repair-liked-songs",
+        "repair",
         help="Replace unavailable liked-song IDs with verified playable matches",
     )
     add_common_options(repair_parser)
     repair_parser.set_defaults(
-        func=lambda args: RepairLikedSongsCommandHandler(
-            args, setup_logging(args)
-        ).execute()
+        func=lambda args: RepairCommandHandler(args, setup_logging(args)).execute()
     )
 
     cache_parser = subparsers.add_parser("cache", help="Inspect or clear cache")

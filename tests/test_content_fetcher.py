@@ -42,6 +42,7 @@ class TestContentFetcher(unittest.TestCase):
         )  # Empty directory listing
         self.cache.is_track_unavailable.return_value = False
         self.cache.get_unavailable_video_ids.return_value = set()
+        self.cache.get_unavailable_tracks.return_value = []
 
         # Create the instance to test
         self.fetcher = ContentFetcher(
@@ -528,6 +529,36 @@ class TestContentFetcher(unittest.TestCase):
 
         self.assertEqual(result, [".", "..", "good.m4a"])
         self.cache.is_track_unavailable.assert_not_called()
+
+    @patch("ytmusicfs.repair.LikedSongsRepairer")
+    def test_readdir_liked_songs_repairs_unavailable_tracks_locally(
+        self, mock_repairer_class
+    ):
+        self.fetcher.PLAYLIST_REGISTRY = [
+            {
+                "name": "liked_songs",
+                "id": "LM",
+                "type": "liked_songs",
+                "path": "/liked_songs",
+            }
+        ]
+        self.cache.get.return_value = [{"filename": "song.m4a", "videoId": "new"}]
+        self.cache.get_unavailable_tracks.return_value = [
+            {"videoId": "old", "path": "/liked_songs/song.m4a"}
+        ]
+        mock_repairer = mock_repairer_class.return_value
+        mock_repairer.repair.return_value = {
+            "checked": 1,
+            "repaired": 1,
+            "skipped": 0,
+            "failed": 0,
+        }
+
+        result = self.fetcher.readdir_playlist_by_type("liked_songs", "/liked_songs")
+
+        self.assertEqual(result, [".", "..", "song.m4a"])
+        mock_repairer_class.assert_called_once()
+        self.assertFalse(mock_repairer_class.call_args.kwargs["sync_account"])
 
     def test_get_playlist_id_from_name(self):
         """Test retrieving playlist ID from its name."""

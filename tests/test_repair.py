@@ -17,6 +17,7 @@ class TestLikedSongsRepairer(unittest.TestCase):
             processor=self.processor,
             yt_dlp_utils=self.yt_dlp_utils,
             browser="brave",
+            sync_account=True,
             logger=logging.getLogger("test"),
         )
 
@@ -91,6 +92,45 @@ class TestLikedSongsRepairer(unittest.TestCase):
         )
         self.client.rate_song.assert_not_called()
         self.cache.clear_unavailable_track.assert_not_called()
+
+    def test_local_repair_does_not_mutate_account(self):
+        self.repairer.sync_account = False
+        self.cache.get_unavailable_tracks.return_value = [
+            {"videoId": "old", "path": "/liked_songs/Artist - Song.m4a"}
+        ]
+        self.cache.get.return_value = [
+            {
+                "videoId": "old",
+                "artist": "Artist",
+                "title": "Song",
+                "filename": "Artist - Song.m4a",
+            }
+        ]
+        self.client.search.return_value = [
+            {
+                "videoId": "new",
+                "title": "Song",
+                "artists": [{"name": "Artist"}],
+                "duration": 123,
+            }
+        ]
+        self.yt_dlp_utils.extract_stream_url.return_value = {"format_id": "141"}
+        self.processor.extract_track_info.return_value = {
+            "videoId": "new",
+            "artist": "Artist",
+            "title": "Song",
+            "duration_seconds": 123,
+        }
+
+        stats = self.repairer.repair()
+
+        self.assertEqual(
+            stats, {"checked": 1, "repaired": 1, "skipped": 0, "failed": 0}
+        )
+        self.client.rate_song.assert_not_called()
+        self.cache.clear_unavailable_track.assert_called_once_with(
+            "old", "/liked_songs/Artist - Song.m4a"
+        )
 
     def test_repair_counts_search_failure_as_failed_not_skipped(self):
         self.cache.get_unavailable_tracks.return_value = [

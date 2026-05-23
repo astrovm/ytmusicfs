@@ -265,6 +265,12 @@ class ContentFetcher:
                 entry["path"],
                 expected_total_func=lambda: self._get_expected_total_count(entry["id"]),
             )
+            if self._repair_unavailable_liked_songs_locally():
+                tracks = self.refresh_content(
+                    f"{entry['path']}_processed",
+                    lambda lim: self._fetch_playlist_tracks(entry["id"], lim),
+                    entry["path"],
+                )
             return [".", ".."] + [
                 track["filename"]
                 for track in tracks
@@ -297,6 +303,26 @@ class ContentFetcher:
     def _is_track_unavailable(self, track: dict[str, Any]) -> bool:
         video_id = track.get("videoId")
         return bool(video_id and video_id in self.cache.get_unavailable_video_ids())
+
+    def _repair_unavailable_liked_songs_locally(self) -> bool:
+        if not any(
+            str(track.get("path", "")).startswith("/liked_songs/")
+            for track in self.cache.get_unavailable_tracks()
+        ):
+            return False
+
+        from ytmusicfs.repair import LikedSongsRepairer
+
+        stats = LikedSongsRepairer(
+            client=self.client,
+            cache=self.cache,
+            processor=self.processor,
+            yt_dlp_utils=self.yt_dlp_utils,
+            browser=self.browser,
+            sync_account=False,
+            logger=self.logger,
+        ).repair()
+        return stats["repaired"] > 0
 
     def _fetch_playlist_tracks(
         self, playlist_id: str, limit: int

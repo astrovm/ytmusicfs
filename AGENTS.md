@@ -54,7 +54,7 @@
 - Doctor: `ytmusicfs doctor`
 - Saved config: `ytmusicfs config show`, `ytmusicfs config set browser brave`, `ytmusicfs config set mount-point ~/Music/ytmusic`
 - Cache: `ytmusicfs cache stats`, `ytmusicfs cache clear` (metadata and audio), `ytmusicfs cache refresh` (metadata only)
-- Repair unavailable liked-song IDs: `ytmusicfs repair-liked-songs`
+- Repair unavailable liked-song IDs: `ytmusicfs repair`
 - Logs: `ytmusicfs logs` (last 50 lines), `ytmusicfs logs --tail N`, `ytmusicfs logs --path`
 - Systemd user service: `ytmusicfs service install`, `ytmusicfs service start`, `ytmusicfs service stop`
 - Mounted debug status: `/.ytmusicfs/status.json`.
@@ -104,10 +104,11 @@
   2. Process returned data in `content_fetcher.py`.
   3. Normalize metadata and filenames in `processor.py`.
 - Repairing unavailable liked songs:
-  1. Keep account mutations explicit through `ytmusicfs repair-liked-songs`.
-  2. Verify replacement streams before calling `rate_song`.
-  3. Like the replacement before unliking the unavailable ID.
-  4. Skip weak matches; do not mutate account state on uncertain results.
+  1. Normal filesystem browsing may repair local liked-song cache entries, but must not mutate account likes.
+  2. Keep account mutations explicit through `ytmusicfs repair`.
+  3. Verify replacement streams before calling `rate_song`.
+  4. Like the replacement before unliking the unavailable ID.
+  5. Skip weak matches; do not mutate account state on uncertain results.
 - Performance work:
   - Reduce API calls first.
   - Use batch cache operations where available.
