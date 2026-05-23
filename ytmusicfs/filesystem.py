@@ -284,8 +284,6 @@ class YouTubeMusicFS(Operations):
                     "st_nlink": 2,
                     "st_size": 0,
                 }
-                # Mark as directory in cache system
-                self.cache.mark_valid(f"{dir_path}/{filename}", is_directory=True)
             else:
                 attrs = {
                     "st_mode": stat.S_IFREG | 0o644,
@@ -306,19 +304,16 @@ class YouTubeMusicFS(Operations):
 
             listing_with_attrs[filename] = attrs
 
-            # Mark path as valid and store metadata with explicit is_directory flag
-            file_path = f"{dir_path}/{filename}"
-            self.cache.mark_valid(file_path, is_directory=is_directory)
+        # Publish the in-memory snapshot before slower persistent cache writes.
+        self._update_hot_metadata(dir_path, listing_with_attrs)
 
-        # Cache the directory listing with attributes
+        # Cache the directory listing with attributes. This also persists child
+        # path validity in a single batch, avoiding per-track SQLite writes.
         self.cache.set_directory_listing_with_attrs(dir_path, listing_with_attrs)
-
         # Also cache the filenames separately for backward compatibility
         self.cache.set(f"valid_files:{dir_path}", list(valid_filenames))
-
         # Mark this directory as valid
         self.cache.mark_valid(dir_path, is_directory=True)
-        self._update_hot_metadata(dir_path, listing_with_attrs)
 
     def _update_hot_metadata(
         self, dir_path: str, listing_with_attrs: dict[str, dict[str, Any]]
