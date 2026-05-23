@@ -793,42 +793,31 @@ class YouTubeMusicFS(Operations):
             self.last_fs_activity = time.time()
 
     def _check_repair_notifications(self) -> None:
-        """Check for repair notifications and apply cache invalidation."""
+        """Check for repair triggers and apply cache invalidation."""
         try:
-            notifications = self.cache.get_pending_repair_notifications()
-            if not notifications:
-                return
-
-            cache_actions = set()
-            repair_ids = []
-            repair_batches = []
-            for notif_id, notif_repairs in notifications:
-                actions = {r.get("action") for r in notif_repairs if r.get("action")}
-                if actions:
-                    cache_actions.update(actions)
-                else:
-                    repair_ids.append(notif_id)
-                    repair_batches.append(notif_repairs)
-
-            if cache_actions:
-                action = "clear" if "clear" in cache_actions else "refresh"
-                if action == "clear":
+            # Check cache triggers first (clear takes priority)
+            cache_action = self.cache.get_pending_cache_trigger()
+            if cache_action:
+                if cache_action == "clear":
                     self.cache.clear_all()
                 else:
                     self.cache.clear_metadata()
-                self.logger.info("Cache %s applied from notification", action)
-                all_ids = [n[0] for n in notifications]
-                self.cache.mark_repair_notifications_processed(all_ids)
+                self.logger.info("Cache %s applied from trigger", cache_action)
+                self.cache.clear_cache_trigger(cache_action)
                 self.thread_manager.submit_task(
                     "api", self._automatic_refresh_after_mount
                 )
                 return
 
-            for repairs in repair_batches:
-                self.cache.invalidate_repaired_paths(repairs)
-            self.cache.mark_repair_notifications_processed(repair_ids)
+            # Check repair triggers
+            trigger = self.cache.get_pending_repair_trigger()
+            if trigger:
+                repairs = trigger.get("repairs", [])
+                if repairs:
+                    self.cache.invalidate_repaired_paths(repairs)
+                self.cache.clear_repair_trigger()
         except Exception as exc:
-            self.logger.warning("Failed to process repair notifications: %s", exc)
+            self.logger.warning("Failed to process repair triggers: %s", exc)
 
     def _automatic_refresh_after_mount(self) -> None:
         """Refresh large library data only after the mounted FS is idle."""

@@ -438,14 +438,14 @@ class CacheCommandHandler:
             logger=self.logger,
         )
         try:
-            cache.record_cache_notification(action)
+            cache.record_cache_trigger(action)
         finally:
             cache.close()
             thread_manager.shutdown(wait=True, timeout=5.0)
 
         active_mount = MountInspector.find_active_mount_point()
         if active_mount:
-            print(f"Cache {action}: notification sent to mount at {active_mount}")
+            print(f"Cache {action}: trigger sent to mount at {active_mount}")
             return 0
 
         removed = 0

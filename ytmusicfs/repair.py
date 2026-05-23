@@ -96,7 +96,7 @@ class LikedSongsRepairer:
                 repair.new_video_id,
             )
         if repaired:
-            self.cache.record_repair_notification(
+            self.cache.record_repair_trigger(
                 [
                     {
                         "old_video_id": r.old_video_id,

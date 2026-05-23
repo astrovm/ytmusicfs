@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 import logging
 import os
 import shutil
@@ -153,12 +154,55 @@ class TestCacheManager(unittest.TestCase):
     def test_set_and_get(self):
         """Test setting and getting a value in the cache."""
 
-    def test_record_cache_notification(self):
-        """Recording a cache notification should insert into the DB."""
-        self.cache.record_cache_notification("refresh")
-        self.mock_cursor.execute.assert_called()
-        sql = self.mock_cursor.execute.call_args[0][0]
-        self.assertIn("repair_notifications", sql)
+    def test_record_cache_trigger(self):
+        """Recording a cache trigger should write a file."""
+        before = time.time()
+        self.cache.record_cache_trigger("refresh")
+        after = time.time()
+        trigger = self.cache_dir / ".refresh_trigger"
+        self.assertTrue(trigger.exists())
+        value = float(trigger.read_text(encoding="utf-8"))
+        self.assertTrue(before <= value <= after)
+
+    def test_get_pending_cache_trigger(self):
+        """Should detect pending cache trigger files."""
+        (self.cache_dir / ".clear_trigger").write_text("123", encoding="utf-8")
+        result = self.cache.get_pending_cache_trigger()
+        self.assertEqual(result, "clear")
+
+    def test_clear_cache_trigger(self):
+        """Should remove a cache trigger file."""
+        trigger = self.cache_dir / ".refresh_trigger"
+        trigger.write_text("123", encoding="utf-8")
+        self.cache.clear_cache_trigger("refresh")
+        self.assertFalse(trigger.exists())
+
+    def test_record_repair_trigger(self):
+        """Recording a repair trigger should write a JSON file."""
+        repairs = [{"old_video_id": "old1", "path": "/liked_songs/a.m4a"}]
+        self.cache.record_repair_trigger(repairs)
+        trigger = self.cache_dir / ".repair_trigger"
+        self.assertTrue(trigger.exists())
+        data = json.loads(trigger.read_text(encoding="utf-8"))
+        self.assertEqual(data["repairs"][0]["old_video_id"], "old1")
+
+    def test_get_pending_repair_trigger(self):
+        """Should read and parse a repair trigger file."""
+        trigger = self.cache_dir / ".repair_trigger"
+        trigger.write_text(
+            json.dumps({"timestamp": 123, "repairs": [{"old_video_id": "old1"}]}),
+            encoding="utf-8",
+        )
+        result = self.cache.get_pending_repair_trigger()
+        self.assertIsNotNone(result)
+        self.assertEqual(result["repairs"][0]["old_video_id"], "old1")
+
+    def test_clear_repair_trigger(self):
+        """Should remove a repair trigger file."""
+        trigger = self.cache_dir / ".repair_trigger"
+        trigger.write_text("{}", encoding="utf-8")
+        self.cache.clear_repair_trigger()
+        self.assertFalse(trigger.exists())
 
     def test_clear_metadata(self):
         """Clearing metadata should empty DB tables and in-memory state."""
@@ -950,38 +994,6 @@ class TestCacheManager(unittest.TestCase):
         # Verify all operations succeeded
         self.assertEqual(results["failure"], 0)
         self.assertEqual(results["success"], num_threads * iterations_per_thread)
-
-    def test_record_repair_notification(self):
-        """Recording a repair notification should insert into the DB."""
-        repairs = [
-            {
-                "old_video_id": "old1",
-                "path": "/liked_songs/a.m4a",
-                "new_video_id": "new1",
-            },
-        ]
-        self.cache.record_repair_notification(repairs)
-        self.mock_cursor.execute.assert_called()
-        sql = self.mock_cursor.execute.call_args[0][0]
-        self.assertIn("repair_notifications", sql)
-
-    def test_get_pending_repair_notifications(self):
-        """Pending notifications should be returned as parsed dicts."""
-        self.mock_cursor.fetchall.return_value = [
-            (1, '[{"old_video_id":"old1","path":"/liked_songs/a.m4a"}]'),
-        ]
-        result = self.cache.get_pending_repair_notifications()
-        self.assertEqual(len(result), 1)
-        row_id, repairs = result[0]
-        self.assertEqual(row_id, 1)
-        self.assertEqual(repairs[0]["old_video_id"], "old1")
-
-    def test_mark_repair_notifications_processed(self):
-        """Processed notifications should be deleted from the DB."""
-        self.cache.mark_repair_notifications_processed([1, 2])
-        self.mock_cursor.execute.assert_called()
-        sql = self.mock_cursor.execute.call_args[0][0]
-        self.assertIn("DELETE FROM repair_notifications", sql)
 
     def test_invalidate_repaired_paths(self):
         """Invalidating repaired paths should clear only relevant in-memory state."""

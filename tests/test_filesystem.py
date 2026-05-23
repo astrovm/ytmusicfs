@@ -458,54 +458,47 @@ class TestYouTubeMusicFS(unittest.TestCase):
         self.mock_file_handler.release.assert_called_once_with(file_path, file_handle)
 
     def test_check_repair_notifications_handles_refresh(self):
-        """A refresh notification should trigger metadata clear and background refresh."""
-        self.mock_cache.get_pending_repair_notifications.return_value = [
-            (1, [{"action": "refresh"}]),
-        ]
+        """A refresh trigger should trigger metadata clear and background refresh."""
+        self.mock_cache.get_pending_cache_trigger.return_value = "refresh"
+        self.mock_cache.get_pending_repair_trigger.return_value = None
 
         self.fs._check_repair_notifications()
 
         self.mock_cache.clear_metadata.assert_called_once()
-        self.mock_cache.mark_repair_notifications_processed.assert_called_once_with([1])
+        self.mock_cache.clear_cache_trigger.assert_called_once_with("refresh")
         self.mock_thread_manager.submit_task.assert_called_once()
 
     def test_check_repair_notifications_handles_clear(self):
-        """A clear notification should trigger full cache clear and background refresh."""
-        self.mock_cache.get_pending_repair_notifications.return_value = [
-            (1, [{"action": "clear"}]),
-        ]
+        """A clear trigger should trigger full cache clear and background refresh."""
+        self.mock_cache.get_pending_cache_trigger.return_value = "clear"
+        self.mock_cache.get_pending_repair_trigger.return_value = None
 
         self.fs._check_repair_notifications()
 
         self.mock_cache.clear_all.assert_called_once()
-        self.mock_cache.mark_repair_notifications_processed.assert_called_once_with([1])
+        self.mock_cache.clear_cache_trigger.assert_called_once_with("clear")
         self.mock_thread_manager.submit_task.assert_called_once()
 
     def test_check_repair_notifications_prefers_clear_over_refresh(self):
-        """If both clear and refresh are present, clear wins."""
-        self.mock_cache.get_pending_repair_notifications.return_value = [
-            (1, [{"action": "refresh"}]),
-            (2, [{"action": "clear"}]),
-        ]
+        """If a clear trigger exists, it takes priority."""
+        self.mock_cache.get_pending_cache_trigger.return_value = "clear"
 
         self.fs._check_repair_notifications()
 
         self.mock_cache.clear_all.assert_called_once()
         self.mock_cache.clear_metadata.assert_not_called()
-        self.mock_cache.mark_repair_notifications_processed.assert_called_once_with(
-            [1, 2]
-        )
 
     def test_check_repair_notifications_falls_back_to_repair(self):
-        """Non-action notifications are processed as repairs."""
-        self.mock_cache.get_pending_repair_notifications.return_value = [
-            (1, [{"old_video_id": "old1", "path": "/liked_songs/song.m4a"}]),
-        ]
+        """A repair trigger should invalidate repaired paths."""
+        self.mock_cache.get_pending_cache_trigger.return_value = None
+        self.mock_cache.get_pending_repair_trigger.return_value = {
+            "repairs": [{"old_video_id": "old1", "path": "/liked_songs/song.m4a"}]
+        }
 
         self.fs._check_repair_notifications()
 
         self.mock_cache.invalidate_repaired_paths.assert_called_once()
-        self.mock_cache.mark_repair_notifications_processed.assert_called_once_with([1])
+        self.mock_cache.clear_repair_trigger.assert_called_once()
 
 
 if __name__ == "__main__":

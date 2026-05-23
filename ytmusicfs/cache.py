@@ -91,15 +91,6 @@ class CacheManager:
                 )
                 """)
 
-            # Create repair_notifications table for live cache invalidation
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS repair_notifications (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp REAL NOT NULL,
-                    repair_data TEXT NOT NULL,
-                    processed INTEGER DEFAULT 0
-                )
-                """)
             self.conn.commit()
 
         # Enhanced in-memory cache for high-frequency lookups with larger size
@@ -1229,8 +1220,8 @@ class CacheManager:
             )
             return None, None
 
-    def record_repair_notification(self, repairs: list[dict[str, Any]]) -> None:
-        """Record a repair notification for the mount process to pick up.
+    def record_repair_trigger(self, repairs: list[dict[str, Any]]) -> None:
+        """Write a repair trigger file for the mount process to pick up.
 
         Args:
             repairs: List of repair dicts with old_video_id, path, new_video_id.
@@ -1238,87 +1229,71 @@ class CacheManager:
         if not repairs:
             return
         try:
-            with self.lock:
-                cursor = self.conn.cursor()
-                cursor.execute(
-                    """
-                    INSERT INTO repair_notifications (timestamp, repair_data)
-                    VALUES (?, ?)
-                    """,
-                    (time.time(), json.dumps(repairs)),
-                )
-                self.conn.commit()
-        except sqlite3.Error as e:
-            self.logger.warning(
-                "Failed to record repair notification: %s: %s",
-                e.__class__.__name__,
-                e,
-            )
+            trigger = self.cache_dir / ".repair_trigger"
+            data = {"timestamp": time.time(), "repairs": repairs}
+            trigger.write_text(json.dumps(data), encoding="utf-8")
+            self.logger.debug("Wrote repair trigger with %d repairs", len(repairs))
+        except OSError as e:
+            self.logger.warning("Failed to write repair trigger: %s", e)
 
-    def record_cache_notification(self, action: str) -> None:
-        """Record a cache refresh or clear notification.
+    def record_cache_trigger(self, action: str) -> None:
+        """Write a cache refresh or clear trigger file.
 
         Args:
             action: One of 'refresh' or 'clear'.
         """
-        self.record_repair_notification([{"action": action}])
+        try:
+            trigger = self.cache_dir / f".{action}_trigger"
+            trigger.write_text(str(time.time()), encoding="utf-8")
+            self.logger.debug("Wrote %s trigger", action)
+        except OSError as e:
+            self.logger.warning("Failed to write %s trigger: %s", action, e)
 
-    def get_pending_repair_notifications(
-        self,
-    ) -> list[tuple[int, list[dict[str, Any]]]]:
-        """Return unprocessed repair notifications.
+    def get_pending_repair_trigger(self) -> dict[str, Any] | None:
+        """Return pending repair trigger data if any.
 
         Returns:
-            List of (id, repairs) tuples.
+            Trigger dict with timestamp and repairs, or None.
         """
-        notifications: list[tuple[int, list[dict[str, Any]]]] = []
+        trigger = self.cache_dir / ".repair_trigger"
+        if not trigger.exists():
+            return None
         try:
-            with self.lock:
-                cursor = self.conn.cursor()
-                cursor.execute(
-                    "SELECT id, repair_data FROM repair_notifications WHERE processed = 0 ORDER BY id"
-                )
-                rows = cursor.fetchall()
-            for row_id, repair_data in rows:
-                try:
-                    repairs = json.loads(repair_data)
-                    if isinstance(repairs, list):
-                        notifications.append((row_id, repairs))
-                except (json.JSONDecodeError, TypeError):
-                    self.logger.warning(
-                        "Skipping malformed repair notification %s", row_id
-                    )
-        except sqlite3.Error as e:
-            self.logger.warning(
-                "Failed to read repair notifications: %s: %s",
-                e.__class__.__name__,
-                e,
-            )
-        return notifications
+            data = json.loads(trigger.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else None
+        except (OSError, json.JSONDecodeError) as e:
+            self.logger.warning("Failed to read repair trigger: %s", e)
+            return None
 
-    def mark_repair_notifications_processed(self, ids: list[int]) -> None:
-        """Delete processed repair notifications.
+    def clear_repair_trigger(self) -> None:
+        """Remove the repair trigger file after processing."""
+        trigger = self.cache_dir / ".repair_trigger"
+        if trigger.exists():
+            try:
+                trigger.unlink()
+            except OSError as e:
+                self.logger.warning("Failed to remove repair trigger: %s", e)
 
-        Args:
-            ids: List of notification IDs to remove.
+    def get_pending_cache_trigger(self) -> str | None:
+        """Return pending cache action ('clear' or 'refresh') if any.
+
+        Returns:
+            Action string or None.
         """
-        if not ids:
-            return
-        try:
-            with self.lock:
-                cursor = self.conn.cursor()
-                placeholders = ",".join("?" * len(ids))
-                cursor.execute(
-                    f"DELETE FROM repair_notifications WHERE id IN ({placeholders})",
-                    ids,
-                )
-                self.conn.commit()
-        except sqlite3.Error as e:
-            self.logger.warning(
-                "Failed to delete repair notifications: %s: %s",
-                e.__class__.__name__,
-                e,
-            )
+        for action in ("clear", "refresh"):
+            trigger = self.cache_dir / f".{action}_trigger"
+            if trigger.exists():
+                return action
+        return None
+
+    def clear_cache_trigger(self, action: str) -> None:
+        """Remove a cache trigger file after processing."""
+        trigger = self.cache_dir / f".{action}_trigger"
+        if trigger.exists():
+            try:
+                trigger.unlink()
+            except OSError as e:
+                self.logger.warning("Failed to remove %s trigger: %s", action, e)
 
     def invalidate_repaired_paths(self, repairs: list[dict[str, Any]]) -> None:
         """Surgically invalidate in-memory caches for repaired liked-song paths.
