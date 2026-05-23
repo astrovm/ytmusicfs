@@ -163,19 +163,17 @@ class YouTubeMusicClient:
         self.logger.debug(
             f"Searching '{query}' with filter '{filter_type}' and scope '{scope}'"
         )
-        try:
-            results = self.ytmusic.search(
-                query=query,
-                filter=filter_type,
-                scope=scope,
-                limit=limit,
-                ignore_spelling=ignore_spelling,
-            )
-            self.logger.debug(f"Search returned {len(results)} results")
-            return results
-        except Exception as e:
-            self.logger.error(f"Search failed: {e}")
-            return []
+        results = self._call_with_json_retry(
+            f"search {query!r}",
+            self.ytmusic.search,
+            query=query,
+            filter=filter_type,
+            scope=scope,
+            limit=limit,
+            ignore_spelling=ignore_spelling,
+        )
+        self.logger.debug(f"Search returned {len(results)} results")
+        return results
 
     def rate_song(self, video_id: str, rating: str) -> dict[Any, Any] | None:
         """Set a YouTube Music song rating."""

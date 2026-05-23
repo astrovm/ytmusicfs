@@ -92,6 +92,28 @@ class TestLikedSongsRepairer(unittest.TestCase):
         self.client.rate_song.assert_not_called()
         self.cache.clear_unavailable_track.assert_not_called()
 
+    def test_repair_counts_search_failure_as_failed_not_skipped(self):
+        self.cache.get_unavailable_tracks.return_value = [
+            {"videoId": "old", "path": "/liked_songs/Artist - Song.m4a"}
+        ]
+        self.cache.get.return_value = [
+            {
+                "videoId": "old",
+                "artist": "Artist",
+                "title": "Song",
+                "filename": "Artist - Song.m4a",
+            }
+        ]
+        self.client.search.side_effect = RuntimeError("search failed")
+
+        stats = self.repairer.repair()
+
+        self.assertEqual(
+            stats, {"checked": 1, "repaired": 0, "skipped": 0, "failed": 1}
+        )
+        self.client.rate_song.assert_not_called()
+        self.cache.clear_unavailable_track.assert_not_called()
+
     def test_repair_ignores_unavailable_entries_outside_liked_songs(self):
         self.cache.get_unavailable_tracks.return_value = [
             {"videoId": "old", "path": "/playlists/Mix/Artist - Song.m4a"}
