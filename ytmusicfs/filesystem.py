@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import concurrent.futures
 import errno
 import json
 import logging
@@ -21,6 +22,7 @@ from ytmusicfs.file_handler import FileHandler
 from ytmusicfs.metadata import MetadataManager
 from ytmusicfs.path_router import PathRouter
 from ytmusicfs.processor import TrackProcessor
+from ytmusicfs.repair import LikedSongsRepairer
 from ytmusicfs.thread_manager import ThreadManager
 from ytmusicfs.yt_dlp_utils import YTDLPUtils
 
@@ -163,6 +165,7 @@ class YouTubeMusicFS(Operations):
             browser=self.browser,
             record_stat_callback=self._record_stat,
             get_file_size_callback=self._get_advertised_file_size,
+            on_stream_unavailable=self._auto_repair_on_stream_unavailable,
         )
 
         # Register exact path handlers
@@ -818,6 +821,71 @@ class YouTubeMusicFS(Operations):
                 self.cache.clear_repair_trigger()
         except Exception as exc:
             self.logger.warning("Failed to process repair triggers: %s", exc)
+
+    def _auto_repair_on_stream_unavailable(
+        self, video_id: str, path: str
+    ) -> str | None:
+        """Transparent auto-repair: find a verified replacement for a dead video ID.
+
+        Args:
+            video_id: The unavailable YouTube video ID
+            path: The filesystem path being played
+
+        Returns:
+            New video_id if a verified replacement was found, None otherwise.
+        """
+        if not path.startswith(("/liked_songs/", "/albums/")):
+            return None
+
+        if self.cache.is_no_replacement(video_id):
+            self.logger.debug("Auto-repair skipped for %s: known dead track", video_id)
+            return None
+
+        def _find_replacement() -> str | None:
+            repairer = LikedSongsRepairer(
+                client=self.client,
+                cache=self.cache,
+                processor=self.processor,
+                yt_dlp_utils=self.yt_dlp_utils,
+                browser=self.browser,
+                sync_account=False,
+                logger=self.logger,
+            )
+            unavailable = {"videoId": video_id, "path": path}
+            repair = repairer._plan_one(unavailable)
+            if repair:
+                repairer._replace_cached_liked_track(
+                    repair.old_video_id,
+                    repair.path,
+                    repair.old_track,
+                    repair.replacement,
+                )
+                self.cache.clear_unavailable_track(repair.old_video_id, repair.path)
+                self.cache.record_repair_trigger(
+                    [
+                        {
+                            "old_video_id": repair.old_video_id,
+                            "path": repair.path,
+                            "new_video_id": repair.new_video_id,
+                        }
+                    ]
+                )
+                self.logger.info(
+                    "Auto-repaired stream %s: %s -> %s",
+                    path,
+                    repair.old_video_id,
+                    repair.new_video_id,
+                )
+                return repair.new_video_id
+            return None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_find_replacement)
+            try:
+                return future.result(timeout=10.0)
+            except concurrent.futures.TimeoutError:
+                self.logger.warning("Auto-repair timed out for %s", path)
+                return None
 
     def _automatic_refresh_after_mount(self) -> None:
         """Refresh large library data only after the mounted FS is idle."""

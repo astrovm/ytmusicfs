@@ -1117,6 +1117,50 @@ class TestCacheManager(unittest.TestCase):
         self.assertEqual(len(results), 8)
         real_cache.close()
 
+    def test_no_replacement_cache_ttl(self):
+        """Negative cache entries should expire after TTL."""
+
+        with (
+            patch.object(CacheManager, "_load_valid_paths"),
+            patch.object(CacheManager, "_load_unavailable_tracks"),
+        ):
+            real_cache = CacheManager(
+                thread_manager=self.thread_manager,
+                cache_dir=self.temp_dir,
+                logger=self.logger,
+            )
+
+        video_id = "dead123"
+        path = "/liked_songs/Artist - Song.m4a"
+
+        real_cache.mark_no_replacement(video_id, path, ttl=1)
+        self.assertTrue(real_cache.is_no_replacement(video_id))
+
+        time.sleep(1.5)
+        self.assertFalse(real_cache.is_no_replacement(video_id))
+        real_cache.close()
+
+    def test_no_replacement_different_video_ids(self):
+        """Negative cache should distinguish between different video IDs."""
+
+        with (
+            patch.object(CacheManager, "_load_valid_paths"),
+            patch.object(CacheManager, "_load_unavailable_tracks"),
+        ):
+            real_cache = CacheManager(
+                thread_manager=self.thread_manager,
+                cache_dir=self.temp_dir,
+                logger=self.logger,
+            )
+
+        real_cache.mark_no_replacement("dead1", "/liked_songs/song1.m4a")
+        real_cache.mark_no_replacement("dead2", "/liked_songs/song2.m4a")
+
+        self.assertTrue(real_cache.is_no_replacement("dead1"))
+        self.assertTrue(real_cache.is_no_replacement("dead2"))
+        self.assertFalse(real_cache.is_no_replacement("live3"))
+        real_cache.close()
+
 
 if __name__ == "__main__":
     unittest.main()

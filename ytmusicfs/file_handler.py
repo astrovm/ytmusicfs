@@ -41,6 +41,7 @@ class FileHandler:
         browser: str,
         record_stat_callback: Callable[[str], None] | None = None,
         get_file_size_callback: Callable[[str], int | None] | None = None,
+        on_stream_unavailable: Callable[[str, str], str | None] | None = None,
     ):
         """Initialize the FileHandler.
 
@@ -52,6 +53,7 @@ class FileHandler:
             update_file_size_callback: Callback to update file size in filesystem cache
             yt_dlp_utils: YTDLPUtils instance for YouTube interaction
             browser: Browser to use for cookies (e.g., 'chrome', 'firefox')
+            on_stream_unavailable: Callback(video_id, path) -> new_video_id or None
         """
         self.cache_dir = cache_dir
         self.browser = browser
@@ -62,6 +64,7 @@ class FileHandler:
         self.get_file_size_callback = get_file_size_callback
         self.thread_manager = thread_manager
         self.yt_dlp_utils = yt_dlp_utils
+        self.on_stream_unavailable = on_stream_unavailable
 
         # File handling state
         self.open_files = {}  # {fh: {'stream_url': str, 'video_id': str, ...}}
@@ -357,20 +360,77 @@ class FileHandler:
                     if error_code == errno.ENOENT:
                         self._mark_unavailable_if_needed(video_id, path, error_msg)
                         self.logger.warning(log_message)
+
+                        # Attempt transparent auto-repair for liked_songs/albums
+                        if self.on_stream_unavailable:
+                            new_video_id = self.on_stream_unavailable(video_id, path)
+                            if new_video_id and new_video_id != video_id:
+                                self.logger.info(
+                                    "Auto-repair retrying %s with new video_id %s",
+                                    path,
+                                    new_video_id,
+                                )
+                                with self.file_handle_lock:
+                                    file_info["video_id"] = new_video_id
+                                    file_info["cache_path"] = str(
+                                        self.cache_dir / "audio" / f"{new_video_id}.m4a"
+                                    )
+                                    file_info["stream_url"] = None
+                                    file_info["status"] = "ready"
+                                    file_info["error"] = None
+                                    file_info["stream_extracted"] = False
+                                if video_id in self.futures:
+                                    del self.futures[video_id]
+                                # Retry stream extraction with new ID
+                                try:
+                                    result = self._get_stream_info(new_video_id)
+                                    if result["status"] == "error":
+                                        raise OSError(
+                                            self._stream_error_errno(result["error"]),
+                                            result["error"],
+                                        )
+                                    self._apply_stream_info(file_info, result)
+                                    self._cache_stream_info(new_video_id, file_info)
+                                    if "duration" in result and self.cache:
+                                        self.cache.set_durations_batch(
+                                            {new_video_id: result["duration"]}
+                                        )
+                                    # Continue to streaming below
+                                    error_code = None
+                                except Exception as retry_exc:
+                                    error_msg = self._error_message(retry_exc)
+                                    error_code = self._stream_error_errno(error_msg)
+                                    self.logger.warning(
+                                        "Auto-repair retry failed for %s: %s",
+                                        path,
+                                        error_msg,
+                                    )
+                        if error_code is not None:
+                            with self.file_handle_lock:
+                                file_info["status"] = "error"
+                                file_info["error"] = error_msg
+
+                            if (
+                                not isinstance(e, FutureTimeoutError)
+                                and video_id in self.futures
+                            ):
+                                del self.futures[video_id]
+
+                            raise OSError(error_code, error_msg) from e
                     else:
                         self.logger.error(log_message)
 
-                    with self.file_handle_lock:
-                        file_info["status"] = "error"
-                        file_info["error"] = error_msg
+                        with self.file_handle_lock:
+                            file_info["status"] = "error"
+                            file_info["error"] = error_msg
 
-                    if (
-                        not isinstance(e, FutureTimeoutError)
-                        and video_id in self.futures
-                    ):
-                        del self.futures[video_id]
+                        if (
+                            not isinstance(e, FutureTimeoutError)
+                            and video_id in self.futures
+                        ):
+                            del self.futures[video_id]
 
-                    raise OSError(error_code, error_msg) from e
+                        raise OSError(error_code, error_msg) from e
 
         # If we are here, we need to stream directly from URL because:
         # 1. No cache file exists yet, or

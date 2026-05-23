@@ -577,6 +577,7 @@ class RepairCommandHandler:
             "Liked songs repair: "
             f"checked {stats['checked']}, "
             f"repaired {stats['repaired']}, "
+            f"removed {stats.get('removed', 0)}, "
             f"skipped {stats['skipped']}, "
             f"failed {stats['failed']}"
         )

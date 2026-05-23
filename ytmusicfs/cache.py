@@ -1396,6 +1396,38 @@ class CacheManager:
         with suppress(Exception):
             self.close()
 
+    def mark_no_replacement(self, video_id: str, path: str, ttl: int = 86400) -> None:
+        """Persist that a track has no verified replacement.
+
+        Args:
+            video_id: YouTube video ID
+            path: Filesystem path
+            ttl: Time-to-live in seconds (default: 24 hours)
+        """
+        self.set(
+            f"no_replacement:{video_id}",
+            {"videoId": video_id, "path": path, "timestamp": time.time(), "ttl": ttl},
+        )
+
+    def is_no_replacement(self, video_id: str) -> bool:
+        """Return whether a track is known to have no replacement.
+
+        Args:
+            video_id: YouTube video ID
+
+        Returns:
+            True if a verified replacement is known to not exist.
+        """
+        data = self.get(f"no_replacement:{video_id}")
+        if not isinstance(data, dict):
+            return False
+        timestamp = data.get("timestamp", 0)
+        ttl = data.get("ttl", 86400)
+        if time.time() - timestamp > ttl:
+            self.delete(f"no_replacement:{video_id}")
+            return False
+        return True
+
     def get_cache_stats(self) -> dict[str, int]:
         """Get cache statistics.
 

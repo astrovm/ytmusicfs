@@ -1172,6 +1172,98 @@ class TestFileHandler(unittest.TestCase):
             self.file_handler.open_files[file_handle]["stream_url"], "cached"
         )
 
+    def test_read_auto_repair_retries_with_new_video_id(self):
+        """Auto-repair should retry stream extraction with replacement video_id."""
+
+        path = "/liked_songs/Artist - Song.m4a"
+        video_id = "dead123"
+        new_video_id = "new456"
+        fh = self.file_handler.open(path, video_id)
+
+        # First call fails, second succeeds
+        error_future = Future()
+        error_future.set_result(
+            {
+                "status": "error",
+                "error": "ERROR: [youtube] dead123: Video unavailable",
+            }
+        )
+        success_future = Future()
+        success_future.set_result(
+            {
+                "status": "success",
+                "stream_url": "https://example.com/new_stream.m4a",
+                "format_id": "141",
+            }
+        )
+
+        self.yt_dlp_utils.extract_stream_url_async.side_effect = [
+            error_future,
+            success_future,
+        ]
+
+        callback = Mock(return_value=new_video_id)
+        self.file_handler.on_stream_unavailable = callback
+
+        with patch.object(
+            self.file_handler, "_stream_content", return_value=b"repaired_audio"
+        ):
+            data = self.file_handler.read(path, size=1024, offset=0, fh=fh)
+
+        self.assertEqual(data, b"repaired_audio")
+        callback.assert_called_once_with(video_id, path)
+        self.assertEqual(self.file_handler.open_files[fh]["video_id"], new_video_id)
+
+    def test_read_auto_repair_raises_when_callback_returns_none(self):
+        """Auto-repair should raise ENOENT when callback returns no replacement."""
+
+        path = "/liked_songs/Artist - Song.m4a"
+        video_id = "dead123"
+        fh = self.file_handler.open(path, video_id)
+
+        future = Future()
+        future.set_result(
+            {
+                "status": "error",
+                "error": "ERROR: [youtube] dead123: Video unavailable",
+            }
+        )
+        self.yt_dlp_utils.extract_stream_url_async.return_value = future
+
+        callback = Mock(return_value=None)
+        self.file_handler.on_stream_unavailable = callback
+
+        with self.assertRaises(OSError) as context:
+            self.file_handler.read(path, size=1024, offset=0, fh=fh)
+
+        self.assertEqual(context.exception.errno, errno.ENOENT)
+
+    def test_read_auto_repair_raises_when_retry_fails(self):
+        """Auto-repair should raise when retry stream extraction also fails."""
+
+        path = "/liked_songs/Artist - Song.m4a"
+        video_id = "dead123"
+        new_video_id = "new456"
+        fh = self.file_handler.open(path, video_id)
+
+        error_future = Future()
+        error_future.set_result(
+            {
+                "status": "error",
+                "error": "ERROR: [youtube] new456: Video unavailable",
+            }
+        )
+
+        self.yt_dlp_utils.extract_stream_url_async.return_value = error_future
+
+        callback = Mock(return_value=new_video_id)
+        self.file_handler.on_stream_unavailable = callback
+
+        with self.assertRaises(OSError) as context:
+            self.file_handler.read(path, size=1024, offset=0, fh=fh)
+
+        self.assertEqual(context.exception.errno, errno.ENOENT)
+
 
 if __name__ == "__main__":
     unittest.main()

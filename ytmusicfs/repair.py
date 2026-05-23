@@ -49,7 +49,7 @@ class LikedSongsRepairer:
         return stats
 
     def plan_repairs(self) -> tuple[list[LikedSongRepair], dict[str, int]]:
-        stats = {"checked": 0, "repaired": 0, "skipped": 0, "failed": 0}
+        stats = {"checked": 0, "repaired": 0, "skipped": 0, "failed": 0, "removed": 0}
         repairs = []
         unavailable_tracks = [
             track
@@ -64,7 +64,21 @@ class LikedSongsRepairer:
                 if repair:
                     repairs.append(repair)
                 else:
-                    stats["skipped"] += 1
+                    video_id = str(unavailable.get("videoId") or "")
+                    if self.cache.is_no_replacement(video_id):
+                        # Confirmed dead with no replacement
+                        if self.sync_account:
+                            self.client.rate_song(video_id, "INDIFFERENT")
+                            self.logger.info(
+                                "Removed dead track from account: %s",
+                                unavailable.get("path"),
+                            )
+                        self._remove_dead_track_from_cache(
+                            video_id, str(unavailable.get("path") or "")
+                        )
+                        stats["removed"] += 1
+                    else:
+                        stats["skipped"] += 1
             except Exception as exc:
                 stats["failed"] += 1
                 self.logger.warning(
@@ -122,7 +136,10 @@ class LikedSongsRepairer:
 
         replacement = self._find_replacement(old_video_id, artist, title)
         if replacement is None:
-            self.logger.info("Skipping %s: no verified replacement found", path)
+            self.cache.mark_no_replacement(old_video_id, path)
+            self.logger.info(
+                "No replacement found for %s, marked as permanently dead", path
+            )
             return None
 
         new_video_id = str(replacement["videoId"])
@@ -233,6 +250,27 @@ class LikedSongsRepairer:
             self.cache.delete("/liked_songs_listing_with_attrs")
             self.cache.delete("/liked_songs_listing")
             self.cache.delete(f"video_id:{path}")
+
+    def _remove_dead_track_from_cache(self, video_id: str, path: str) -> None:
+        """Remove an unavailable track that has no verified replacement."""
+        tracks = self.cache.get("/liked_songs_processed")
+        if not isinstance(tracks, list):
+            return
+        filename = Path(path).name
+        before = len(tracks)
+        updated = [
+            t
+            for t in tracks
+            if isinstance(t, dict)
+            and t.get("videoId") != video_id
+            and t.get("filename") != filename
+        ]
+        if len(updated) < before:
+            self.cache.set("/liked_songs_processed", updated)
+            self.cache.delete("/liked_songs_listing_with_attrs")
+            self.cache.delete("/liked_songs_listing")
+            self.cache.delete(f"video_id:{path}")
+            self.logger.info("Removed dead track %s from liked songs cache", path)
 
     def _artist_title_from_track_or_path(
         self, track: dict[str, Any] | None, path: str
