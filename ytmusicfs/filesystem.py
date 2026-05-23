@@ -806,13 +806,13 @@ class YouTubeMusicFS(Operations):
             cache_actions = set()
             repair_ids = []
             repair_batches = []
-            for notif_id, repairs in notifications:
-                actions = [r.get("action") for r in repairs if r.get("action")]
+            for notif_id, notif_repairs in notifications:
+                actions = {r.get("action") for r in notif_repairs if r.get("action")}
                 if actions:
                     cache_actions.update(actions)
                 else:
                     repair_ids.append(notif_id)
-                    repair_batches.append(repairs)
+                    repair_batches.append(notif_repairs)
 
             if cache_actions:
                 action = "clear" if "clear" in cache_actions else "refresh"

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import random
+import shutil
 import sqlite3
 import stat
 import time
@@ -1259,7 +1260,7 @@ class CacheManager:
         try:
             with self.lock:
                 self.cursor.execute(
-                    "SELECT id, repair_data FROM repair_notifications WHERE processed = 0"
+                    "SELECT id, repair_data FROM repair_notifications WHERE processed = 0 ORDER BY id"
                 )
                 rows = self.cursor.fetchall()
             for row_id, repair_data in rows:
@@ -1370,8 +1371,6 @@ class CacheManager:
             path = self.cache_dir / subdir
             if path.exists():
                 try:
-                    import shutil
-
                     shutil.rmtree(path)
                     self.logger.info("Removed %s cache directory", subdir)
                 except OSError as e:

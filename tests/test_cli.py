@@ -340,7 +340,8 @@ def _init_cache_db(cache_dir: Path) -> None:
         conn.commit()
 
 
-def test_cache_clear_removes_sqlite_files(tmp_path):
+@patch("ytmusicfs.cli.MountInspector.find_active_mount_point", return_value=None)
+def test_cache_clear_removes_sqlite_files(mock_active_mount, tmp_path):
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
     _init_cache_db(cache_dir)
@@ -358,7 +359,10 @@ def test_cache_clear_removes_sqlite_files(tmp_path):
     assert not audio_dir.exists()
 
 
-def test_cache_refresh_removes_sqlite_files_but_keeps_audio(tmp_path):
+@patch("ytmusicfs.cli.MountInspector.find_active_mount_point", return_value=None)
+def test_cache_refresh_removes_sqlite_files_but_keeps_audio(
+    mock_active_mount, tmp_path
+):
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
     _init_cache_db(cache_dir)

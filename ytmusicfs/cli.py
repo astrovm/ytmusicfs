@@ -443,6 +443,11 @@ class CacheCommandHandler:
             cache.close()
             thread_manager.shutdown(wait=True, timeout=5.0)
 
+        active_mount = MountInspector.find_active_mount_point()
+        if active_mount:
+            print(f"Cache {action}: notification sent to mount at {active_mount}")
+            return 0
+
         removed = 0
         for name in self.CACHE_FILES:
             path = self.config.cache_dir / name
