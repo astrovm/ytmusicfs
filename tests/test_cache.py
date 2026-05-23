@@ -1084,6 +1084,39 @@ class TestCacheManager(unittest.TestCase):
             # Clean up
             test_cache.close()
 
+    def test_concurrent_sqlite_access_no_shared_cursor(self):
+        """Concurrent threads with fresh cursors per operation must not crash."""
+        import concurrent.futures
+
+        # Use a real CacheManager with a real SQLite DB
+        with (
+            patch.object(CacheManager, "_load_valid_paths"),
+            patch.object(CacheManager, "_load_unavailable_tracks"),
+        ):
+            real_cache = CacheManager(
+                thread_manager=self.thread_manager,
+                cache_dir=self.temp_dir,
+                logger=self.logger,
+            )
+
+        def writer(n: int) -> int:
+            for i in range(50):
+                real_cache.set(f"key_{n}_{i}", {"data": i})
+            return n
+
+        def reader(n: int) -> int:
+            for i in range(50):
+                real_cache.get(f"key_{n}_{i}")
+            return n
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(writer, i) for i in range(4)]
+            futures += [pool.submit(reader, i) for i in range(4)]
+            results = [f.result() for f in futures]
+
+        self.assertEqual(len(results), 8)
+        real_cache.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1220,6 +1220,12 @@ class CacheManager:
             )
             return None, None
 
+    def _atomic_write(self, path: Path, content: str) -> None:
+        """Write content atomically via a temp file and rename."""
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(content, encoding="utf-8")
+        tmp.rename(path)
+
     def record_repair_trigger(self, repairs: list[dict[str, Any]]) -> None:
         """Write a repair trigger file for the mount process to pick up.
 
@@ -1231,7 +1237,7 @@ class CacheManager:
         try:
             trigger = self.cache_dir / ".repair_trigger"
             data = {"timestamp": time.time(), "repairs": repairs}
-            trigger.write_text(json.dumps(data), encoding="utf-8")
+            self._atomic_write(trigger, json.dumps(data))
             self.logger.debug("Wrote repair trigger with %d repairs", len(repairs))
         except OSError as e:
             self.logger.warning("Failed to write repair trigger: %s", e)
@@ -1242,9 +1248,11 @@ class CacheManager:
         Args:
             action: One of 'refresh' or 'clear'.
         """
+        if action not in ("refresh", "clear"):
+            raise ValueError(f"Invalid cache trigger action: {action}")
         try:
             trigger = self.cache_dir / f".{action}_trigger"
-            trigger.write_text(str(time.time()), encoding="utf-8")
+            self._atomic_write(trigger, str(time.time()))
             self.logger.debug("Wrote %s trigger", action)
         except OSError as e:
             self.logger.warning("Failed to write %s trigger: %s", action, e)
@@ -1340,6 +1348,15 @@ class CacheManager:
                 cursor.execute("DELETE FROM hash_mappings")
                 cursor.execute("DELETE FROM refresh_tracker")
                 self.conn.commit()
+
+                self.hotcache.clear()
+                self.directory_listings_cache.clear()
+                self.path_validation_cache.clear()
+                self.attrs_cache.clear()
+                self.valid_paths.clear()
+                self.path_types.clear()
+                self.unavailable_video_ids.clear()
+                self.unavailable_paths.clear()
         except sqlite3.Error as e:
             self.logger.warning(
                 "Failed to clear metadata cache: %s: %s",
@@ -1347,14 +1364,6 @@ class CacheManager:
                 e,
             )
 
-        self.hotcache.clear()
-        self.directory_listings_cache.clear()
-        self.path_validation_cache.clear()
-        self.attrs_cache.clear()
-        self.valid_paths.clear()
-        self.path_types.clear()
-        self.unavailable_video_ids.clear()
-        self.unavailable_paths.clear()
         self.logger.info("Metadata cache cleared")
 
     def clear_all(self) -> None:

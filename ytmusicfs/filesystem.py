@@ -995,9 +995,13 @@ class YouTubeMusicFS(Operations):
 
     def init(self, path: str) -> None:
         """Start post-mount background work after FUSE daemonization."""
+        import threading
+
         self._check_repair_notifications()
-        self.thread_manager.submit_task("api", self._automatic_refresh_after_mount)
-        self.thread_manager.submit_task("api", self._poll_repair_notifications)
+        threading.Thread(
+            target=self._automatic_refresh_after_mount, daemon=True
+        ).start()
+        threading.Thread(target=self._poll_repair_notifications, daemon=True).start()
 
     def _poll_repair_notifications(self) -> None:
         """Background thread that periodically checks for repair notifications."""
