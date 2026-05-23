@@ -42,6 +42,7 @@ class TestYouTubeMusicFS(unittest.TestCase):
             self.mock_cache = mock_cache.return_value
             self.mock_cache.cache_dir = "/tmp/cache_test"
             self.mock_cache.is_track_unavailable.return_value = False
+            self.mock_cache.is_path_unavailable.return_value = False
             self.mock_cache.get_unavailable_video_ids.return_value = set()
             self.mock_fetcher = mock_fetcher.return_value
             self.mock_router = mock_router.return_value
@@ -288,6 +289,16 @@ class TestYouTubeMusicFS(unittest.TestCase):
 
         self.assertEqual(cm.exception.errno, errno.ENOENT)
 
+    def test_getattr_rejects_unavailable_path_before_stale_attr_cache(self):
+        file_path = "/liked_songs/song.m4a"
+        self.mock_cache.is_path_unavailable.return_value = True
+
+        with self.assertRaises(FuseOSError) as cm:
+            self.fs.getattr(file_path, None)
+
+        self.assertEqual(cm.exception.errno, errno.ENOENT)
+        self.mock_cache.get_file_attrs_from_parent_dir.assert_not_called()
+
     def test_getattr_audio_uses_cached_real_size(self):
         file_path = "/liked_songs/song.m4a"
         self.mock_cache.get_file_attrs_from_parent_dir.return_value = None
@@ -359,6 +370,17 @@ class TestYouTubeMusicFS(unittest.TestCase):
         # Verify file was opened correctly
         self.assertEqual(file_handle, 42)
         self.mock_file_handler.open.assert_called_once_with(file_path, video_id)
+
+    def test_open_rejects_unavailable_path_before_stale_valid_cache(self):
+        file_path = "/liked_songs/song.m4a"
+        self.mock_cache.is_path_unavailable.return_value = True
+
+        with self.assertRaises(FuseOSError) as cm:
+            self.fs.open(file_path, os.O_RDONLY)
+
+        self.assertEqual(cm.exception.errno, errno.ENOENT)
+        self.mock_router.validate_path.assert_not_called()
+        self.mock_file_handler.open.assert_not_called()
 
     def test_read_file(self):
         """Test reading content from a file."""

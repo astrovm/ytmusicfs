@@ -121,6 +121,7 @@ class TestCacheManager(unittest.TestCase):
         self.assertEqual(key, "unavailable:abc123")
         self.assertEqual(value["videoId"], "abc123")
         self.assertTrue(self.cache.is_track_unavailable("abc123"))
+        self.assertTrue(self.cache.is_path_unavailable("/liked_songs/song.m4a"))
         self.assertEqual(self.cache.get_unavailable_video_ids(), {"abc123"})
 
     def test_mark_unavailable_track_invalidates_stale_path_caches(self):

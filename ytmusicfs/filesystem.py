@@ -470,6 +470,8 @@ class YouTubeMusicFS(Operations):
 
         audio_video_id = None
         if path.endswith(".m4a"):
+            if self.cache.is_path_unavailable(path):
+                raise FuseOSError(errno.ENOENT)
             with suppress(OSError):
                 audio_video_id = self._get_video_id(path)
             if audio_video_id and self.cache.is_track_unavailable(audio_video_id):
@@ -666,6 +668,9 @@ class YouTubeMusicFS(Operations):
             if path == self.STATUS_FILE:
                 return 0
             self._record_stat("open")
+
+            if path.endswith(".m4a") and self.cache.is_path_unavailable(path):
+                raise FuseOSError(errno.ENOENT)
 
             # Check entry type from cache
             entry_type = self.cache.get_entry_type(path)

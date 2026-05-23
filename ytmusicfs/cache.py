@@ -107,6 +107,7 @@ class CacheManager:
         self.valid_paths = set()
         self.path_types = {}
         self.unavailable_video_ids = set()
+        self.unavailable_paths = set()
         self._load_valid_paths()
         self._load_unavailable_tracks()
 
@@ -169,13 +170,18 @@ class CacheManager:
         try:
             with self.lock:
                 self.cursor.execute(
-                    "SELECT key FROM cache_entries WHERE key LIKE ?",
+                    "SELECT key, entry FROM cache_entries WHERE key LIKE ?",
                     (self.path_to_key("unavailable:") + "%",),
                 )
-                for (key,) in self.cursor.fetchall():
+                for key, entry in self.cursor.fetchall():
                     self.unavailable_video_ids.add(
                         self.key_to_path(key).replace("unavailable:", "", 1)
                     )
+                    with suppress(json.JSONDecodeError, TypeError):
+                        metadata = json.loads(entry)
+                        path = metadata.get("path")
+                        if isinstance(path, str):
+                            self.unavailable_paths.add(path)
         except sqlite3.Error as e:
             self.logger.warning(
                 "Failed to load unavailable-track cache: %s: %s",
@@ -719,6 +725,8 @@ class CacheManager:
         if not video_id:
             return
         self.unavailable_video_ids.add(video_id)
+        if path:
+            self.unavailable_paths.add(path)
         self.set(
             f"unavailable:{video_id}",
             {
@@ -762,6 +770,10 @@ class CacheManager:
     def is_track_unavailable(self, video_id: str) -> bool:
         """Return whether a video ID is marked unavailable."""
         return video_id in self.unavailable_video_ids
+
+    def is_path_unavailable(self, path: str) -> bool:
+        """Return whether a filesystem path is marked unavailable."""
+        return path in self.unavailable_paths
 
     def get_unavailable_video_ids(self) -> builtins.set[str]:
         """Return a snapshot of unavailable video IDs."""
