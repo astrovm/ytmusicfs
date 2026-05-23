@@ -114,6 +114,7 @@
   - Reduce API calls first.
   - Use batch cache operations where available.
   - Preserve cache invalidation rules and timestamps.
+  - Mount may schedule background refresh work for expensive content such as liked songs; do not block mount on large library refreshes unless explicitly requested.
 
 ## Debugging
 

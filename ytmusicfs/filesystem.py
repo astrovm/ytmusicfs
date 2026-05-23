@@ -214,6 +214,9 @@ class YouTubeMusicFS(Operations):
         self.cache.mark_valid("/liked_songs", is_directory=True)
         self.cache.mark_valid("/albums", is_directory=True)
 
+        self.thread_manager.submit_task(
+            "api", self.fetcher.refresh_liked_songs_on_mount
+        )
         self.logger.info("YTMusicFS initialized successfully")
         self.logger.debug(
             f"Using browser: {browser}, cache_dir: {self.cache.cache_dir}"

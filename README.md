@@ -122,6 +122,10 @@ ytmusicfs mount
 from. Replace `brave` with your browser if needed. Supported browsers include
 `brave`, `chrome`, `firefox`, and others supported by yt-dlp.
 
+On mount, YTMusicFS refreshes playlist and album roots immediately, then starts
+a background refresh for `/liked_songs` so recent likes and unlikes are picked
+up without blocking the mount.
+
 For debugging or custom paths:
 
 ```bash

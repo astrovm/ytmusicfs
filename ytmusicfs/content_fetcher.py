@@ -229,6 +229,25 @@ class ContentFetcher:
         # Return just the filenames
         return [track["filename"] for track in tracks]
 
+    def refresh_liked_songs_on_mount(self) -> None:
+        """Refresh liked songs from YouTube Music after mount starts."""
+        entry = next(
+            (p for p in self.PLAYLIST_REGISTRY if p["type"] == "liked_songs"), None
+        )
+        if not entry:
+            self.logger.error("Liked songs not found")
+            return
+
+        self.logger.info("Refreshing liked songs after mount")
+        self.refresh_content(
+            f"{entry['path']}_processed",
+            lambda lim: self._fetch_playlist_tracks(entry["id"], lim),
+            entry["path"],
+            force_refresh=True,
+            expected_total_func=lambda: self._get_expected_total_count(entry["id"]),
+        )
+        self._repair_unavailable_liked_songs_locally()
+
     def readdir_playlist_by_type(
         self, playlist_type: str | None = None, directory_path: str | None = None
     ) -> list[str]:
@@ -455,20 +474,11 @@ class ContentFetcher:
             # Process the fetched tracks
             new_tracks = []
             durations_batch = {}
-            existing_ids = (
-                {t.get("videoId") for t in existing_tracks if t.get("videoId")}
-                if force_refresh
-                else set()
-            )
-
             for entry in tracks:
                 if not entry:
                     continue
 
-                # Skip if we already have this track and we're doing a force refresh
                 video_id = entry.get("videoId") or entry.get("id")
-                if force_refresh and video_id in existing_ids:
-                    continue
 
                 # Process duration for batch update
                 duration = entry.get("duration")
@@ -512,7 +522,7 @@ class ContentFetcher:
                 self.cache.set_durations_batch(durations_batch)
 
             # Update the cache
-            if existing_tracks and (force_refresh or is_partial_fetch):
+            if existing_tracks and is_partial_fetch:
                 result_tracks = self._merge_tracks(new_tracks, existing_tracks)
                 self.logger.info(
                     f"Merged {len(new_tracks)} fetched tracks with "

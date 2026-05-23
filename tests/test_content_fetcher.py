@@ -317,6 +317,30 @@ class TestContentFetcher(unittest.TestCase):
             "LM", 10000, "brave"
         )
 
+    def test_force_refresh_replaces_liked_songs_when_fetch_is_complete(self):
+        self.cache.get.return_value = [
+            {"filename": "old.m4a", "videoId": "old"},
+        ]
+        self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
+        self.yt_dlp_utils.extract_playlist_content.return_value = [
+            {"id": "new", "title": "New Song", "uploader": "Artist", "duration": 180}
+        ]
+        self.yt_dlp_utils.get_last_playlist_total_count.return_value = 1
+        self.processor.extract_track_info.return_value = {
+            "title": "New Song",
+            "artist": "Artist",
+            "videoId": "new",
+            "duration_seconds": 180,
+        }
+
+        result = self.fetcher.fetch_playlist_content(
+            "LM", "/liked_songs", force_refresh=True
+        )
+
+        self.assertEqual(result, ["artist_-_new_song.m4a"])
+        cached_tracks = self.cache.set.call_args.args[1]
+        self.assertEqual([track["videoId"] for track in cached_tracks], ["new"])
+
     def test_known_partial_fetch_stays_stale(self):
         self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
         self.yt_dlp_utils.extract_playlist_content.return_value = [
