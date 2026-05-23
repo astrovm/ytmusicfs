@@ -320,12 +320,30 @@ def test_config_set_mount_point_and_browser(tmp_path):
     assert config.load_user_config()["last_mount_point"] == str(mount_point.resolve())
 
 
-@patch("ytmusicfs.cli.MountInspector.find_active_mount_point", return_value=None)
-def test_cache_clear_removes_sqlite_files(mock_active_mount, tmp_path):
+def _init_cache_db(cache_dir: Path) -> None:
+    """Create a minimal valid cache database for CLI tests."""
+    db_path = cache_dir / "cache.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            "CREATE TABLE cache_entries (key TEXT PRIMARY KEY, entry TEXT, entry_type TEXT, metadata TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE hash_mappings (hashed_key TEXT PRIMARY KEY, original_path TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE refresh_tracker (key TEXT PRIMARY KEY, last_refresh REAL, status TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE repair_notifications (id INTEGER PRIMARY KEY, timestamp REAL, repair_data TEXT)"
+        )
+        conn.commit()
+
+
+def test_cache_clear_removes_sqlite_files(tmp_path):
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
-    for name in CacheCommandHandler.CACHE_FILES:
-        (cache_dir / name).write_text("cache", encoding="utf-8")
+    _init_cache_db(cache_dir)
     audio_dir = cache_dir / "audio"
     audio_dir.mkdir()
     (audio_dir / "song.m4a").write_bytes(b"cache")
@@ -340,14 +358,10 @@ def test_cache_clear_removes_sqlite_files(mock_active_mount, tmp_path):
     assert not audio_dir.exists()
 
 
-@patch("ytmusicfs.cli.MountInspector.find_active_mount_point", return_value=None)
-def test_cache_refresh_removes_sqlite_files_but_keeps_audio(
-    mock_active_mount, tmp_path
-):
+def test_cache_refresh_removes_sqlite_files_but_keeps_audio(tmp_path):
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
-    for name in CacheCommandHandler.CACHE_FILES:
-        (cache_dir / name).write_text("cache", encoding="utf-8")
+    _init_cache_db(cache_dir)
     audio_dir = cache_dir / "audio"
     audio_dir.mkdir()
     audio_file = audio_dir / "song.m4a"
@@ -363,17 +377,21 @@ def test_cache_refresh_removes_sqlite_files_but_keeps_audio(
     assert audio_file.exists()
 
 
-@patch("ytmusicfs.cli.MountInspector.find_active_mount_point")
 @pytest.mark.parametrize("cache_action", ["clear", "refresh"])
-def test_cache_mutation_refuses_while_mounted(
-    mock_active_mount, tmp_path, cache_action
-):
-    mock_active_mount.return_value = tmp_path / "music"
+def test_cache_mutation_works_while_mounted(tmp_path, cache_action):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    db_path = cache_dir / "cache.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "CREATE TABLE repair_notifications (id INTEGER PRIMARY KEY, timestamp REAL, repair_data TEXT)"
+        )
+        conn.commit()
     args = make_command_args(tmp_path, cache_action=cache_action)
 
     result = CacheCommandHandler(args, logging.getLogger("test")).execute()
 
-    assert result == 1
+    assert result == 0
 
 
 def test_cache_stats_reads_database_counts(tmp_path):

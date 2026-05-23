@@ -797,16 +797,40 @@ class YouTubeMusicFS(Operations):
             self.last_fs_activity = time.time()
 
     def _check_repair_notifications(self) -> None:
-        """Check for repair notifications and apply surgical cache invalidation."""
+        """Check for repair notifications and apply cache invalidation."""
         try:
             notifications = self.cache.get_pending_repair_notifications()
             if not notifications:
                 return
-            ids = []
+
+            cache_actions = set()
+            repair_ids = []
+            repair_batches = []
             for notif_id, repairs in notifications:
+                actions = [r.get("action") for r in repairs if r.get("action")]
+                if actions:
+                    cache_actions.update(actions)
+                else:
+                    repair_ids.append(notif_id)
+                    repair_batches.append(repairs)
+
+            if cache_actions:
+                action = "clear" if "clear" in cache_actions else "refresh"
+                if action == "clear":
+                    self.cache.clear_all()
+                else:
+                    self.cache.clear_metadata()
+                self.logger.info("Cache %s applied from notification", action)
+                all_ids = [n[0] for n in notifications]
+                self.cache.mark_repair_notifications_processed(all_ids)
+                self.thread_manager.submit_task(
+                    "api", self._automatic_refresh_after_mount
+                )
+                return
+
+            for repairs in repair_batches:
                 self.cache.invalidate_repaired_paths(repairs)
-                ids.append(notif_id)
-            self.cache.mark_repair_notifications_processed(ids)
+            self.cache.mark_repair_notifications_processed(repair_ids)
         except Exception as exc:
             self.logger.warning("Failed to process repair notifications: %s", exc)
 

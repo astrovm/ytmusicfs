@@ -428,13 +428,20 @@ class CacheCommandHandler:
         return self.remove_cache_entries("refresh", include_audio=False)
 
     def remove_cache_entries(self, action: str, include_audio: bool) -> int:
-        active_mount = MountInspector.find_active_mount_point()
-        if active_mount:
-            print_error(
-                f"Cannot {action} cache while mounted at {active_mount}. "
-                "Run: ytmusicfs unmount"
-            )
-            return 1
+        from ytmusicfs.cache import CacheManager
+        from ytmusicfs.thread_manager import ThreadManager
+
+        thread_manager = ThreadManager(logger=self.logger)
+        cache = CacheManager(
+            thread_manager=thread_manager,
+            cache_dir=str(self.config.cache_dir),
+            logger=self.logger,
+        )
+        try:
+            cache.record_cache_notification(action)
+        finally:
+            cache.close()
+            thread_manager.shutdown(wait=True, timeout=5.0)
 
         removed = 0
         for name in self.CACHE_FILES:

@@ -1239,7 +1239,17 @@ class CacheManager:
                 e,
             )
 
-    def get_pending_repair_notifications(self) -> list[tuple[int, list[dict[str, Any]]]]:
+    def record_cache_notification(self, action: str) -> None:
+        """Record a cache refresh or clear notification.
+
+        Args:
+            action: One of 'refresh' or 'clear'.
+        """
+        self.record_repair_notification([{"action": action}])
+
+    def get_pending_repair_notifications(
+        self,
+    ) -> list[tuple[int, list[dict[str, Any]]]]:
         """Return unprocessed repair notifications.
 
         Returns:
@@ -1258,7 +1268,9 @@ class CacheManager:
                     if isinstance(repairs, list):
                         notifications.append((row_id, repairs))
                 except (json.JSONDecodeError, TypeError):
-                    self.logger.warning("Skipping malformed repair notification %s", row_id)
+                    self.logger.warning(
+                        "Skipping malformed repair notification %s", row_id
+                    )
         except sqlite3.Error as e:
             self.logger.warning(
                 "Failed to read repair notifications: %s: %s",
@@ -1322,7 +1334,48 @@ class CacheManager:
             self.hotcache.pop("hotcache:/liked_songs_processed", None)
             self.delete("/liked_songs_listing_with_attrs")
             self.delete("/liked_songs_listing")
-            self.logger.info("Applied repair invalidations for %d liked-song path(s)", len(repairs))
+            self.logger.info(
+                "Applied repair invalidations for %d liked-song path(s)", len(repairs)
+            )
+
+    def clear_metadata(self) -> None:
+        """Clear all metadata from the persistent cache and in-memory state."""
+        try:
+            with self.lock:
+                self.cursor.execute("DELETE FROM cache_entries")
+                self.cursor.execute("DELETE FROM hash_mappings")
+                self.cursor.execute("DELETE FROM refresh_tracker")
+                self.conn.commit()
+        except sqlite3.Error as e:
+            self.logger.warning(
+                "Failed to clear metadata cache: %s: %s",
+                e.__class__.__name__,
+                e,
+            )
+
+        self.hotcache.clear()
+        self.directory_listings_cache.clear()
+        self.path_validation_cache.clear()
+        self.attrs_cache.clear()
+        self.valid_paths.clear()
+        self.path_types.clear()
+        self.unavailable_video_ids.clear()
+        self.unavailable_paths.clear()
+        self.logger.info("Metadata cache cleared")
+
+    def clear_all(self) -> None:
+        """Clear metadata and audio/ranges caches."""
+        self.clear_metadata()
+        for subdir in ("audio", "ranges"):
+            path = self.cache_dir / subdir
+            if path.exists():
+                try:
+                    import shutil
+
+                    shutil.rmtree(path)
+                    self.logger.info("Removed %s cache directory", subdir)
+                except OSError as e:
+                    self.logger.warning("Failed to remove %s: %s", subdir, e)
 
     def close(self) -> None:
         """Close the cache and release resources."""

@@ -152,6 +152,46 @@ class TestCacheManager(unittest.TestCase):
 
     def test_set_and_get(self):
         """Test setting and getting a value in the cache."""
+
+    def test_record_cache_notification(self):
+        """Recording a cache notification should insert into the DB."""
+        self.cache.record_cache_notification("refresh")
+        self.mock_cursor.execute.assert_called()
+        sql = self.mock_cursor.execute.call_args[0][0]
+        self.assertIn("repair_notifications", sql)
+
+    def test_clear_metadata(self):
+        """Clearing metadata should empty DB tables and in-memory state."""
+        self.cache.valid_paths.add("/liked_songs/song.m4a")
+        self.cache.path_validation_cache["/liked_songs/song.m4a"] = {"valid": True}
+        self.cache.directory_listings_cache["/liked_songs"] = {"data": {}}
+        self.cache.hotcache["key"] = {"data": []}
+        self.cache.unavailable_video_ids = {"old1"}
+
+        self.cache.clear_metadata()
+
+        self.assertEqual(len(self.cache.valid_paths), 0)
+        self.assertEqual(len(self.cache.path_validation_cache), 0)
+        self.assertEqual(len(self.cache.directory_listings_cache), 0)
+        self.assertEqual(len(self.cache.hotcache), 0)
+        self.assertEqual(len(self.cache.unavailable_video_ids), 0)
+        self.mock_cursor.execute.assert_any_call("DELETE FROM cache_entries")
+        self.mock_cursor.execute.assert_any_call("DELETE FROM hash_mappings")
+        self.mock_cursor.execute.assert_any_call("DELETE FROM refresh_tracker")
+
+    def test_clear_all_removes_audio_dir(self):
+        """Clearing all should also remove audio and ranges directories."""
+        audio_dir = self.cache_dir / "audio"
+        audio_dir.mkdir()
+        (audio_dir / "song.m4a").write_bytes(b"audio")
+        ranges_dir = self.cache_dir / "ranges"
+        ranges_dir.mkdir()
+
+        self.cache.clear_all()
+
+        self.assertFalse(audio_dir.exists())
+        self.assertFalse(ranges_dir.exists())
+
         # Test data
         key = "test_key"
         value = {"name": "Test Value", "id": 123}
@@ -914,7 +954,11 @@ class TestCacheManager(unittest.TestCase):
     def test_record_repair_notification(self):
         """Recording a repair notification should insert into the DB."""
         repairs = [
-            {"old_video_id": "old1", "path": "/liked_songs/a.m4a", "new_video_id": "new1"},
+            {
+                "old_video_id": "old1",
+                "path": "/liked_songs/a.m4a",
+                "new_video_id": "new1",
+            },
         ]
         self.cache.record_repair_notification(repairs)
         self.mock_cursor.execute.assert_called()
@@ -952,9 +996,7 @@ class TestCacheManager(unittest.TestCase):
         self.cache.hotcache["hotcache:/liked_songs_processed"] = {"data": []}
         self.cache.delete = Mock()
 
-        self.cache.invalidate_repaired_paths(
-            [{"old_video_id": "old1", "path": path}]
-        )
+        self.cache.invalidate_repaired_paths([{"old_video_id": "old1", "path": path}])
 
         self.assertNotIn("old1", self.cache.unavailable_video_ids)
         self.assertNotIn(path, self.cache.unavailable_paths)
