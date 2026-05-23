@@ -101,7 +101,7 @@ class TestLikedSongsRepairer(unittest.TestCase):
         self.client.rate_song.assert_not_called()
         self.cache.clear_unavailable_track.assert_not_called()
 
-    def test_repair_skips_when_replacement_stream_is_not_highest_quality(self):
+    def test_repair_accepts_best_available_replacement_stream(self):
         self.cache.get_unavailable_tracks.return_value = [
             {"videoId": "old", "path": "/liked_songs/Artist - Song.m4a"}
         ]
@@ -118,18 +118,28 @@ class TestLikedSongsRepairer(unittest.TestCase):
                 "videoId": "new",
                 "title": "Song",
                 "artists": [{"name": "Artist"}],
+                "duration": 123,
             }
         ]
         self.yt_dlp_utils.extract_stream_url.return_value = {"format_id": "140"}
+        self.processor.extract_track_info.return_value = {
+            "videoId": "new",
+            "artist": "Artist",
+            "title": "Song",
+            "duration_seconds": 123,
+        }
 
         stats = self.repairer.repair()
 
         self.assertEqual(
             stats,
-            {"checked": 1, "repaired": 0, "removed": 0, "skipped": 1, "failed": 0},
+            {"checked": 1, "repaired": 1, "removed": 0, "skipped": 0, "failed": 0},
         )
-        self.client.rate_song.assert_not_called()
-        self.cache.mark_no_replacement.assert_called_once()
+        self.client.rate_song.assert_any_call("new", "LIKE")
+        self.client.rate_song.assert_any_call("old", "INDIFFERENT")
+        self.cache.clear_unavailable_track.assert_called_once_with(
+            "old", "/liked_songs/Artist - Song.m4a"
+        )
 
     def test_repair_removes_previously_confirmed_no_replacement_track(self):
         self.cache.is_no_replacement.return_value = True
@@ -144,14 +154,7 @@ class TestLikedSongsRepairer(unittest.TestCase):
                 "filename": "Artist - Song.m4a",
             }
         ]
-        self.client.search.return_value = [
-            {
-                "videoId": "new",
-                "title": "Song",
-                "artists": [{"name": "Artist"}],
-            }
-        ]
-        self.yt_dlp_utils.extract_stream_url.return_value = {"format_id": "140"}
+        self.client.search.return_value = []
 
         stats = self.repairer.repair()
 

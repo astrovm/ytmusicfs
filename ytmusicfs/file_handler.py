@@ -121,7 +121,8 @@ class FileHandler:
 
         cache_path = self.cache_dir / "audio" / f"{video_id}.m4a"
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cached_audio = self._check_cached_audio(video_id)
+        cached_audio_format = self._cached_audio_format(video_id)
+        cached_audio = cached_audio_format is not None
 
         unavailable = self.cache.get_unavailable_track(video_id)
         if unavailable and not cached_audio:
@@ -135,9 +136,7 @@ class FileHandler:
                 "cache_path": str(cache_path),
                 "video_id": video_id,
                 "stream_url": "cached" if cached_audio else None,
-                "format_id": (
-                    PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT if cached_audio else None
-                ),
+                "format_id": cached_audio_format,
                 "headers": None,
                 "cookies": None,
                 "status": "ready",
@@ -439,11 +438,7 @@ class FileHandler:
             file_info["stream_url"],
             offset,
             size,
-            path=(
-                path
-                if file_info.get("format_id") == PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT
-                else None
-            ),
+            path=path,
             auth_headers=file_info.get("headers"),
             cookies=file_info.get("cookies"),
         )
@@ -464,19 +459,15 @@ class FileHandler:
             return
 
         video_id = file_info["video_id"]
-        if file_info.get("format_id") != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT:
-            self.logger.info(
-                "Not caching fallback stream for %s format %s",
-                file_info["video_id"],
-                file_info.get("format_id", "unknown"),
-            )
+        format_id = file_info.get("format_id")
+        if not isinstance(format_id, str) or not format_id:
             return
 
         self.downloader.download_file(
             video_id,
             file_info["stream_url"],
             path,
-            file_info["format_id"],
+            format_id,
             headers=file_info.get("headers"),
             cookies=file_info.get("cookies"),
         )
@@ -652,7 +643,7 @@ class FileHandler:
 
     def _cache_range(self, file_info: dict[str, Any], offset: int, data: bytes) -> None:
         format_id = file_info.get("format_id")
-        if not data or format_id != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT:
+        if not data or not isinstance(format_id, str) or not format_id:
             return
 
         range_dir = self._range_cache_dir(file_info["video_id"], format_id)
@@ -757,13 +748,16 @@ class FileHandler:
         return 0
 
     def _check_cached_audio(self, video_id):
+        return self._cached_audio_format(video_id) is not None
+
+    def _cached_audio_format(self, video_id: str) -> str | None:
         """Check if an audio file is already cached completely.
 
         Args:
             video_id: YouTube video ID
 
         Returns:
-            True if file is cached completely, False otherwise
+            Cached format ID if file is cached completely, None otherwise.
         """
         audio_dir = Path(self.cache_dir) / "audio"
         cache_path = audio_dir / f"{video_id}.m4a"
@@ -774,15 +768,16 @@ class FileHandler:
             try:
                 with open(status_path) as f:
                     status = f.read().strip()
-                if (
-                    status == f"complete:{PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT}"
-                    and cache_path.exists()
-                ):
+                prefix = "complete:"
+                if status.startswith(prefix) and cache_path.exists():
+                    format_id = status.removeprefix(prefix)
                     self.logger.debug(
-                        f"Found status file indicating {video_id} is complete"
+                        "Found complete cached audio for %s format %s",
+                        video_id,
+                        format_id,
                     )
-                    return True
+                    return format_id
             except Exception as e:
                 self.logger.debug(f"Error reading status file for {video_id}: {e}")
 
-        return False
+        return None

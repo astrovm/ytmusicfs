@@ -10,7 +10,7 @@ from typing import Any
 from ytmusicfs.cache import CacheManager
 from ytmusicfs.client import YouTubeMusicClient
 from ytmusicfs.processor import TrackProcessor
-from ytmusicfs.yt_dlp_utils import PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT, YTDLPUtils
+from ytmusicfs.yt_dlp_utils import YTDLPUtils
 
 
 @dataclass(frozen=True)
@@ -189,21 +189,13 @@ class LikedSongsRepairer:
                 continue
             video_id = str(candidate["videoId"])
             try:
-                stream = self.yt_dlp_utils.extract_stream_url(video_id, self.browser)
+                self.yt_dlp_utils.extract_stream_url(video_id, self.browser)
             except Exception as exc:
                 self.logger.debug(
                     "Skipping replacement candidate %s for %s: %s",
                     video_id,
                     query,
                     exc,
-                )
-                continue
-            if stream.get("format_id") != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT:
-                self.logger.debug(
-                    "Skipping replacement candidate %s for %s: format %s",
-                    video_id,
-                    query,
-                    stream.get("format_id", "unknown"),
                 )
                 continue
             return dict(candidate)

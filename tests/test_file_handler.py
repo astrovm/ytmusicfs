@@ -55,12 +55,15 @@ class TestFileHandler(unittest.TestCase):
 
         # Patch _check_cached_audio method to return False by default
         self.original_check_cached = self.file_handler._check_cached_audio
+        self.original_cached_audio_format = self.file_handler._cached_audio_format
         self.file_handler._check_cached_audio = Mock(return_value=False)
+        self.file_handler._cached_audio_format = Mock(return_value=None)
 
     def tearDown(self):
         """Clean up after each test method."""
         # Restore original methods
         self.file_handler._check_cached_audio = self.original_check_cached
+        self.file_handler._cached_audio_format = self.original_cached_audio_format
 
         # Ensure all file handles are released
         self.file_handler.open_files = {}
@@ -182,11 +185,12 @@ class TestFileHandler(unittest.TestCase):
             "reason": "Video unavailable",
             "timestamp": time.time(),
         }
-        self.file_handler._check_cached_audio.return_value = True
+        self.file_handler._cached_audio_format.return_value = "140"
 
         fh = self.file_handler.open(path, video_id)
 
         self.assertEqual(self.file_handler.open_files[fh]["stream_url"], "cached")
+        self.assertEqual(self.file_handler.open_files[fh]["format_id"], "140")
 
     @patch("ytmusicfs.file_handler.requests.get")
     def test_read_file(self, mock_requests_get):
@@ -364,7 +368,7 @@ class TestFileHandler(unittest.TestCase):
             cookies=file_info["cookies"],
         )
 
-    def test_fallback_stream_does_not_write_audio_or_range_cache(self):
+    def test_best_available_stream_writes_audio_and_range_cache(self):
         path = "/playlists/my_playlist/song.m4a"
         video_id = "abc123"
         fh = self.file_handler.open(path, video_id)
@@ -388,10 +392,10 @@ class TestFileHandler(unittest.TestCase):
         ):
             self.file_handler.read(path, FileHandler.CACHE_START_BYTES, 0, fh)
 
-        self.file_handler.downloader.download_file.assert_not_called()
-        self.assertFalse((self.cache_dir / "ranges").exists())
+        self.file_handler.downloader.download_file.assert_called_once()
+        self.assertTrue((self.cache_dir / "ranges" / "140" / video_id).exists())
 
-    def test_cached_audio_requires_preferred_format_status(self):
+    def test_cached_audio_accepts_any_complete_format_status(self):
         video_id = "abc123"
         audio_dir = self.cache_dir / "audio"
         audio_dir.mkdir(parents=True, exist_ok=True)
@@ -399,10 +403,13 @@ class TestFileHandler(unittest.TestCase):
         status_path = audio_dir / f"{video_id}.status"
 
         status_path.write_text("complete")
-        self.assertFalse(self.original_check_cached(video_id))
+        self.assertIsNone(self.original_cached_audio_format(video_id))
+
+        status_path.write_text("complete:140")
+        self.assertEqual(self.original_cached_audio_format(video_id), "140")
 
         status_path.write_text("complete:141")
-        self.assertTrue(self.original_check_cached(video_id))
+        self.assertEqual(self.original_cached_audio_format(video_id), "141")
 
     def test_high_offset_uncached_read_skips_yt_dlp(self):
         path = "/playlists/my_playlist/song.m4a"
