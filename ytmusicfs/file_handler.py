@@ -361,7 +361,7 @@ class FileHandler:
                         self._mark_unavailable_if_needed(video_id, path, error_msg)
                         self.logger.warning(log_message)
 
-                        # Attempt transparent auto-repair for liked_songs/albums
+                        # Attempt transparent auto-repair for liked_songs
                         if self.on_stream_unavailable:
                             new_video_id = self.on_stream_unavailable(video_id, path)
                             if new_video_id and new_video_id != video_id:

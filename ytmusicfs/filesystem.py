@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import concurrent.futures
 import errno
 import json
 import logging
@@ -879,13 +878,12 @@ class YouTubeMusicFS(Operations):
                 return repair.new_video_id
             return None
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(_find_replacement)
-            try:
-                return future.result(timeout=10.0)
-            except concurrent.futures.TimeoutError:
-                self.logger.warning("Auto-repair timed out for %s", path)
-                return None
+        future = self.thread_manager.submit_task("api", _find_replacement)
+        try:
+            return future.result(timeout=10.0)
+        except TimeoutError:
+            self.logger.warning("Auto-repair timed out for %s", path)
+            return None
 
     def _automatic_refresh_after_mount(self) -> None:
         """Refresh large library data only after the mounted FS is idle."""

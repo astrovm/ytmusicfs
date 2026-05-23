@@ -261,10 +261,7 @@ class LikedSongsRepairer:
                 updated_tracks.append(track)
 
         if changed:
-            self.cache.set("/liked_songs_processed", updated_tracks)
-            self.cache.delete("/liked_songs_listing_with_attrs")
-            self.cache.delete("/liked_songs_listing")
-            self.cache.delete(f"video_id:{path}")
+            self._persist_liked_songs_cache(updated_tracks, path)
 
     def _remove_dead_track_from_cache(self, video_id: str, path: str) -> None:
         """Remove an unavailable track that has no verified replacement."""
@@ -276,11 +273,17 @@ class LikedSongsRepairer:
             t for t in tracks if isinstance(t, dict) and t.get("videoId") != video_id
         ]
         if len(updated) < before:
-            self.cache.set("/liked_songs_processed", updated)
-            self.cache.delete("/liked_songs_listing_with_attrs")
-            self.cache.delete("/liked_songs_listing")
-            self.cache.delete(f"video_id:{path}")
+            self._persist_liked_songs_cache(updated, path)
             self.logger.info("Removed dead track %s from liked songs cache", path)
+
+    def _persist_liked_songs_cache(
+        self, tracks: list[dict[str, Any]], path: str
+    ) -> None:
+        """Persist updated liked songs track list and invalidate derived caches."""
+        self.cache.set("/liked_songs_processed", tracks)
+        self.cache.delete("/liked_songs_listing_with_attrs")
+        self.cache.delete("/liked_songs_listing")
+        self.cache.delete(f"video_id:{path}")
 
     def _artist_title_from_track_or_path(
         self, track: dict[str, Any] | None, path: str
