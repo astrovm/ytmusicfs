@@ -4,8 +4,10 @@ import logging
 import re
 import tempfile
 import threading
+import time
 from concurrent.futures import Future
 from contextlib import suppress
+from http.cookiejar import MozillaCookieJar
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,7 @@ TRANSIENT_STREAM_ERRORS = ("Requested format is not available",)
 PARTIAL_PLAYLIST_RETRY_ATTEMPTS = 4
 PARTIAL_PLAYLIST_COMPLETE_RATIO = 0.95
 STREAM_EXTRACTION_ATTEMPTS = 3
+BROWSER_COOKIEFILE_TTL = 20 * 60
 
 
 class YTDLPUtils:
@@ -49,6 +52,7 @@ class YTDLPUtils:
         self.thread_manager = thread_manager
         self.logger = logger or logging.getLogger("YTDLPUtils")
         self._browser_cookie_files = {}
+        self._browser_cookie_file_times = {}
         self._cookie_lock = threading.Lock()
         self._playlist_total_counts = {}
         self.logger.debug("YTDLPUtils initialized")
@@ -57,13 +61,60 @@ class YTDLPUtils:
         if not browser:
             raise ValueError("Browser auth is required")
 
+        cookie_file = self.ensure_browser_cookiefile(browser)
+        ydl_opts["cookiefile"] = cookie_file
+
+    def ensure_browser_cookiefile(self, browser: str) -> str:
+        """Ensure this browser has one reusable yt-dlp cookie file."""
+        if not browser:
+            raise ValueError("Browser auth is required")
+
         with self._cookie_lock:
             cookie_file = self._browser_cookie_files.get(browser)
-            if cookie_file and Path(cookie_file).exists():
-                ydl_opts["cookiefile"] = cookie_file
-                return
+            cookie_time = self._browser_cookie_file_times.get(browser, 0.0)
+            if (
+                cookie_file
+                and Path(cookie_file).exists()
+                and time.time() - cookie_time < BROWSER_COOKIEFILE_TTL
+            ):
+                return cookie_file
 
-        ydl_opts["cookiesfrombrowser"] = (browser,)
+            if not cookie_file:
+                cookie_file = self._new_cookie_file(browser)
+                self._browser_cookie_files[browser] = cookie_file
+
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "cookiesfrombrowser": (browser,),
+        }
+        with YoutubeDL(ydl_opts) as ydl:
+            self._save_cookiejar(browser, ydl, cookie_file, refreshed_from_browser=True)
+        return cookie_file
+
+    def _new_cookie_file(self, browser: str) -> str:
+        with tempfile.NamedTemporaryFile(
+            prefix=f"ytmusicfs-{browser}-", suffix=".cookies", delete=False
+        ) as tmp:
+            return tmp.name
+
+    def _save_cookiejar(
+        self,
+        browser: str,
+        ydl: YoutubeDL,
+        cookie_file: str,
+        refreshed_from_browser: bool = False,
+    ) -> bool:
+        cookiejar = getattr(ydl, "cookiejar", None)
+        if cookiejar is None or not hasattr(cookiejar, "save"):
+            return False
+
+        cookiejar.save(cookie_file, ignore_discard=True, ignore_expires=True)
+        with self._cookie_lock:
+            self._browser_cookie_files[browser] = cookie_file
+            if refreshed_from_browser:
+                self._browser_cookie_file_times[browser] = time.time()
+        return True
 
     def _stream_extraction_options(self, browser: str) -> dict[str, object]:
         ydl_opts: dict[str, object] = {
@@ -77,50 +128,38 @@ class YTDLPUtils:
         return ydl_opts
 
     def _cache_browser_cookies(self, browser, ydl):
-        cookiejar = getattr(ydl, "cookiejar", None)
-        if not cookiejar or not hasattr(cookiejar, "save"):
-            return False
-
         with self._cookie_lock:
             cookie_file = self._browser_cookie_files.get(browser)
             if not cookie_file:
-                with tempfile.NamedTemporaryFile(
-                    prefix=f"ytmusicfs-{browser}-", suffix=".cookies", delete=False
-                ) as tmp:
-                    cookie_file = tmp.name
-                self._browser_cookie_files[browser] = cookie_file
-
-        cookiejar.save(cookie_file, ignore_discard=True, ignore_expires=True)
-        return True
+                cookie_file = self._new_cookie_file(browser)
+        return self._save_cookiejar(browser, ydl, cookie_file)
 
     def extract_browser_cookies(self, browser):
         """Return YouTube cookies from a local browser profile."""
         if not browser:
             raise ValueError("Browser auth is required")
 
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "cookiesfrombrowser": (browser,),
-        }
-        with YoutubeDL(ydl_opts) as ydl:
-            cookiejar = getattr(ydl, "cookiejar", None)
-            if not cookiejar:
-                return {}
+        cookie_file = self.ensure_browser_cookiefile(browser)
+        cookiejar = MozillaCookieJar(cookie_file)
+        try:
+            cookiejar.load(ignore_discard=True, ignore_expires=True)
+        except OSError:
+            return {}
 
-            cookies = {}
-            for cookie in cookiejar:
-                domain = getattr(cookie, "domain", "") or ""
-                value = getattr(cookie, "value", None)
-                if "youtube.com" not in domain or value is None:
-                    continue
-                cookies[str(cookie.name)] = str(value)
-            return cookies
+        cookies = {}
+        for cookie in cookiejar:
+            domain = getattr(cookie, "domain", "") or ""
+            value = getattr(cookie, "value", None)
+            if "youtube.com" not in domain or value is None:
+                continue
+            cookies[str(cookie.name)] = str(value)
+        return cookies
 
     def cleanup(self):
         with self._cookie_lock:
             cookie_files = list(self._browser_cookie_files.values())
             self._browser_cookie_files.clear()
+            self._browser_cookie_file_times.clear()
 
         for cookie_file in cookie_files:
             try:
