@@ -359,6 +359,8 @@ class TestFileHandler(unittest.TestCase):
 
         file_info = self.file_handler.open_files[fh]
         self.assertEqual(mock_stream.call_count, 2)
+        audio_path = self.cache_dir / "audio" / f"{video_id}.m4a"
+        self.assertEqual(audio_path.read_bytes(), first_read + second_read)
         self.file_handler.downloader.download_file.assert_called_once_with(
             video_id,
             "https://example.com/audio.m4a",
@@ -394,6 +396,66 @@ class TestFileHandler(unittest.TestCase):
 
         self.file_handler.downloader.download_file.assert_called_once()
         self.assertTrue((self.cache_dir / "ranges" / "140" / video_id).exists())
+        self.assertEqual(
+            (self.cache_dir / "audio" / f"{video_id}.m4a").stat().st_size,
+            FileHandler.CACHE_START_BYTES,
+        )
+
+    def test_read_uses_progressive_audio_cache_before_remote_stream(self):
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        fh = self.file_handler.open(path, video_id)
+        cache_path = self.cache_dir / "audio" / f"{video_id}.m4a"
+        cache_path.write_bytes(b"abcdef")
+
+        data = self.file_handler.read(path, 3, 2, fh)
+
+        self.assertEqual(data, b"cde")
+        self.yt_dlp_utils.extract_stream_url_async.assert_not_called()
+
+    def test_read_ignores_failed_progressive_audio_cache(self):
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        fh = self.file_handler.open(path, video_id)
+        cache_path = self.cache_dir / "audio" / f"{video_id}.m4a"
+        cache_path.write_bytes(b"bad-cache")
+        cache_path.with_name(f"{video_id}.status").write_text("failed:141")
+
+        future = Future()
+        future.set_result(
+            {
+                "status": "success",
+                "stream_url": "https://example.com/audio.m4a",
+                "format_id": "141",
+                "http_headers": {},
+                "cookies": {},
+            }
+        )
+        self.yt_dlp_utils.extract_stream_url_async.return_value = future
+
+        with patch.object(
+            self.file_handler, "_stream_content", return_value=b"fresh"
+        ) as mock_stream:
+            data = self.file_handler.read(path, 5, 0, fh)
+
+        self.assertEqual(data, b"fresh")
+        mock_stream.assert_called_once()
+
+    def test_progressive_audio_cache_stops_writing_after_download_starts(self):
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        fh = self.file_handler.open(path, video_id)
+        self.file_handler.open_files[fh]["stream_url"] = "https://example.com/audio.m4a"
+        self.file_handler.open_files[fh]["format_id"] = "141"
+        self.file_handler.open_files[fh]["cache_started"] = True
+        cache_path = self.cache_dir / "audio" / f"{video_id}.m4a"
+        cache_path.write_bytes(b"seed")
+
+        with patch.object(self.file_handler, "_stream_content", return_value=b"next"):
+            data = self.file_handler.read(path, 4, 4, fh)
+
+        self.assertEqual(data, b"next")
+        self.assertEqual(cache_path.read_bytes(), b"seed")
 
     def test_cached_audio_accepts_any_complete_format_status(self):
         video_id = "abc123"
@@ -542,7 +604,7 @@ class TestFileHandler(unittest.TestCase):
         )
         self.file_handler.record_stat_callback.assert_any_call("stream_info_cache_hits")
 
-    def test_reopened_probe_read_uses_range_cache_before_stream_extraction(self):
+    def test_reopened_probe_read_uses_progressive_cache_before_stream_extraction(self):
         path = "/liked_songs/song.m4a"
         video_id = "abc123"
         first_fh = self.file_handler.open(path, video_id)
@@ -566,7 +628,7 @@ class TestFileHandler(unittest.TestCase):
             self.file_handler.read(path, size=6, offset=0, fh=second_fh), b"prefix"
         )
         self.yt_dlp_utils.extract_stream_url_async.assert_not_called()
-        self.file_handler.record_stat_callback.assert_called_with("range_cache_hits")
+        self.file_handler.record_stat_callback.assert_not_called()
 
     def test_range_cache_serves_short_eof_read(self):
         path = "/liked_songs/song.m4a"

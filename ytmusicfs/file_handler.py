@@ -271,28 +271,34 @@ class FileHandler:
 
         # First try to read from the cache - fully downloaded files
         if cache_path.exists():
-            progress = self.downloader.get_progress(video_id)
-            if progress and progress["status"] == "complete":
-                # Fully downloaded file
-                with cache_path.open("rb") as f:
-                    f.seek(offset)
-                    return f.read(size)
-            elif (
-                progress
-                and progress["status"] == "downloading"
-                and progress["progress"] >= offset + size
-            ):
-                # Partially downloaded file with enough data
-                with cache_path.open("rb") as f:
-                    f.seek(offset)
-                    return f.read(size)
-            elif self._check_cached_audio(video_id):
+            if self._check_cached_audio(video_id):
                 with self.file_handle_lock:
                     file_info["stream_url"] = "cached"
                 with cache_path.open("rb") as f:
                     f.seek(offset)
                     return f.read(size)
 
+            cached_data = self._read_available_audio_cache(
+                cache_path, video_id, offset, size
+            )
+            if cached_data is not None:
+                return cached_data
+
+            progress = self.downloader.get_progress(video_id)
+            if isinstance(progress, dict) and progress.get("status") == "complete":
+                # Fully downloaded file
+                with cache_path.open("rb") as f:
+                    f.seek(offset)
+                    return f.read(size)
+            elif (
+                isinstance(progress, dict)
+                and progress.get("status") == "downloading"
+                and progress.get("progress", 0) >= offset + size
+            ):
+                # Partially downloaded file with enough data
+                with cache_path.open("rb") as f:
+                    f.seek(offset)
+                    return f.read(size)
         range_data = self._read_cached_range(path, file_info, offset, size)
         if range_data is not None:
             self._record_stat("range_cache_hits")
@@ -443,6 +449,7 @@ class FileHandler:
             cookies=file_info.get("cookies"),
         )
         self._cache_range(file_info, offset, data)
+        self._write_progressive_audio_cache(file_info, offset, data)
         self._maybe_start_cache_download(path, file_info, len(data))
         return data
 
@@ -640,6 +647,57 @@ class FileHandler:
                 file_info["format_id"] = format_id
                 return data
         return None
+
+    @staticmethod
+    def _read_available_audio_cache(
+        cache_path: Path, video_id: str, offset: int, size: int
+    ) -> bytes | None:
+        if size <= 0:
+            return b""
+        status_path = cache_path.with_name(f"{video_id}.status")
+        try:
+            status = status_path.read_text() if status_path.exists() else ""
+            if status == "failed" or status.startswith("failed:"):
+                return None
+        except OSError:
+            return None
+        try:
+            cache_size = cache_path.stat().st_size
+        except OSError:
+            return None
+        if offset + size > cache_size:
+            return None
+        with cache_path.open("rb") as cached:
+            cached.seek(offset)
+            return cached.read(size)
+
+    def _write_progressive_audio_cache(
+        self, file_info: dict[str, Any], offset: int, data: bytes
+    ) -> None:
+        if not data:
+            return
+        if file_info.get("cache_started"):
+            return
+        format_id = file_info.get("format_id")
+        if not isinstance(format_id, str) or not format_id:
+            return
+
+        cache_path = Path(file_info["cache_path"])
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            current_size = cache_path.stat().st_size if cache_path.exists() else 0
+            if offset > current_size:
+                return
+            if offset + len(data) <= current_size:
+                return
+            start = max(current_size - offset, 0)
+            with cache_path.open("ab") as cached:
+                cached.write(data[start:])
+            self._record_stat("progressive_cache_writes")
+        except OSError as exc:
+            self.logger.debug(
+                "Progressive cache write failed for %s: %s", cache_path, exc
+            )
 
     def _cache_range(self, file_info: dict[str, Any], offset: int, data: bytes) -> None:
         format_id = file_info.get("format_id")

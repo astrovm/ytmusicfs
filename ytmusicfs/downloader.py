@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 
 import logging
-import os
-import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -130,16 +128,13 @@ class Downloader:
         audio_path = self.cache_dir / "audio" / f"{video_id}.m4a"
         status_path = audio_path.parent / f"{video_id}.status"
 
-        # Create a temporary file for the download
-        with tempfile.NamedTemporaryFile(
-            delete=False, dir=audio_path.parent, suffix=".tmp"
-        ) as temp_file:
-            temp_path = Path(temp_file.name)
-
         # Mark as in-progress before starting download
+        if self._cached_status_format(status_path) not in (None, format_id):
+            audio_path.unlink(missing_ok=True)
+        downloaded = audio_path.stat().st_size if audio_path.exists() else 0
         with self.lock:
             self.active_downloads[video_id] = {
-                "progress": 0,
+                "progress": downloaded,
                 "total": 0,
                 "status": "starting",
             }
@@ -147,14 +142,10 @@ class Downloader:
         with status_path.open("w") as sf:
             sf.write(f"downloading:{format_id}")
 
-        # Unknown or lower-quality files must never seed a preferred download.
-        downloaded = 0
-
         base_headers, cookies_data = ensure_headers_and_cookies(headers, cookies)
 
         for attempt in range(retries):
             try:
-                # Add range header if resuming download
                 request_headers = dict(base_headers)
                 if downloaded:
                     request_headers["Range"] = f"bytes={downloaded}-"
@@ -170,10 +161,10 @@ class Downloader:
                         f"Stream URL check failed: HTTP {head_response.status_code}"
                     )
 
-                # If resuming, copy existing content to temp file
-                if downloaded > 0 and audio_path.exists():
-                    with audio_path.open("rb") as src, temp_file:
-                        temp_file.write(src.read())
+                if downloaded and head_response.status_code == 200:
+                    audio_path.unlink(missing_ok=True)
+                    downloaded = 0
+                    request_headers.pop("Range", None)
 
                 # Get the expected total size
                 expected_total = (
@@ -204,7 +195,7 @@ class Downloader:
                     if response.status_code not in (200, 206):
                         raise Exception(f"HTTP {response.status_code}")
 
-                    with open(temp_path, "ab") as f:
+                    with audio_path.open("ab") as f:
                         for chunk in response.iter_content(chunk_size=chunk_size):
                             # Check if download is marked for stopping
                             with self.lock:
@@ -231,17 +222,14 @@ class Downloader:
                                     sf.write(f"downloading:{format_id}")
 
                 # Verify the download is complete
-                if temp_path.stat().st_size < expected_total:
+                if audio_path.stat().st_size < expected_total:
                     raise Exception(
-                        f"Incomplete download: got {temp_path.stat().st_size} bytes, expected {expected_total}"
+                        f"Incomplete download: got {audio_path.stat().st_size} bytes, expected {expected_total}"
                     )
 
                 # Validate the file format
-                if not self._validate_file_format(temp_path):
+                if not self._validate_file_format(audio_path):
                     raise Exception("Invalid file format")
-
-                # Replace the old file with the new one
-                temp_path.replace(audio_path)
 
                 # Mark as complete in status file first (most important for recovery)
                 with status_path.open("w") as sf:
@@ -259,19 +247,11 @@ class Downloader:
                 self.logger.warning(
                     f"Download attempt {attempt + 1} failed for {video_id}: {e}"
                 )
-                try:
-                    if temp_file and os.path.exists(temp_file.name):
-                        os.unlink(temp_file.name)
-                except Exception as cleanup_error:
-                    self.logger.warning(
-                        f"Failed to clean up temp file: {cleanup_error}"
-                    )
-
                 if attempt == retries - 1:
                     with self.lock:
                         self.active_downloads[video_id]["status"] = "failed"
                     with status_path.open("w") as sf:
-                        sf.write("failed")
+                        sf.write(f"failed:{format_id}")
                     return False
 
                 # Only sleep between retries if this wasn't an explicit stop
@@ -287,6 +267,17 @@ class Downloader:
                 time.sleep(2**attempt)  # Exponential backoff
 
         return False
+
+    @staticmethod
+    def _cached_status_format(status_path: Path) -> str | None:
+        try:
+            status = status_path.read_text().strip()
+        except OSError:
+            return None
+        for prefix in ("complete:", "downloading:", "failed:"):
+            if status.startswith(prefix):
+                return status.removeprefix(prefix)
+        return None
 
     def _is_download_complete(self, video_id: str, format_id: str) -> bool:
         """Check if download is already complete with a valid file.

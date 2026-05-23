@@ -148,6 +148,7 @@ class YouTubeMusicFS(Operations):
             "probe_eof_skips": 0,
             "range_416_eof": 0,
             "background_downloads": 0,
+            "progressive_cache_writes": 0,
             "range_cache_hits": 0,
             "range_cache_writes": 0,
             "unavailable_cache_hits": 0,
