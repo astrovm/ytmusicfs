@@ -125,12 +125,25 @@ class YouTubeMusicFS(Operations):
         self.last_access_results = {}  # {operation_path: cached_result}
         self.read_error_log_times = {}
         self.read_error_log_cooldown = 60.0
+        self.hot_metadata_lock = self.thread_manager.create_lock()
+        self.hot_attrs_by_path: dict[str, dict[str, Any]] = {}
+        self.hot_video_ids_by_path: dict[str, str] = {}
+        self.hot_dir_entries: dict[str, list[str]] = {}
         self.stats_lock = self.thread_manager.create_lock()
         self.stats = {
             "open": 0,
             "read": 0,
             "getattr": 0,
             "readdir": 0,
+            "getattr_hot_hits": 0,
+            "getattr_fallbacks": 0,
+            "readdir_hot_hits": 0,
+            "readdir_fallbacks": 0,
+            "video_id_hot_hits": 0,
+            "video_id_fallbacks": 0,
+            "getattr_total_ms": 0,
+            "readdir_total_ms": 0,
+            "read_total_ms": 0,
             "stream_extractions": 0,
             "probe_eof_skips": 0,
             "range_416_eof": 0,
@@ -225,6 +238,7 @@ class YouTubeMusicFS(Operations):
         self.cache.mark_valid("/playlists", is_directory=True)
         self.cache.mark_valid("/liked_songs", is_directory=True)
         self.cache.mark_valid("/albums", is_directory=True)
+        self._prime_hot_metadata_from_cache()
 
         self.logger.info("YTMusicFS initialized successfully")
         self.logger.debug(
@@ -248,7 +262,6 @@ class YouTubeMusicFS(Operations):
         for track in processed_tracks:
             video_id = track.get("videoId")
             if video_id and video_id in unavailable_ids:
-                self.logger.debug("Skipping unavailable track in listing: %s", video_id)
                 continue
 
             filename = track.get("filename")
@@ -273,7 +286,6 @@ class YouTubeMusicFS(Operations):
                 }
                 # Mark as directory in cache system
                 self.cache.mark_valid(f"{dir_path}/{filename}", is_directory=True)
-                self.logger.debug(f"Cached directory: {dir_path}/{filename}")
             else:
                 attrs = {
                     "st_mode": stat.S_IFREG | 0o644,
@@ -306,6 +318,74 @@ class YouTubeMusicFS(Operations):
 
         # Mark this directory as valid
         self.cache.mark_valid(dir_path, is_directory=True)
+        self._update_hot_metadata(dir_path, listing_with_attrs)
+
+    def _update_hot_metadata(
+        self, dir_path: str, listing_with_attrs: dict[str, dict[str, Any]]
+    ) -> None:
+        entries: list[str] = []
+        attrs_by_path: dict[str, dict[str, Any]] = {}
+        video_ids_by_path: dict[str, str] = {}
+        for filename, attrs in listing_with_attrs.items():
+            if filename in (".", ".."):
+                continue
+            full_path = f"{dir_path}/{filename}"
+            attrs_copy = dict(attrs)
+            entries.append(filename)
+            attrs_by_path[full_path] = attrs_copy
+            video_id = attrs_copy.get("videoId")
+            if isinstance(video_id, str) and video_id:
+                video_ids_by_path[full_path] = video_id
+
+        with self.hot_metadata_lock:
+            self.hot_dir_entries[dir_path] = entries
+            self.hot_attrs_by_path.update(attrs_by_path)
+            self.hot_video_ids_by_path.update(video_ids_by_path)
+
+    def _get_hot_readdir(self, path: str) -> list[str] | None:
+        with self.hot_metadata_lock:
+            entries = self.hot_dir_entries.get(path)
+            if entries is None:
+                return None
+            attrs = {
+                name: self.hot_attrs_by_path.get(f"{path}/{name}", {})
+                for name in entries
+            }
+        unavailable_ids = self.cache.get_unavailable_video_ids()
+        visible = [
+            name
+            for name in entries
+            if not attrs[name].get("videoId")
+            or attrs[name].get("videoId") not in unavailable_ids
+        ]
+        return [".", "..", *visible]
+
+    def _get_hot_attrs(self, path: str) -> dict[str, Any] | None:
+        with self.hot_metadata_lock:
+            attrs = self.hot_attrs_by_path.get(path)
+            return dict(attrs) if attrs else None
+
+    def _get_hot_video_id(self, path: str) -> str | None:
+        with self.hot_metadata_lock:
+            return self.hot_video_ids_by_path.get(path)
+
+    def _clear_hot_metadata(self) -> None:
+        with self.hot_metadata_lock:
+            self.hot_attrs_by_path.clear()
+            self.hot_video_ids_by_path.clear()
+            self.hot_dir_entries.clear()
+
+    def _invalidate_hot_paths(self, paths: list[str]) -> None:
+        with self.hot_metadata_lock:
+            for path in paths:
+                self.hot_attrs_by_path.pop(path, None)
+                self.hot_video_ids_by_path.pop(path, None)
+
+    def _prime_hot_metadata_from_cache(self) -> None:
+        for dir_path in ("/liked_songs", "/playlists", "/albums"):
+            listing = self.cache.get_directory_listing_with_attrs(dir_path)
+            if isinstance(listing, dict) and listing:
+                self._update_hot_metadata(dir_path, listing)
 
     def readdir(self, path: str, fh: int | None = None) -> list[str]:
         """Read directory contents with optimized caching.
@@ -318,6 +398,7 @@ class YouTubeMusicFS(Operations):
             List of directory entries
         """
         self._record_stat("readdir")
+        start_time = time.time()
         self.logger.debug(f"readdir: {path}")
 
         # Priority 1: Check fixed paths directly
@@ -326,6 +407,12 @@ class YouTubeMusicFS(Operations):
 
         if path == self.METADATA_DIR:
             return [".", "..", "status.json"]
+
+        hot_listing = self._get_hot_readdir(path)
+        if hot_listing is not None:
+            self._record_stat("readdir_hot_hits")
+            self._record_elapsed("readdir_total_ms", start_time)
+            return hot_listing
 
         if path in ["/playlists", "/albums", "/liked_songs"]:
             # Make a direct call to the appropriate content function
@@ -342,7 +429,9 @@ class YouTubeMusicFS(Operations):
         cache_key = f"{path}_listing_with_attrs"
         directory_listing = self.cache.get(cache_key)
         if directory_listing:
-            self.logger.debug(f"Using cached directory listing for readdir: {path}")
+            self._record_stat("readdir_fallbacks")
+            self._update_hot_metadata(path, directory_listing)
+            self._record_elapsed("readdir_total_ms", start_time)
             return [".", "..", *self._filter_unavailable_listing(directory_listing)]
 
         # Priority 3: Check operation cooldown cache for very recent requests
@@ -453,6 +542,11 @@ class YouTubeMusicFS(Operations):
         Raises:
             OSError: If the video ID could not be found
         """
+        video_id = self._get_hot_video_id(path)
+        if video_id:
+            self._record_stat("video_id_hot_hits")
+            return video_id
+        self._record_stat("video_id_fallbacks")
         return self.metadata_manager.get_video_id(path)
 
     def getattr(self, path: str, fh: int | None = None) -> dict[str, Any]:
@@ -484,8 +578,12 @@ class YouTubeMusicFS(Operations):
         if path.endswith(".m4a"):
             if self.cache.is_path_unavailable(path):
                 raise FuseOSError(errno.ENOENT)
-            with suppress(OSError):
-                audio_video_id = self._get_video_id(path)
+            audio_video_id = self._get_hot_video_id(path)
+            if audio_video_id:
+                self._record_stat("video_id_hot_hits")
+            else:
+                with suppress(OSError):
+                    audio_video_id = self._get_video_id(path)
             if audio_video_id and self.cache.is_track_unavailable(audio_video_id):
                 raise FuseOSError(errno.ENOENT)
 
@@ -559,10 +657,17 @@ class YouTubeMusicFS(Operations):
             return attrs
 
         # CASE 3: Check cache directly - fastest path
+        hot_attrs = self._get_hot_attrs(path)
+        if hot_attrs:
+            self._record_stat("getattr_hot_hits")
+            with self.last_access_lock:
+                self.last_access_results[operation_key] = hot_attrs
+            self._record_elapsed("getattr_total_ms", start_time)
+            return hot_attrs
+
         cached_attrs = self.cache.get_file_attrs_from_parent_dir(path)
         if cached_attrs:
-            # We've found cached attributes for this path
-            self.logger.debug(f"Using cached attributes for {path}")
+            self._record_stat("getattr_fallbacks")
             with self.last_access_lock:
                 self.last_access_results[operation_key] = cached_attrs
             processing_time = time.time() - start_time
@@ -570,6 +675,7 @@ class YouTubeMusicFS(Operations):
                 self.logger.info(
                     f"getattr for {path} took {processing_time:.3f}s (from cache)"
                 )
+            self._record_elapsed("getattr_total_ms", start_time)
             return cached_attrs
 
         # CASE 4: File in a playlist - try to get from playlist registry
@@ -684,6 +790,13 @@ class YouTubeMusicFS(Operations):
             if path.endswith(".m4a") and self.cache.is_path_unavailable(path):
                 raise FuseOSError(errno.ENOENT)
 
+            hot_video_id = self._get_hot_video_id(path)
+            if hot_video_id:
+                self._record_stat("video_id_hot_hits")
+                if self.cache.is_track_unavailable(hot_video_id):
+                    raise FuseOSError(errno.ENOENT)
+                return self.file_handler.open(path, hot_video_id)
+
             # Check entry type from cache
             entry_type = self.cache.get_entry_type(path)
 
@@ -741,7 +854,11 @@ class YouTubeMusicFS(Operations):
             self._record_stat("read")
 
             # Delegate to file handler
-            return self.file_handler.read(path, size, offset, fh)
+            start_time = time.time()
+            try:
+                return self.file_handler.read(path, size, offset, fh)
+            finally:
+                self._record_elapsed("read_total_ms", start_time)
 
         except Exception as e:
             if isinstance(e, FuseOSError):
@@ -776,6 +893,11 @@ class YouTubeMusicFS(Operations):
         """Return lightweight filesystem status for mounted debug reads."""
         with self.stats_lock:
             stats = dict(self.stats)
+        timings = {
+            "getattr_avg_ms": self._average_ms(stats, "getattr_total_ms", "getattr"),
+            "readdir_avg_ms": self._average_ms(stats, "readdir_total_ms", "readdir"),
+            "read_avg_ms": self._average_ms(stats, "read_total_ms", "read"),
+        }
         with self.refresh_state_lock:
             refresh = dict(self.refresh_state)
         payload = {
@@ -784,15 +906,28 @@ class YouTubeMusicFS(Operations):
             "cache_dir": str(self.cache.cache_dir),
             "generated_at": int(time.time()),
             "stats": stats,
+            "timings": timings,
             "refresh": refresh,
             "recent_handles": self.file_handler.get_recent_handles(),
         }
         return (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
 
+    @staticmethod
+    def _average_ms(stats: dict[str, Any], total_key: str, count_key: str) -> float:
+        count = stats.get(count_key, 0)
+        if not count:
+            return 0.0
+        return round(float(stats.get(total_key, 0)) / float(count), 3)
+
     def _record_stat(self, name: str) -> None:
         with self.stats_lock:
             self.stats[name] = self.stats.get(name, 0) + 1
             self.last_fs_activity = time.time()
+
+    def _record_elapsed(self, name: str, start_time: float) -> None:
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        with self.stats_lock:
+            self.stats[name] = self.stats.get(name, 0) + elapsed_ms
 
     def _check_repair_notifications(self) -> None:
         """Check for repair triggers and apply cache invalidation."""
@@ -804,6 +939,7 @@ class YouTubeMusicFS(Operations):
                     self.cache.clear_all()
                 else:
                     self.cache.clear_metadata()
+                self._clear_hot_metadata()
                 self.logger.info("Cache %s applied from trigger", cache_action)
                 self.cache.clear_cache_trigger(cache_action)
                 self.thread_manager.submit_task(
@@ -817,6 +953,13 @@ class YouTubeMusicFS(Operations):
                 repairs = trigger.get("repairs", [])
                 if repairs:
                     self.cache.invalidate_repaired_paths(repairs)
+                    self._invalidate_hot_paths(
+                        [
+                            str(repair.get("path"))
+                            for repair in repairs
+                            if repair.get("path")
+                        ]
+                    )
                 self.cache.clear_repair_trigger()
         except Exception as exc:
             self.logger.warning("Failed to process repair triggers: %s", exc)

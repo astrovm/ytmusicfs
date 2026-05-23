@@ -66,30 +66,23 @@ class MetadataManager:
         # Check if we already have the video ID for this path in memory cache
         with self.video_id_cache_lock:
             if path in self.video_id_cache:
-                video_id = self.video_id_cache[path]
-                self.logger.debug(f"Using cached video ID {video_id} for {path}")
-                return video_id
+                return self.video_id_cache[path]
 
         # Check for video ID in persistent cache
         cache_key = f"video_id:{path}"
         video_id = self.cache.get(cache_key)
         if video_id:
-            self.logger.debug(
-                f"Found video ID {video_id} in persistent cache for {path}"
-            )
             with self.video_id_cache_lock:
                 self.video_id_cache[path] = video_id
             return video_id
 
         dir_path = os.path.dirname(path)
         filename = os.path.basename(path)
-        self.logger.debug(f"Looking up video ID for {filename} in {dir_path}")
 
         # First try to get attributes from the parent directory's cached listing
         file_attrs = self.cache.get_file_attrs_from_parent_dir(path)
         if file_attrs and "videoId" in file_attrs:
             video_id = file_attrs["videoId"]
-            self.logger.debug(f"Found video ID {video_id} in parent directory cache")
             with self.video_id_cache_lock:
                 self.video_id_cache[path] = video_id
             # Save to persistent cache
