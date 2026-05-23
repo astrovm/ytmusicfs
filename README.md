@@ -96,6 +96,7 @@ Available commands:
 - `doctor`: Check local dependencies
 - `config`: Show or update saved mount settings
 - `cache`: Inspect or clear the persistent cache
+- `repair-liked-songs`: Replace unavailable liked-song IDs with playable matches
 - `logs`: Show recent log lines (default last 50)
 - `service`: Manage an optional systemd user service
 
@@ -204,6 +205,20 @@ ytmusicfs cache refresh
 metadata only and keeps cached audio. Both refuse to run while YTMusicFS is
 mounted.
 
+Repair liked songs that YouTube Music returns with dead backing video IDs:
+
+```bash
+ytmusicfs repair-liked-songs
+ytmusicfs cache refresh
+```
+
+`repair-liked-songs` only handles tracks already marked unavailable in
+`/liked_songs`. For each one, it searches YouTube Music by artist and title,
+verifies the replacement can stream in the preferred high quality format, likes
+the replacement video, removes the like from the unavailable video, and updates
+the local cache. It skips weak matches and reports failed API calls instead of
+changing your account.
+
 Show logs:
 
 ```bash
@@ -279,6 +294,7 @@ ytmusicfs config set {browser,mount-point} VALUE
 ytmusicfs cache stats
 ytmusicfs cache clear
 ytmusicfs cache refresh [--cache-dir CACHE_DIR] [--debug]
+ytmusicfs repair-liked-songs [--cache-dir CACHE_DIR] [--debug]
 ytmusicfs logs [--tail N] [--path] [--debug]
 ytmusicfs service {install,start,stop,restart,status} [--debug]
 ```
@@ -301,6 +317,9 @@ ytmusicfs service {install,start,stop,restart,status} [--debug]
 - Refresh the local install after pulling changes: `pipx install --force .`
 - Some players may not handle streaming URLs well; try different players
 - If audio stops, the stream URL may have expired; simply restart playback
+- If a liked song exists in YouTube Music but ytmusicfs reports `No such file or
+  directory`, its cached video ID may be unavailable. Run
+  `ytmusicfs repair-liked-songs`, then `ytmusicfs cache refresh` and remount.
 
 ### Performance Issues
 

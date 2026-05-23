@@ -31,6 +31,7 @@
   - `processor.py`: Filename sanitizing, path/video ID extraction, track shaping.
   - `cache.py`: SQLite persistent cache plus in-memory caches.
   - `file_handler.py`, `downloader.py`, `yt_dlp_utils.py`: File handles and audio stream extraction.
+  - `repair.py`: Liked-song repair flow for unavailable video IDs and account rating updates.
   - `path_router.py`: Filesystem path routing and validation.
   - `metadata.py`: Track metadata mapping and cache integration.
   - `thread_manager.py`: Thread pools and concurrent work helpers.
@@ -53,6 +54,7 @@
 - Doctor: `ytmusicfs doctor`
 - Saved config: `ytmusicfs config show`, `ytmusicfs config set browser brave`, `ytmusicfs config set mount-point ~/Music/ytmusic`
 - Cache: `ytmusicfs cache stats`, `ytmusicfs cache clear` (metadata and audio), `ytmusicfs cache refresh` (metadata only)
+- Repair unavailable liked-song IDs: `ytmusicfs repair-liked-songs`
 - Logs: `ytmusicfs logs` (last 50 lines), `ytmusicfs logs --tail N`, `ytmusicfs logs --path`
 - Systemd user service: `ytmusicfs service install`, `ytmusicfs service start`, `ytmusicfs service stop`
 - Mounted debug status: `/.ytmusicfs/status.json`.
@@ -101,6 +103,11 @@
   1. Add wrapper methods in `client.py`.
   2. Process returned data in `content_fetcher.py`.
   3. Normalize metadata and filenames in `processor.py`.
+- Repairing unavailable liked songs:
+  1. Keep account mutations explicit through `ytmusicfs repair-liked-songs`.
+  2. Verify replacement streams before calling `rate_song`.
+  3. Like the replacement before unliking the unavailable ID.
+  4. Skip weak matches; do not mutate account state on uncertain results.
 - Performance work:
   - Reduce API calls first.
   - Use batch cache operations where available.
