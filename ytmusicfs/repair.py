@@ -95,6 +95,17 @@ class LikedSongsRepairer:
                 repair.old_video_id,
                 repair.new_video_id,
             )
+        if repaired:
+            self.cache.record_repair_notification(
+                [
+                    {
+                        "old_video_id": r.old_video_id,
+                        "path": r.path,
+                        "new_video_id": r.new_video_id,
+                    }
+                    for r in repairs
+                ]
+            )
         return repaired
 
     def _plan_one(self, unavailable: dict[str, Any]) -> LikedSongRepair | None:

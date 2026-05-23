@@ -911,6 +911,60 @@ class TestCacheManager(unittest.TestCase):
         self.assertEqual(results["failure"], 0)
         self.assertEqual(results["success"], num_threads * iterations_per_thread)
 
+    def test_record_repair_notification(self):
+        """Recording a repair notification should insert into the DB."""
+        repairs = [
+            {"old_video_id": "old1", "path": "/liked_songs/a.m4a", "new_video_id": "new1"},
+        ]
+        self.cache.record_repair_notification(repairs)
+        self.mock_cursor.execute.assert_called()
+        sql = self.mock_cursor.execute.call_args[0][0]
+        self.assertIn("repair_notifications", sql)
+
+    def test_get_pending_repair_notifications(self):
+        """Pending notifications should be returned as parsed dicts."""
+        self.mock_cursor.fetchall.return_value = [
+            (1, '[{"old_video_id":"old1","path":"/liked_songs/a.m4a"}]'),
+        ]
+        result = self.cache.get_pending_repair_notifications()
+        self.assertEqual(len(result), 1)
+        row_id, repairs = result[0]
+        self.assertEqual(row_id, 1)
+        self.assertEqual(repairs[0]["old_video_id"], "old1")
+
+    def test_mark_repair_notifications_processed(self):
+        """Processed notifications should be deleted from the DB."""
+        self.cache.mark_repair_notifications_processed([1, 2])
+        self.mock_cursor.execute.assert_called()
+        sql = self.mock_cursor.execute.call_args[0][0]
+        self.assertIn("DELETE FROM repair_notifications", sql)
+
+    def test_invalidate_repaired_paths(self):
+        """Invalidating repaired paths should clear only relevant in-memory state."""
+        path = "/liked_songs/song.m4a"
+        parent = "/liked_songs"
+        self.cache.unavailable_video_ids = {"old1"}
+        self.cache.unavailable_paths = {path}
+        self.cache.valid_paths.add(path)
+        self.cache.path_validation_cache[path] = {"valid": True}
+        self.cache.attrs_cache[path] = {"st_size": 123}
+        self.cache.directory_listings_cache[parent] = {"data": {}}
+        self.cache.hotcache["hotcache:/liked_songs_processed"] = {"data": []}
+        self.cache.delete = Mock()
+
+        self.cache.invalidate_repaired_paths(
+            [{"old_video_id": "old1", "path": path}]
+        )
+
+        self.assertNotIn("old1", self.cache.unavailable_video_ids)
+        self.assertNotIn(path, self.cache.unavailable_paths)
+        self.assertNotIn(path, self.cache.valid_paths)
+        self.assertNotIn(path, self.cache.path_validation_cache)
+        self.assertNotIn(path, self.cache.attrs_cache)
+        self.assertNotIn(parent, self.cache.directory_listings_cache)
+        self.assertNotIn("hotcache:/liked_songs_processed", self.cache.hotcache)
+        self.cache.delete.assert_any_call(f"video_id:{path}")
+
     def test_cache_invalidation_patterns(self):
         """Test different patterns of cache invalidation."""
         # Create a CacheManager with mocked methods

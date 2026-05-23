@@ -332,6 +332,7 @@ class YouTubeMusicFS(Operations):
             if path == "/albums":
                 return self.fetcher.readdir_playlist_by_type("album", "/albums")
             if path == "/liked_songs":
+                self._check_repair_notifications()
                 return self.fetcher.readdir_playlist_by_type(
                     "liked_songs", "/liked_songs"
                 )
@@ -477,6 +478,9 @@ class YouTubeMusicFS(Operations):
             "st_mtime": time.time(),
             "st_ctime": time.time(),
         }
+
+        if path.startswith("/liked_songs"):
+            self._check_repair_notifications()
 
         audio_video_id = None
         if path.endswith(".m4a"):
@@ -792,6 +796,20 @@ class YouTubeMusicFS(Operations):
             self.stats[name] = self.stats.get(name, 0) + 1
             self.last_fs_activity = time.time()
 
+    def _check_repair_notifications(self) -> None:
+        """Check for repair notifications and apply surgical cache invalidation."""
+        try:
+            notifications = self.cache.get_pending_repair_notifications()
+            if not notifications:
+                return
+            ids = []
+            for notif_id, repairs in notifications:
+                self.cache.invalidate_repaired_paths(repairs)
+                ids.append(notif_id)
+            self.cache.mark_repair_notifications_processed(ids)
+        except Exception as exc:
+            self.logger.warning("Failed to process repair notifications: %s", exc)
+
     def _automatic_refresh_after_mount(self) -> None:
         """Refresh large library data only after the mounted FS is idle."""
         self._set_refresh_state(
@@ -968,6 +986,7 @@ class YouTubeMusicFS(Operations):
 
     def init(self, path: str) -> None:
         """Start post-mount background work after FUSE daemonization."""
+        self._check_repair_notifications()
         self.thread_manager.submit_task("api", self._automatic_refresh_after_mount)
 
     def destroy(self, path: str) -> None:

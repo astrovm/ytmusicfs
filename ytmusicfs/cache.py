@@ -89,6 +89,16 @@ class CacheManager:
                     status TEXT CHECK(status IN ('fresh', 'pending', 'stale'))
                 )
                 """)
+
+            # Create repair_notifications table for live cache invalidation
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS repair_notifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL NOT NULL,
+                    repair_data TEXT NOT NULL,
+                    processed INTEGER DEFAULT 0
+                )
+                """)
             self.conn.commit()
 
         # Enhanced in-memory cache for high-frequency lookups with larger size
@@ -1203,6 +1213,116 @@ class CacheManager:
                 f"Failed to get refresh metadata for {key}: {e.__class__.__name__}: {e}"
             )
             return None, None
+
+    def record_repair_notification(self, repairs: list[dict[str, Any]]) -> None:
+        """Record a repair notification for the mount process to pick up.
+
+        Args:
+            repairs: List of repair dicts with old_video_id, path, new_video_id.
+        """
+        if not repairs:
+            return
+        try:
+            with self.lock:
+                self.cursor.execute(
+                    """
+                    INSERT INTO repair_notifications (timestamp, repair_data)
+                    VALUES (?, ?)
+                    """,
+                    (time.time(), json.dumps(repairs)),
+                )
+                self.conn.commit()
+        except sqlite3.Error as e:
+            self.logger.warning(
+                "Failed to record repair notification: %s: %s",
+                e.__class__.__name__,
+                e,
+            )
+
+    def get_pending_repair_notifications(self) -> list[tuple[int, list[dict[str, Any]]]]:
+        """Return unprocessed repair notifications.
+
+        Returns:
+            List of (id, repairs) tuples.
+        """
+        notifications: list[tuple[int, list[dict[str, Any]]]] = []
+        try:
+            with self.lock:
+                self.cursor.execute(
+                    "SELECT id, repair_data FROM repair_notifications WHERE processed = 0"
+                )
+                rows = self.cursor.fetchall()
+            for row_id, repair_data in rows:
+                try:
+                    repairs = json.loads(repair_data)
+                    if isinstance(repairs, list):
+                        notifications.append((row_id, repairs))
+                except (json.JSONDecodeError, TypeError):
+                    self.logger.warning("Skipping malformed repair notification %s", row_id)
+        except sqlite3.Error as e:
+            self.logger.warning(
+                "Failed to read repair notifications: %s: %s",
+                e.__class__.__name__,
+                e,
+            )
+        return notifications
+
+    def mark_repair_notifications_processed(self, ids: list[int]) -> None:
+        """Delete processed repair notifications.
+
+        Args:
+            ids: List of notification IDs to remove.
+        """
+        if not ids:
+            return
+        try:
+            with self.lock:
+                placeholders = ",".join("?" * len(ids))
+                self.cursor.execute(
+                    f"DELETE FROM repair_notifications WHERE id IN ({placeholders})",
+                    ids,
+                )
+                self.conn.commit()
+        except sqlite3.Error as e:
+            self.logger.warning(
+                "Failed to delete repair notifications: %s: %s",
+                e.__class__.__name__,
+                e,
+            )
+
+    def invalidate_repaired_paths(self, repairs: list[dict[str, Any]]) -> None:
+        """Surgically invalidate in-memory caches for repaired liked-song paths.
+
+        Args:
+            repairs: List of repair dicts with old_video_id and path keys.
+        """
+        if not repairs:
+            return
+        changed = False
+        for repair in repairs:
+            old_video_id = repair.get("old_video_id")
+            path = repair.get("path")
+            if not old_video_id or not path:
+                continue
+            self.unavailable_video_ids.discard(old_video_id)
+            self.unavailable_paths.discard(path)
+            self.valid_paths.discard(path)
+            self.path_validation_cache.pop(path, None)
+            self.attrs_cache.pop(path, None)
+            for hot_key in (
+                f"hotcache:video_id:{path}",
+                f"hot:{path}_listing_with_attrs",
+            ):
+                self.hotcache.pop(hot_key, None)
+            self.delete(f"video_id:{path}")
+            changed = True
+            self.logger.debug("Invalidated cache for repaired path %s", path)
+        if changed:
+            self.directory_listings_cache.pop("/liked_songs", None)
+            self.hotcache.pop("hotcache:/liked_songs_processed", None)
+            self.delete("/liked_songs_listing_with_attrs")
+            self.delete("/liked_songs_listing")
+            self.logger.info("Applied repair invalidations for %d liked-song path(s)", len(repairs))
 
     def close(self) -> None:
         """Close the cache and release resources."""
