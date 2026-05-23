@@ -489,7 +489,70 @@ class CacheCommandHandler:
                 if cursor.fetchone():
                     cursor.execute(f"SELECT COUNT(*) FROM {table}")
                     stats[table] = cursor.fetchone()[0]
-            return stats
+        return stats
+
+
+class RepairLikedSongsCommandHandler:
+    """Repair unavailable liked-song video IDs in the user's account."""
+
+    def __init__(self, args: argparse.Namespace, logger: logging.Logger):
+        self.args = args
+        self.logger = logger
+        self.config = ConfigManager(cache_dir=args.cache_dir, logger=logger)
+
+    def execute(self) -> int:
+        saved_config = self.config.load_user_config()
+        browser = saved_config.get("last_browser")
+        if not browser:
+            self.logger.error(
+                "Missing browser setting. Run: ytmusicfs config set browser brave"
+            )
+            return 1
+
+        from ytmusicfs.auth_adapter import YTMusicAuthAdapter
+        from ytmusicfs.cache import CacheManager
+        from ytmusicfs.client import YouTubeMusicClient
+        from ytmusicfs.processor import TrackProcessor
+        from ytmusicfs.repair import LikedSongsRepairer
+        from ytmusicfs.thread_manager import ThreadManager
+        from ytmusicfs.yt_dlp_utils import YTDLPUtils
+
+        thread_manager = ThreadManager(logger=self.logger)
+        cache = CacheManager(
+            thread_manager=thread_manager,
+            cache_dir=str(self.config.cache_dir),
+            logger=self.logger,
+        )
+        try:
+            yt_dlp_utils = YTDLPUtils(thread_manager=thread_manager, logger=self.logger)
+            auth_adapter = YTMusicAuthAdapter(
+                browser=str(browser),
+                yt_dlp_utils=yt_dlp_utils,
+                logger=self.logger,
+            )
+            client = YouTubeMusicClient(auth_adapter, logger=self.logger)
+            processor = TrackProcessor(cache_manager=cache, logger=self.logger)
+            repairer = LikedSongsRepairer(
+                client=client,
+                cache=cache,
+                processor=processor,
+                yt_dlp_utils=yt_dlp_utils,
+                browser=str(browser),
+                logger=self.logger,
+            )
+            stats = repairer.repair()
+        finally:
+            cache.close()
+            thread_manager.shutdown(wait=True, timeout=10.0)
+
+        print(
+            "Liked songs repair: "
+            f"checked {stats['checked']}, "
+            f"repaired {stats['repaired']}, "
+            f"skipped {stats['skipped']}, "
+            f"failed {stats['failed']}"
+        )
+        return 0 if stats["failed"] == 0 else 1
 
 
 class LogsCommandHandler:
@@ -656,6 +719,17 @@ def main() -> int:
     add_common_options(doctor_parser)
     doctor_parser.set_defaults(
         func=lambda args: DoctorCommandHandler(args, setup_logging(args)).execute()
+    )
+
+    repair_parser = subparsers.add_parser(
+        "repair-liked-songs",
+        help="Replace unavailable liked-song IDs with verified playable matches",
+    )
+    add_common_options(repair_parser)
+    repair_parser.set_defaults(
+        func=lambda args: RepairLikedSongsCommandHandler(
+            args, setup_logging(args)
+        ).execute()
     )
 
     cache_parser = subparsers.add_parser("cache", help="Inspect or clear cache")

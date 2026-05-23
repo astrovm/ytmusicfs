@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+
+import logging
+import re
+import unicodedata
+from pathlib import Path
+from typing import Any
+
+from ytmusicfs.cache import CacheManager
+from ytmusicfs.client import YouTubeMusicClient
+from ytmusicfs.processor import TrackProcessor
+from ytmusicfs.yt_dlp_utils import PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT, YTDLPUtils
+
+
+class LikedSongsRepairer:
+    """Repair unavailable liked-song video IDs with verified replacements."""
+
+    def __init__(
+        self,
+        client: YouTubeMusicClient,
+        cache: CacheManager,
+        processor: TrackProcessor,
+        yt_dlp_utils: YTDLPUtils,
+        browser: str,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        self.client = client
+        self.cache = cache
+        self.processor = processor
+        self.yt_dlp_utils = yt_dlp_utils
+        self.browser = browser
+        self.logger = logger or logging.getLogger("YTMusicFS")
+
+    def repair(self) -> dict[str, int]:
+        stats = {"checked": 0, "repaired": 0, "skipped": 0, "failed": 0}
+        unavailable_tracks = [
+            track
+            for track in self.cache.get_unavailable_tracks()
+            if str(track.get("path", "")).startswith("/liked_songs/")
+        ]
+
+        for unavailable in unavailable_tracks:
+            stats["checked"] += 1
+            try:
+                if self._repair_one(unavailable):
+                    stats["repaired"] += 1
+                else:
+                    stats["skipped"] += 1
+            except Exception as exc:
+                stats["failed"] += 1
+                self.logger.warning(
+                    "Failed to repair liked song %s: %s",
+                    unavailable.get("path") or unavailable.get("videoId"),
+                    exc,
+                )
+        return stats
+
+    def _repair_one(self, unavailable: dict[str, Any]) -> bool:
+        old_video_id = str(unavailable.get("videoId") or "")
+        path = str(unavailable.get("path") or "")
+        if not old_video_id or not path:
+            return False
+
+        old_track = self._find_cached_liked_track(old_video_id, path)
+        artist, title = self._artist_title_from_track_or_path(old_track, path)
+        if not artist or not title:
+            self.logger.info("Skipping %s: cannot derive artist/title", path)
+            return False
+
+        replacement = self._find_replacement(old_video_id, artist, title)
+        if replacement is None:
+            self.logger.info("Skipping %s: no verified replacement found", path)
+            return False
+
+        new_video_id = str(replacement["videoId"])
+        self.client.rate_song(new_video_id, "LIKE")
+        self.client.rate_song(old_video_id, "INDIFFERENT")
+        self._replace_cached_liked_track(old_video_id, path, old_track, replacement)
+        self.cache.clear_unavailable_track(old_video_id, path)
+        self.logger.info(
+            "Repaired liked song %s: %s -> %s",
+            path,
+            old_video_id,
+            new_video_id,
+        )
+        return True
+
+    def _find_replacement(
+        self, old_video_id: str, artist: str, title: str
+    ) -> dict[str, Any] | None:
+        query = f"{artist} {title}"
+        candidates = self.client.search(
+            query,
+            filter_type="songs",
+            limit=10,
+            ignore_spelling=True,
+        )
+        scored = [
+            (self._match_score(candidate, artist, title), candidate)
+            for candidate in candidates
+            if candidate.get("videoId") and candidate.get("videoId") != old_video_id
+        ]
+        scored.sort(key=lambda item: item[0], reverse=True)
+
+        for score, candidate in scored:
+            if score < 5:
+                continue
+            video_id = str(candidate["videoId"])
+            try:
+                stream = self.yt_dlp_utils.extract_stream_url(video_id, self.browser)
+            except Exception as exc:
+                self.logger.debug(
+                    "Skipping replacement candidate %s for %s: %s",
+                    video_id,
+                    query,
+                    exc,
+                )
+                continue
+            if stream.get("format_id") != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT:
+                self.logger.debug(
+                    "Skipping replacement candidate %s for %s: format %s",
+                    video_id,
+                    query,
+                    stream.get("format_id", "unknown"),
+                )
+                continue
+            return dict(candidate)
+        return None
+
+    def _find_cached_liked_track(
+        self, video_id: str, path: str
+    ) -> dict[str, Any] | None:
+        tracks = self.cache.get("/liked_songs_processed")
+        if not isinstance(tracks, list):
+            return None
+        filename = Path(path).name
+        for track in tracks:
+            if not isinstance(track, dict):
+                continue
+            if track.get("videoId") == video_id or track.get("filename") == filename:
+                return dict(track)
+        return None
+
+    def _replace_cached_liked_track(
+        self,
+        old_video_id: str,
+        path: str,
+        old_track: dict[str, Any] | None,
+        replacement: dict[str, Any],
+    ) -> None:
+        tracks = self.cache.get("/liked_songs_processed")
+        if not isinstance(tracks, list):
+            return
+
+        filename = Path(path).name
+        replacement_track = self.processor.extract_track_info(
+            {
+                **replacement,
+                "videoId": replacement["videoId"],
+                "duration_seconds": replacement.get("duration_seconds")
+                or replacement.get("duration"),
+            }
+        )
+        replacement_track.pop("is_new_duration", None)
+        replacement_track["filename"] = filename
+        replacement_track["is_directory"] = False
+
+        changed = False
+        updated_tracks = []
+        for track in tracks:
+            if isinstance(track, dict) and (
+                track.get("videoId") == old_video_id
+                or track.get("filename") == filename
+            ):
+                merged = dict(old_track or track)
+                merged.update(replacement_track)
+                updated_tracks.append(merged)
+                changed = True
+            else:
+                updated_tracks.append(track)
+
+        if changed:
+            self.cache.set("/liked_songs_processed", updated_tracks)
+            self.cache.delete("/liked_songs_listing_with_attrs")
+            self.cache.delete("/liked_songs_listing")
+            self.cache.delete(f"video_id:{path}")
+
+    def _artist_title_from_track_or_path(
+        self, track: dict[str, Any] | None, path: str
+    ) -> tuple[str | None, str | None]:
+        if track:
+            artist = track.get("artist")
+            title = track.get("title")
+            if isinstance(artist, str) and isinstance(title, str):
+                return artist, title
+
+        stem = Path(path).stem
+        if " - " not in stem:
+            return None, None
+        artist, title = stem.split(" - ", 1)
+        return artist, title
+
+    def _match_score(self, candidate: dict[str, Any], artist: str, title: str) -> int:
+        score = 0
+        candidate_title = str(candidate.get("title") or "")
+        candidate_artists = " ".join(
+            a.get("name", "")
+            for a in candidate.get("artists", [])
+            if isinstance(a, dict)
+        )
+
+        title_norm = self._normalize(title)
+        candidate_title_norm = self._normalize(candidate_title)
+        artist_norm = self._normalize(artist)
+        candidate_artists_norm = self._normalize(candidate_artists)
+
+        if artist_norm and (
+            artist_norm in candidate_artists_norm
+            or candidate_artists_norm in artist_norm
+        ):
+            score += 3
+
+        if title_norm and title_norm == candidate_title_norm:
+            score += 5
+        else:
+            title_tokens = self._tokens(title_norm)
+            candidate_tokens = self._tokens(candidate_title_norm)
+            if title_tokens:
+                overlap = len(title_tokens & candidate_tokens)
+                score += min(overlap, 4)
+
+        return score
+
+    def _tokens(self, value: str) -> set[str]:
+        return {token for token in value.split() if len(token) >= 4}
+
+    def _normalize(self, value: str) -> str:
+        normalized = unicodedata.normalize("NFKD", value).casefold()
+        normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+        normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+        return " ".join(normalized.split())

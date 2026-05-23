@@ -177,6 +177,15 @@ class YouTubeMusicClient:
             self.logger.error(f"Search failed: {e}")
             return []
 
+    def rate_song(self, video_id: str, rating: str) -> dict[Any, Any] | None:
+        """Set a YouTube Music song rating."""
+        return self._call_with_json_retry(
+            f"rate song {video_id} as {rating}",
+            self.ytmusic.rate_song,
+            video_id,
+            rating,
+        )
+
     def _call_with_json_retry(self, operation: str, func, *args, **kwargs):
         for attempt in range(1, _API_ATTEMPTS + 1):
             try:

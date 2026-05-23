@@ -14,6 +14,7 @@ from ytmusicfs.cli import (
     LogsCommandHandler,
     MountCommandHandler,
     MountInspector,
+    RepairLikedSongsCommandHandler,
     ServiceCommandHandler,
     StatusCommandHandler,
     UnmountCommandHandler,
@@ -398,6 +399,14 @@ def test_cache_audio_stats_counts_files(tmp_path):
     handler = CacheCommandHandler(args, logging.getLogger("test"))
 
     assert handler.audio_stats() == (2, 5)
+
+
+def test_repair_liked_songs_requires_saved_browser(tmp_path):
+    args = make_command_args(tmp_path)
+
+    result = RepairLikedSongsCommandHandler(args, logging.getLogger("test")).execute()
+
+    assert result == 1
 
 
 def test_positive_int_rejects_zero():

@@ -179,7 +179,8 @@ class CacheManager:
                     )
                     with suppress(json.JSONDecodeError, TypeError):
                         metadata = json.loads(entry)
-                        path = metadata.get("path")
+                        data = metadata.get("data")
+                        path = data.get("path") if isinstance(data, dict) else None
                         if isinstance(path, str):
                             self.unavailable_paths.add(path)
         except sqlite3.Error as e:
@@ -766,6 +767,41 @@ class CacheManager:
             return None
         value = self.get(f"unavailable:{video_id}")
         return value if isinstance(value, dict) else None
+
+    def get_unavailable_tracks(self) -> list[dict[str, Any]]:
+        """Return all persisted unavailable-track metadata."""
+        tracks = []
+        try:
+            with self.lock:
+                self.cursor.execute(
+                    "SELECT entry FROM cache_entries WHERE key LIKE ?",
+                    (self.path_to_key("unavailable:") + "%",),
+                )
+                rows = self.cursor.fetchall()
+        except sqlite3.Error as e:
+            self.logger.warning(
+                "Failed to list unavailable-track cache: %s: %s",
+                e.__class__.__name__,
+                e,
+            )
+            return []
+
+        for (entry,) in rows:
+            with suppress(json.JSONDecodeError, KeyError, TypeError):
+                cache_data = json.loads(entry)
+                data = cache_data["data"]
+                if isinstance(data, dict):
+                    tracks.append(data)
+        return tracks
+
+    def clear_unavailable_track(self, video_id: str, path: str | None = None) -> None:
+        """Remove unavailable-track metadata after a successful repair."""
+        if not video_id:
+            return
+        self.unavailable_video_ids.discard(video_id)
+        if path:
+            self.unavailable_paths.discard(path)
+        self.delete(f"unavailable:{video_id}")
 
     def is_track_unavailable(self, video_id: str) -> bool:
         """Return whether a video ID is marked unavailable."""
