@@ -224,7 +224,6 @@ class YouTubeMusicFS(Operations):
         self.cache.mark_valid("/liked_songs", is_directory=True)
         self.cache.mark_valid("/albums", is_directory=True)
 
-        self.thread_manager.submit_task("api", self._automatic_refresh_after_mount)
         self.logger.info("YTMusicFS initialized successfully")
         self.logger.debug(
             f"Using browser: {browser}, cache_dir: {self.cache.cache_dir}"
@@ -966,6 +965,10 @@ class YouTubeMusicFS(Operations):
         finally:
             # Nothing to clean up as thread-local cache is no longer used
             pass
+
+    def init(self, path: str) -> None:
+        """Start post-mount background work after FUSE daemonization."""
+        self.thread_manager.submit_task("api", self._automatic_refresh_after_mount)
 
     def destroy(self, path: str) -> None:
         """Clean up when filesystem is unmounted.
