@@ -218,10 +218,11 @@ ytmusicfs cache refresh
 
 `repair` only handles tracks already marked unavailable in
 `/liked_songs`. For each one, it searches YouTube Music by artist and title,
-verifies the replacement can stream in the preferred high quality format, likes
-the replacement video, removes the like from the unavailable video, and updates
-the local cache. It skips weak matches and reports failed API calls instead of
-changing your account.
+verifies the replacement can stream in the preferred high quality format, then
+prints the exact account changes before asking for confirmation. If confirmed,
+it likes the replacement video, removes the like from the unavailable video,
+and updates the local cache. It skips weak matches and reports failed API calls
+instead of changing your account.
 
 Show logs:
 

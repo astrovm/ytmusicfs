@@ -541,7 +541,22 @@ class RepairCommandHandler:
                 sync_account=True,
                 logger=self.logger,
             )
-            stats = repairer.repair()
+            repairs, stats = repairer.plan_repairs()
+            if repairs:
+                print("Planned liked-song account changes:")
+                for repair in repairs:
+                    old_title = (repair.old_track or {}).get("title") or repair.path
+                    new_title = repair.replacement.get("title") or repair.new_video_id
+                    print(f"- {old_title}")
+                    print(f"  unlike: {repair.old_video_id}")
+                    print(f"  like:   {repair.new_video_id} ({new_title})")
+
+                answer = input("Apply these account changes? [y/N] ").strip().lower()
+                if answer not in {"y", "yes"}:
+                    stats["skipped"] += len(repairs)
+                    print("Repair cancelled. No account changes applied.")
+                else:
+                    stats["repaired"] = repairer.apply_repairs(repairs)
         finally:
             cache.close()
             thread_manager.shutdown(wait=True, timeout=10.0)

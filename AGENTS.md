@@ -105,10 +105,11 @@
   3. Normalize metadata and filenames in `processor.py`.
 - Repairing unavailable liked songs:
   1. Normal filesystem browsing may repair local liked-song cache entries, but must not mutate account likes.
-  2. Keep account mutations explicit through `ytmusicfs repair`.
+  2. Keep account mutations explicit and interactive through `ytmusicfs repair`.
   3. Verify replacement streams before calling `rate_song`.
-  4. Like the replacement before unliking the unavailable ID.
-  5. Skip weak matches; do not mutate account state on uncertain results.
+  4. Show planned old ID -> replacement ID changes before calling `rate_song`.
+  5. Like the replacement before unliking the unavailable ID.
+  6. Skip weak matches; do not mutate account state on uncertain results.
 - Performance work:
   - Reduce API calls first.
   - Use batch cache operations where available.

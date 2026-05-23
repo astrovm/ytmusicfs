@@ -64,6 +64,39 @@ class TestLikedSongsRepairer(unittest.TestCase):
             "old", "/liked_songs/Artist - Song.m4a"
         )
 
+    def test_plan_repairs_does_not_mutate_account_or_cache(self):
+        self.cache.get_unavailable_tracks.return_value = [
+            {"videoId": "old", "path": "/liked_songs/Artist - Song.m4a"}
+        ]
+        self.cache.get.return_value = [
+            {
+                "videoId": "old",
+                "artist": "Artist",
+                "title": "Song",
+                "filename": "Artist - Song.m4a",
+            }
+        ]
+        self.client.search.return_value = [
+            {
+                "videoId": "new",
+                "title": "Song",
+                "artists": [{"name": "Artist"}],
+                "duration": 123,
+            }
+        ]
+        self.yt_dlp_utils.extract_stream_url.return_value = {"format_id": "141"}
+
+        repairs, stats = self.repairer.plan_repairs()
+
+        self.assertEqual(
+            stats, {"checked": 1, "repaired": 0, "skipped": 0, "failed": 0}
+        )
+        self.assertEqual(len(repairs), 1)
+        self.assertEqual(repairs[0].old_video_id, "old")
+        self.assertEqual(repairs[0].new_video_id, "new")
+        self.client.rate_song.assert_not_called()
+        self.cache.clear_unavailable_track.assert_not_called()
+
     def test_repair_skips_when_replacement_stream_is_not_highest_quality(self):
         self.cache.get_unavailable_tracks.return_value = [
             {"videoId": "old", "path": "/liked_songs/Artist - Song.m4a"}

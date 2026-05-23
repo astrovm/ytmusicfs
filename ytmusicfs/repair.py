@@ -3,6 +3,7 @@
 import logging
 import re
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,15 @@ from ytmusicfs.cache import CacheManager
 from ytmusicfs.client import YouTubeMusicClient
 from ytmusicfs.processor import TrackProcessor
 from ytmusicfs.yt_dlp_utils import PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT, YTDLPUtils
+
+
+@dataclass(frozen=True)
+class LikedSongRepair:
+    path: str
+    old_video_id: str
+    new_video_id: str
+    old_track: dict[str, Any] | None
+    replacement: dict[str, Any]
 
 
 class LikedSongsRepairer:
@@ -34,7 +44,13 @@ class LikedSongsRepairer:
         self.logger = logger or logging.getLogger("YTMusicFS")
 
     def repair(self) -> dict[str, int]:
+        repairs, stats = self.plan_repairs()
+        stats["repaired"] = self.apply_repairs(repairs)
+        return stats
+
+    def plan_repairs(self) -> tuple[list[LikedSongRepair], dict[str, int]]:
         stats = {"checked": 0, "repaired": 0, "skipped": 0, "failed": 0}
+        repairs = []
         unavailable_tracks = [
             track
             for track in self.cache.get_unavailable_tracks()
@@ -44,8 +60,9 @@ class LikedSongsRepairer:
         for unavailable in unavailable_tracks:
             stats["checked"] += 1
             try:
-                if self._repair_one(unavailable):
-                    stats["repaired"] += 1
+                repair = self._plan_one(unavailable)
+                if repair:
+                    repairs.append(repair)
                 else:
                     stats["skipped"] += 1
             except Exception as exc:
@@ -55,39 +72,56 @@ class LikedSongsRepairer:
                     unavailable.get("path") or unavailable.get("videoId"),
                     exc,
                 )
-        return stats
+        return repairs, stats
 
-    def _repair_one(self, unavailable: dict[str, Any]) -> bool:
+    def apply_repairs(self, repairs: list[LikedSongRepair]) -> int:
+        repaired = 0
+        for repair in repairs:
+            if self.sync_account:
+                self.client.rate_song(repair.new_video_id, "LIKE")
+                self.client.rate_song(repair.old_video_id, "INDIFFERENT")
+            self._replace_cached_liked_track(
+                repair.old_video_id,
+                repair.path,
+                repair.old_track,
+                repair.replacement,
+            )
+            self.cache.clear_unavailable_track(repair.old_video_id, repair.path)
+            repaired += 1
+            self.logger.info(
+                "Repaired liked song %s locally%s: %s -> %s",
+                repair.path,
+                " and in account" if self.sync_account else "",
+                repair.old_video_id,
+                repair.new_video_id,
+            )
+        return repaired
+
+    def _plan_one(self, unavailable: dict[str, Any]) -> LikedSongRepair | None:
         old_video_id = str(unavailable.get("videoId") or "")
         path = str(unavailable.get("path") or "")
         if not old_video_id or not path:
-            return False
+            return None
 
         old_track = self._find_cached_liked_track(old_video_id, path)
         artist, title = self._artist_title_from_track_or_path(old_track, path)
         if not artist or not title:
             self.logger.info("Skipping %s: cannot derive artist/title", path)
-            return False
+            return None
 
         replacement = self._find_replacement(old_video_id, artist, title)
         if replacement is None:
             self.logger.info("Skipping %s: no verified replacement found", path)
-            return False
+            return None
 
         new_video_id = str(replacement["videoId"])
-        if self.sync_account:
-            self.client.rate_song(new_video_id, "LIKE")
-            self.client.rate_song(old_video_id, "INDIFFERENT")
-        self._replace_cached_liked_track(old_video_id, path, old_track, replacement)
-        self.cache.clear_unavailable_track(old_video_id, path)
-        self.logger.info(
-            "Repaired liked song %s locally%s: %s -> %s",
-            path,
-            " and in account" if self.sync_account else "",
-            old_video_id,
-            new_video_id,
+        return LikedSongRepair(
+            path=path,
+            old_video_id=old_video_id,
+            new_video_id=new_video_id,
+            old_track=old_track,
+            replacement=replacement,
         )
-        return True
 
     def _find_replacement(
         self, old_video_id: str, artist: str, title: str
