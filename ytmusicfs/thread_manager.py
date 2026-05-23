@@ -135,6 +135,10 @@ class ThreadManager:
         """
         return threading.RLock()
 
+    def is_shutdown(self) -> bool:
+        """Return whether shutdown has started."""
+        return self._shutdown
+
     def shutdown(self, wait: bool = True, timeout: float | None = None) -> bool:
         """
         Shutdown all thread pools managed by this ThreadManager.

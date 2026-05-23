@@ -122,9 +122,10 @@ ytmusicfs mount
 from. Replace `brave` with your browser if needed. Supported browsers include
 `brave`, `chrome`, `firefox`, and others supported by yt-dlp.
 
-On mount, YTMusicFS refreshes playlist and album roots immediately, then starts
-a background refresh for `/liked_songs` so recent likes and unlikes are picked
-up without blocking the mount.
+On mount, YTMusicFS refreshes playlist and album roots immediately. Expensive
+liked-song refresh runs later in a delayed background worker that waits for the
+mounted filesystem to be idle, so file managers do not wait on YouTube Music.
+The `/.ytmusicfs/status.json` file shows current refresh state.
 
 For debugging or custom paths:
 

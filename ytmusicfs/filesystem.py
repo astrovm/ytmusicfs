@@ -138,6 +138,16 @@ class YouTubeMusicFS(Operations):
             "range_cache_writes": 0,
             "unavailable_cache_hits": 0,
         }
+        self.last_fs_activity = time.time()
+        self.refresh_state_lock = self.thread_manager.create_lock()
+        self.refresh_state = {
+            "running": False,
+            "phase": "idle",
+            "last_started": None,
+            "last_finished": None,
+            "last_result": None,
+            "backoffs": 0,
+        }
 
         # Store the browser parameter
         self.browser = browser
@@ -214,9 +224,7 @@ class YouTubeMusicFS(Operations):
         self.cache.mark_valid("/liked_songs", is_directory=True)
         self.cache.mark_valid("/albums", is_directory=True)
 
-        self.thread_manager.submit_task(
-            "api", self.fetcher.refresh_liked_songs_on_mount
-        )
+        self.thread_manager.submit_task("api", self._automatic_refresh_after_mount)
         self.logger.info("YTMusicFS initialized successfully")
         self.logger.debug(
             f"Using browser: {browser}, cache_dir: {self.cache.cache_dir}"
@@ -767,12 +775,15 @@ class YouTubeMusicFS(Operations):
         """Return lightweight filesystem status for mounted debug reads."""
         with self.stats_lock:
             stats = dict(self.stats)
+        with self.refresh_state_lock:
+            refresh = dict(self.refresh_state)
         payload = {
             "version": __version__,
             "browser": self.browser,
             "cache_dir": str(self.cache.cache_dir),
             "generated_at": int(time.time()),
             "stats": stats,
+            "refresh": refresh,
             "recent_handles": self.file_handler.get_recent_handles(),
         }
         return (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
@@ -780,6 +791,68 @@ class YouTubeMusicFS(Operations):
     def _record_stat(self, name: str) -> None:
         with self.stats_lock:
             self.stats[name] = self.stats.get(name, 0) + 1
+            self.last_fs_activity = time.time()
+
+    def _automatic_refresh_after_mount(self) -> None:
+        """Refresh large library data only after the mounted FS is idle."""
+        self._set_refresh_state(
+            running=False,
+            phase="scheduled",
+            last_result="waiting for idle filesystem",
+        )
+        if not self._sleep_refresh_delay(15):
+            return
+
+        while time.time() - self.last_fs_activity < 8:
+            self._record_refresh_backoff()
+            if not self._sleep_refresh_delay(5):
+                return
+
+        self._set_refresh_state(
+            running=True,
+            phase="liked_songs",
+            last_started=int(time.time()),
+            last_result=None,
+        )
+        try:
+            self.fetcher.refresh_liked_songs_automatic()
+        except Exception as exc:
+            self.logger.warning("Automatic refresh failed: %s", exc)
+            self._set_refresh_state(
+                running=False,
+                phase="idle",
+                last_finished=int(time.time()),
+                last_result=f"failed: {exc}",
+            )
+            return
+
+        self._set_refresh_state(
+            running=False,
+            phase="idle",
+            last_finished=int(time.time()),
+            last_result="ok",
+        )
+
+    def _set_refresh_state(self, **updates: object) -> None:
+        with self.refresh_state_lock:
+            self.refresh_state.update(updates)
+
+    def _record_refresh_backoff(self) -> None:
+        with self.refresh_state_lock:
+            self.refresh_state["backoffs"] = int(self.refresh_state["backoffs"]) + 1
+            self.refresh_state["last_result"] = "backing off for filesystem activity"
+
+    def _sleep_refresh_delay(self, seconds: int) -> bool:
+        for _ in range(seconds):
+            if self.thread_manager.is_shutdown():
+                self._set_refresh_state(
+                    running=False,
+                    phase="idle",
+                    last_result="cancelled during shutdown",
+                )
+                return False
+            time.sleep(1)
+        return True
 
     def _get_real_file_size(self, path: str) -> int | None:
         cached_size = self.cache.get(f"filesize:{path}")

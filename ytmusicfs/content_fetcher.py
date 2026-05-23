@@ -229,8 +229,8 @@ class ContentFetcher:
         # Return just the filenames
         return [track["filename"] for track in tracks]
 
-    def refresh_liked_songs_on_mount(self) -> None:
-        """Refresh liked songs from YouTube Music after mount starts."""
+    def refresh_liked_songs_automatic(self) -> None:
+        """Refresh liked songs from YouTube Music outside FUSE request handling."""
         entry = next(
             (p for p in self.PLAYLIST_REGISTRY if p["type"] == "liked_songs"), None
         )
@@ -238,7 +238,7 @@ class ContentFetcher:
             self.logger.error("Liked songs not found")
             return
 
-        self.logger.info("Refreshing liked songs after mount")
+        self.logger.info("Refreshing liked songs in background")
         self.refresh_content(
             f"{entry['path']}_processed",
             lambda lim: self._fetch_playlist_tracks(entry["id"], lim),
@@ -272,24 +272,11 @@ class ContentFetcher:
             return [".", "..", *self._filter_unavailable_listing(cached_listing)]
 
         if playlist_type == "liked_songs":
-            entry = next(
-                (p for p in self.PLAYLIST_REGISTRY if p["type"] == "liked_songs"), None
-            )
-            if not entry:
-                self.logger.error("Liked songs not found")
+            tracks = self.cache.get("/liked_songs_processed")
+            if not isinstance(tracks, list):
+                self.logger.info("Liked songs cache is empty; waiting for refresh")
                 return [".", ".."]
-            tracks = self.refresh_content(
-                f"{entry['path']}_processed",
-                lambda lim: self._fetch_playlist_tracks(entry["id"], lim),
-                entry["path"],
-                expected_total_func=lambda: self._get_expected_total_count(entry["id"]),
-            )
-            if self._repair_unavailable_liked_songs_locally():
-                tracks = self.refresh_content(
-                    f"{entry['path']}_processed",
-                    lambda lim: self._fetch_playlist_tracks(entry["id"], lim),
-                    entry["path"],
-                )
+            self._cache_directory_listing_with_attrs("/liked_songs", tracks)
             return [".", ".."] + [
                 track["filename"]
                 for track in tracks

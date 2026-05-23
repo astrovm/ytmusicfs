@@ -99,6 +99,7 @@ class TestYouTubeMusicFS(unittest.TestCase):
         self.assertEqual(attrs["st_mode"], stat.S_IFREG | 0o444)
         self.assertIn(b'"browser": "brave"', content)
         self.assertIn(b'"recent_handles"', content)
+        self.assertIn(b'"refresh"', content)
         self.assertIn(b'"stats"', content)
 
     def test_status_counts_filesystem_operations(self):

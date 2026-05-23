@@ -554,10 +554,20 @@ class TestContentFetcher(unittest.TestCase):
         self.assertEqual(result, [".", "..", "good.m4a"])
         self.cache.is_track_unavailable.assert_not_called()
 
+    def test_readdir_liked_songs_uses_cache_without_network(self):
+        self.cache.get.return_value = [{"filename": "song.m4a", "videoId": "new"}]
+        self.cache.get_unavailable_tracks.return_value = [
+            {"videoId": "old", "path": "/liked_songs/song.m4a"}
+        ]
+
+        result = self.fetcher.readdir_playlist_by_type("liked_songs", "/liked_songs")
+
+        self.assertEqual(result, [".", "..", "song.m4a"])
+        self.yt_dlp_utils.extract_playlist_content.assert_not_called()
+        self.client.search.assert_not_called()
+
     @patch("ytmusicfs.repair.LikedSongsRepairer")
-    def test_readdir_liked_songs_repairs_unavailable_tracks_locally(
-        self, mock_repairer_class
-    ):
+    def test_automatic_liked_songs_refresh_repairs_locally(self, mock_repairer_class):
         self.fetcher.PLAYLIST_REGISTRY = [
             {
                 "name": "liked_songs",
@@ -566,10 +576,12 @@ class TestContentFetcher(unittest.TestCase):
                 "path": "/liked_songs",
             }
         ]
-        self.cache.get.return_value = [{"filename": "song.m4a", "videoId": "new"}]
+        self.cache.get.return_value = []
         self.cache.get_unavailable_tracks.return_value = [
             {"videoId": "old", "path": "/liked_songs/song.m4a"}
         ]
+        self.yt_dlp_utils.extract_playlist_content.return_value = []
+        self.yt_dlp_utils.get_last_playlist_total_count.return_value = 0
         mock_repairer = mock_repairer_class.return_value
         mock_repairer.repair.return_value = {
             "checked": 1,
@@ -578,9 +590,11 @@ class TestContentFetcher(unittest.TestCase):
             "failed": 0,
         }
 
-        result = self.fetcher.readdir_playlist_by_type("liked_songs", "/liked_songs")
+        self.fetcher.refresh_liked_songs_automatic()
 
-        self.assertEqual(result, [".", "..", "song.m4a"])
+        self.yt_dlp_utils.extract_playlist_content.assert_called_once_with(
+            "LM", 10000, "brave"
+        )
         mock_repairer_class.assert_called_once()
         self.assertFalse(mock_repairer_class.call_args.kwargs["sync_account"])
 
