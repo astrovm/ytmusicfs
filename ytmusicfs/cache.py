@@ -63,10 +63,10 @@ class CacheManager:
         self.conn.execute("PRAGMA journal_mode=WAL;")
 
         with self.lock:
-            self.cursor = self.conn.cursor()
+            cursor = self.conn.cursor()
 
             # Create tables if they don't exist
-            self.cursor.execute("""
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS cache_entries (
                     key TEXT PRIMARY KEY,
                     entry TEXT,
@@ -75,7 +75,7 @@ class CacheManager:
                 )
                 """)
 
-            self.cursor.execute("""
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS hash_mappings (
                     hashed_key TEXT PRIMARY KEY,
                     original_path TEXT
@@ -83,7 +83,7 @@ class CacheManager:
             """)
 
             # Create the new refresh_tracker table
-            self.cursor.execute("""
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS refresh_tracker (
                     key TEXT PRIMARY KEY,
                     last_refresh REAL,
@@ -92,7 +92,7 @@ class CacheManager:
                 """)
 
             # Create repair_notifications table for live cache invalidation
-            self.cursor.execute("""
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS repair_notifications (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp REAL NOT NULL,
@@ -148,11 +148,12 @@ class CacheManager:
         valid_paths_count = 0
 
         try:
+            cursor = self.conn.cursor()
             # Load paths from valid_dir entries
-            self.cursor.execute(
+            cursor.execute(
                 "SELECT key, entry_type FROM cache_entries WHERE key LIKE 'valid_dir:%'"
             )
-            for row in self.cursor.fetchall():
+            for row in cursor.fetchall():
                 path = self.key_to_path(row[0].replace("valid_dir:", ""))
                 self.valid_paths.add(path)
                 if row[1]:  # If entry_type exists
@@ -160,10 +161,10 @@ class CacheManager:
                 valid_paths_count += 1
 
             # Also load paths from exact_path entries
-            self.cursor.execute(
+            cursor.execute(
                 "SELECT key, entry_type FROM cache_entries WHERE key LIKE 'exact_path:%'"
             )
-            for row in self.cursor.fetchall():
+            for row in cursor.fetchall():
                 path = self.key_to_path(row[0].replace("exact_path:", ""))
                 self.valid_paths.add(path)
                 if row[1]:  # If entry_type exists
@@ -180,11 +181,12 @@ class CacheManager:
         """Load unavailable video IDs from SQLite into memory."""
         try:
             with self.lock:
-                self.cursor.execute(
+                cursor = self.conn.cursor()
+                cursor.execute(
                     "SELECT key, entry FROM cache_entries WHERE key LIKE ?",
                     (self.path_to_key("unavailable:") + "%",),
                 )
-                for key, entry in self.cursor.fetchall():
+                for key, entry in cursor.fetchall():
                     self.unavailable_video_ids.add(
                         self.key_to_path(key).replace("unavailable:", "", 1)
                     )
@@ -255,7 +257,8 @@ class CacheManager:
                 values.append((db_key, entry_str, entry_type, metadata_str))
 
             with self.lock:
-                self.cursor.executemany(
+                cursor = self.conn.cursor()
+                cursor.executemany(
                     """
                     INSERT OR REPLACE INTO cache_entries (key, entry, entry_type, metadata)
                     VALUES (?, ?, ?, ?)
@@ -372,10 +375,11 @@ class CacheManager:
             db_key = self.path_to_key(f"{prefix}{path}")
             try:
                 with self.lock:
-                    self.cursor.execute(
+                    cursor = self.conn.cursor()
+                    cursor.execute(
                         "SELECT entry FROM cache_entries WHERE key = ?", (db_key,)
                     )
-                    row = self.cursor.fetchone()
+                    row = cursor.fetchone()
                     if row:
                         # Entry exists, mark as valid for future lookups
                         is_dir = prefix == "valid_dir:"
@@ -423,10 +427,11 @@ class CacheManager:
         db_key = self.path_to_key(path)
         try:
             with self.lock:
-                self.cursor.execute(
+                cursor = self.conn.cursor()
+                cursor.execute(
                     "SELECT entry_type FROM cache_entries WHERE key = ?", (db_key,)
                 )
-                row = self.cursor.fetchone()
+                row = cursor.fetchone()
                 if row and row[0]:
                     # Cache in memory for future lookups
                     self.path_types[path] = row[0]
@@ -435,11 +440,11 @@ class CacheManager:
                 # Also check with different prefixes if not found directly
                 for prefix in ["exact_path:", "valid_dir:"]:
                     prefixed_key = self.path_to_key(f"{prefix}{path}")
-                    self.cursor.execute(
+                    cursor.execute(
                         "SELECT entry_type FROM cache_entries WHERE key = ?",
                         (prefixed_key,),
                     )
-                    entry_type_row = self.cursor.fetchone()
+                    entry_type_row = cursor.fetchone()
                     if entry_type_row and entry_type_row[0]:
                         # Cache in memory for future lookups
                         self.path_types[path] = entry_type_row[0]
@@ -447,11 +452,11 @@ class CacheManager:
 
                     # Additional check for keys that exist but don't have explicit type
                     if prefix in ["valid_dir:", "exact_path:"]:
-                        self.cursor.execute(
+                        cursor.execute(
                             "SELECT entry FROM cache_entries WHERE key = ?",
                             (prefixed_key,),
                         )
-                        entry_row = self.cursor.fetchone()
+                        entry_row = cursor.fetchone()
                         if entry_row:
                             # Skip inference if we only stored a placeholder with an
                             # unknown type. This allows a later explicit record to set
@@ -508,10 +513,11 @@ class CacheManager:
         db_key = self.path_to_key(path)
         try:
             with self.lock:
-                self.cursor.execute(
+                cursor = self.conn.cursor()
+                cursor.execute(
                     "SELECT entry FROM cache_entries WHERE key = ?", (db_key,)
                 )
-                row = self.cursor.fetchone()
+                row = cursor.fetchone()
                 if row:
                     cache_data = json.loads(row[0])
                     if time.time() - cache_data["time"] < self.cache_timeout:
@@ -550,7 +556,8 @@ class CacheManager:
             entry_str = json.dumps(cache_entry)
 
             with self.lock:
-                self.cursor.execute(
+                cursor = self.conn.cursor()
+                cursor.execute(
                     """
                     INSERT OR REPLACE INTO cache_entries (key, entry)
                     VALUES (?, ?)
@@ -597,7 +604,8 @@ class CacheManager:
             # Execute batch operation
             if values:
                 with self.lock:
-                    self.cursor.executemany(
+                    cursor = self.conn.cursor()
+                    cursor.executemany(
                         """
                         INSERT OR REPLACE INTO cache_entries (key, entry)
                         VALUES (?, ?)
@@ -626,9 +634,8 @@ class CacheManager:
         db_key = self.path_to_key(path)
         try:
             with self.lock:
-                self.cursor.execute(
-                    "DELETE FROM cache_entries WHERE key = ?", (db_key,)
-                )
+                cursor = self.conn.cursor()
+                cursor.execute("DELETE FROM cache_entries WHERE key = ?", (db_key,))
                 self.conn.commit()
         except sqlite3.Error as e:
             self.logger.warning(
@@ -692,7 +699,8 @@ class CacheManager:
         """Store a mapping between a hashed key and its original path."""
         try:
             with self.lock:
-                self.cursor.execute(
+                cursor = self.conn.cursor()
+                cursor.execute(
                     """
                     INSERT OR REPLACE INTO hash_mappings (hashed_key, original_path)
                     VALUES (?, ?)
@@ -709,11 +717,12 @@ class CacheManager:
         """Retrieve the original path for a hashed key."""
         try:
             with self.lock:
-                self.cursor.execute(
+                cursor = self.conn.cursor()
+                cursor.execute(
                     "SELECT original_path FROM hash_mappings WHERE hashed_key = ?",
                     (hashed_key,),
                 )
-                row = self.cursor.fetchone()
+                row = cursor.fetchone()
                 if row:
                     return row[0]
                 return None
@@ -784,11 +793,12 @@ class CacheManager:
         tracks = []
         try:
             with self.lock:
-                self.cursor.execute(
+                cursor = self.conn.cursor()
+                cursor.execute(
                     "SELECT entry FROM cache_entries WHERE key LIKE ?",
                     (self.path_to_key("unavailable:") + "%",),
                 )
-                rows = self.cursor.fetchall()
+                rows = cursor.fetchall()
         except sqlite3.Error as e:
             self.logger.warning(
                 "Failed to list unavailable-track cache: %s: %s",
@@ -896,10 +906,11 @@ class CacheManager:
         db_key = self.path_to_key(cache_key)
         try:
             with self.lock:
-                self.cursor.execute(
+                cursor = self.conn.cursor()
+                cursor.execute(
                     "SELECT entry FROM cache_entries WHERE key = ?", (db_key,)
                 )
-                row = self.cursor.fetchone()
+                row = cursor.fetchone()
                 if row:
                     try:
                         cache_data = json.loads(row[0])
@@ -1016,7 +1027,8 @@ class CacheManager:
             metadata_str = json.dumps(metadata)
 
             with self.lock:
-                self.cursor.execute(
+                cursor = self.conn.cursor()
+                cursor.execute(
                     """
                     INSERT OR REPLACE INTO cache_entries
                     (key, entry, entry_type, metadata)
@@ -1173,7 +1185,8 @@ class CacheManager:
 
         try:
             with self.lock:
-                self.cursor.execute(
+                cursor = self.conn.cursor()
+                cursor.execute(
                     """
                     INSERT OR REPLACE INTO refresh_tracker (key, last_refresh, status)
                     VALUES (?, ?, ?)
@@ -1201,11 +1214,12 @@ class CacheManager:
         try:
             db_key = self.path_to_key(key)
             with self.lock:
-                self.cursor.execute(
+                cursor = self.conn.cursor()
+                cursor.execute(
                     "SELECT last_refresh, status FROM refresh_tracker WHERE key = ?",
                     (db_key,),
                 )
-                row = self.cursor.fetchone()
+                row = cursor.fetchone()
                 if row:
                     return row[0], row[1]
             return None, None
@@ -1225,7 +1239,8 @@ class CacheManager:
             return
         try:
             with self.lock:
-                self.cursor.execute(
+                cursor = self.conn.cursor()
+                cursor.execute(
                     """
                     INSERT INTO repair_notifications (timestamp, repair_data)
                     VALUES (?, ?)
@@ -1259,10 +1274,11 @@ class CacheManager:
         notifications: list[tuple[int, list[dict[str, Any]]]] = []
         try:
             with self.lock:
-                self.cursor.execute(
+                cursor = self.conn.cursor()
+                cursor.execute(
                     "SELECT id, repair_data FROM repair_notifications WHERE processed = 0 ORDER BY id"
                 )
-                rows = self.cursor.fetchall()
+                rows = cursor.fetchall()
             for row_id, repair_data in rows:
                 try:
                     repairs = json.loads(repair_data)
@@ -1290,8 +1306,9 @@ class CacheManager:
             return
         try:
             with self.lock:
+                cursor = self.conn.cursor()
                 placeholders = ",".join("?" * len(ids))
-                self.cursor.execute(
+                cursor.execute(
                     f"DELETE FROM repair_notifications WHERE id IN ({placeholders})",
                     ids,
                 )
@@ -1343,9 +1360,10 @@ class CacheManager:
         """Clear all metadata from the persistent cache and in-memory state."""
         try:
             with self.lock:
-                self.cursor.execute("DELETE FROM cache_entries")
-                self.cursor.execute("DELETE FROM hash_mappings")
-                self.cursor.execute("DELETE FROM refresh_tracker")
+                cursor = self.conn.cursor()
+                cursor.execute("DELETE FROM cache_entries")
+                cursor.execute("DELETE FROM hash_mappings")
+                cursor.execute("DELETE FROM refresh_tracker")
                 self.conn.commit()
         except sqlite3.Error as e:
             self.logger.warning(
@@ -1384,7 +1402,6 @@ class CacheManager:
                     self.conn.commit()
                     self.conn.close()
                     self.conn = None
-                    self.cursor = None
             self.logger.debug("Cache database connection closed")
         except Exception as e:
             self.logger.error(f"Error closing cache: {e}")
