@@ -332,7 +332,6 @@ class YouTubeMusicFS(Operations):
             if path == "/albums":
                 return self.fetcher.readdir_playlist_by_type("album", "/albums")
             if path == "/liked_songs":
-                self._check_repair_notifications()
                 return self.fetcher.readdir_playlist_by_type(
                     "liked_songs", "/liked_songs"
                 )
@@ -478,9 +477,6 @@ class YouTubeMusicFS(Operations):
             "st_mtime": time.time(),
             "st_ctime": time.time(),
         }
-
-        if path.startswith("/liked_songs"):
-            self._check_repair_notifications()
 
         audio_video_id = None
         if path.endswith(".m4a"):
@@ -1012,6 +1008,19 @@ class YouTubeMusicFS(Operations):
         """Start post-mount background work after FUSE daemonization."""
         self._check_repair_notifications()
         self.thread_manager.submit_task("api", self._automatic_refresh_after_mount)
+        self.thread_manager.submit_task("api", self._poll_repair_notifications)
+
+    def _poll_repair_notifications(self) -> None:
+        """Background thread that periodically checks for repair notifications."""
+        while not self.thread_manager.is_shutdown():
+            try:
+                self._check_repair_notifications()
+            except Exception as exc:
+                self.logger.warning("Error polling repair notifications: %s", exc)
+            for _ in range(5):
+                if self.thread_manager.is_shutdown():
+                    return
+                time.sleep(1)
 
     def destroy(self, path: str) -> None:
         """Clean up when filesystem is unmounted.
