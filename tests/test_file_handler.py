@@ -400,6 +400,10 @@ class TestFileHandler(unittest.TestCase):
             (self.cache_dir / "audio" / f"{video_id}.m4a").stat().st_size,
             FileHandler.CACHE_START_BYTES,
         )
+        self.assertEqual(
+            (self.cache_dir / "audio" / f"{video_id}.status").read_text(),
+            "partial:141",
+        )
 
     def test_read_uses_progressive_audio_cache_before_remote_stream(self):
         path = "/playlists/my_playlist/song.m4a"
@@ -407,11 +411,38 @@ class TestFileHandler(unittest.TestCase):
         fh = self.file_handler.open(path, video_id)
         cache_path = self.cache_dir / "audio" / f"{video_id}.m4a"
         cache_path.write_bytes(b"abcdef")
+        cache_path.with_name(f"{video_id}.status").write_text("partial:141")
+        self.file_handler.open_files[fh]["format_id"] = "141"
 
         data = self.file_handler.read(path, 3, 2, fh)
 
         self.assertEqual(data, b"cde")
         self.yt_dlp_utils.extract_stream_url_async.assert_not_called()
+
+    def test_read_ignores_progressive_audio_cache_from_other_format(self):
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        fh = self.file_handler.open(path, video_id)
+        cache_path = self.cache_dir / "audio" / f"{video_id}.m4a"
+        cache_path.write_bytes(b"old-format")
+        cache_path.with_name(f"{video_id}.status").write_text("partial:140")
+
+        future = Future()
+        future.set_result(
+            {
+                "status": "success",
+                "stream_url": "https://example.com/audio.m4a",
+                "format_id": "141",
+                "http_headers": {},
+                "cookies": {},
+            }
+        )
+        self.yt_dlp_utils.extract_stream_url_async.return_value = future
+
+        with patch.object(self.file_handler, "_stream_content", return_value=b"fresh"):
+            data = self.file_handler.read(path, 5, 0, fh)
+
+        self.assertEqual(data, b"fresh")
 
     def test_read_ignores_failed_progressive_audio_cache(self):
         path = "/playlists/my_playlist/song.m4a"
@@ -457,6 +488,36 @@ class TestFileHandler(unittest.TestCase):
         self.assertEqual(data, b"next")
         self.assertEqual(cache_path.read_bytes(), b"seed")
 
+    def test_read_starts_cache_download_for_best_available_non_preferred_format(self):
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        fh = self.file_handler.open(path, video_id)
+
+        future = Future()
+        future.set_result(
+            {
+                "status": "success",
+                "stream_url": "https://example.com/audio.m4a",
+                "format_id": "140",
+                "http_headers": {},
+                "cookies": {},
+            }
+        )
+        self.yt_dlp_utils.extract_stream_url_async.return_value = future
+
+        with patch.object(
+            self.file_handler,
+            "_stream_content",
+            return_value=b"a" * FileHandler.CACHE_START_BYTES,
+        ):
+            self.file_handler.read(path, FileHandler.CACHE_START_BYTES, 0, fh)
+
+        self.file_handler.downloader.download_file.assert_called_once()
+        self.assertEqual(
+            self.file_handler.downloader.download_file.call_args.args[:4],
+            (video_id, "https://example.com/audio.m4a", path, "140"),
+        )
+
     def test_precache_extracts_stream_and_downloads_now(self):
         path = "/playlists/my_playlist/song.m4a"
         video_id = "abc123"
@@ -490,7 +551,7 @@ class TestFileHandler(unittest.TestCase):
         self.assertEqual(args.kwargs["headers"]["User-Agent"], "UnitTest")
         self.assertEqual(args.kwargs["cookies"], {"CONSENT": "YES+"})
 
-    def test_precache_skips_non_preferred_format(self):
+    def test_precache_downloads_best_available_non_preferred_format(self):
         path = "/playlists/my_playlist/song.m4a"
         video_id = "abc123"
         future = Future()
@@ -507,8 +568,12 @@ class TestFileHandler(unittest.TestCase):
 
         result = self.file_handler.precache(path, video_id)
 
-        self.assertFalse(result)
-        self.file_handler.downloader.download_file_now.assert_not_called()
+        self.assertTrue(result)
+        self.file_handler.downloader.download_file_now.assert_called_once()
+        self.assertEqual(
+            self.file_handler.downloader.download_file_now.call_args.args[:4],
+            (video_id, "https://example.com/audio.m4a", path, "140"),
+        )
 
     def test_cached_audio_accepts_any_complete_format_status(self):
         video_id = "abc123"
@@ -657,7 +722,9 @@ class TestFileHandler(unittest.TestCase):
         )
         self.file_handler.record_stat_callback.assert_any_call("stream_info_cache_hits")
 
-    def test_reopened_probe_read_uses_progressive_cache_before_stream_extraction(self):
+    def test_reopened_probe_read_uses_format_keyed_cache_before_stream_extraction(
+        self,
+    ):
         path = "/liked_songs/song.m4a"
         video_id = "abc123"
         first_fh = self.file_handler.open(path, video_id)
@@ -682,7 +749,7 @@ class TestFileHandler(unittest.TestCase):
         )
         self.yt_dlp_utils.extract_stream_url_async.assert_not_called()
         self.file_handler.record_stat_callback.assert_called_once_with(
-            "progressive_cache_hits"
+            "range_cache_hits"
         )
 
     def test_range_cache_serves_short_eof_read(self):

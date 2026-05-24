@@ -279,7 +279,7 @@ class FileHandler:
                     return f.read(size)
 
             cached_data = self._read_available_audio_cache(
-                cache_path, video_id, offset, size
+                cache_path, video_id, file_info.get("format_id"), offset, size
             )
             if cached_data is not None:
                 self._record_stat("progressive_cache_hits")
@@ -470,15 +470,6 @@ class FileHandler:
         format_id = file_info.get("format_id")
         if not isinstance(format_id, str) or not format_id:
             return
-        if format_id != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT:
-            self.logger.debug(
-                "Skipping background download for %s: non-preferred format %s",
-                video_id,
-                format_id,
-            )
-            file_info["cache_started"] = True
-            return
-
         self.downloader.download_file(
             video_id,
             file_info["stream_url"],
@@ -516,14 +507,6 @@ class FileHandler:
         format_id = file_info.get("format_id")
         stream_url = file_info.get("stream_url")
         if not isinstance(format_id, str) or not isinstance(stream_url, str):
-            return False
-
-        if format_id != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT:
-            self.logger.warning(
-                "Skipping precache for %s: non-preferred format %s",
-                video_id,
-                format_id,
-            )
             return False
 
         self.downloader.download_file_now(
@@ -712,7 +695,7 @@ class FileHandler:
 
     @staticmethod
     def _read_available_audio_cache(
-        cache_path: Path, video_id: str, offset: int, size: int
+        cache_path: Path, video_id: str, format_id: Any, offset: int, size: int
     ) -> bytes | None:
         if size <= 0:
             return b""
@@ -721,6 +704,10 @@ class FileHandler:
             status = status_path.read_text() if status_path.exists() else ""
             if status == "failed" or status.startswith("failed:"):
                 return None
+            if status.startswith("partial:"):
+                cached_format = status.removeprefix("partial:")
+                if cached_format != format_id:
+                    return None
         except OSError:
             return None
         try:
@@ -745,6 +732,7 @@ class FileHandler:
             return
 
         cache_path = Path(file_info["cache_path"])
+        status_path = cache_path.with_name(f"{file_info['video_id']}.status")
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             current_size = cache_path.stat().st_size if cache_path.exists() else 0
@@ -755,6 +743,7 @@ class FileHandler:
             start = max(current_size - offset, 0)
             with cache_path.open("ab") as cached:
                 cached.write(data[start:])
+            status_path.write_text(f"partial:{format_id}")
             self._record_stat("progressive_cache_writes")
         except OSError as exc:
             self.logger.debug(

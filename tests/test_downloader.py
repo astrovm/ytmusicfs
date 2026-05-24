@@ -190,6 +190,36 @@ class TestDownloaderCookieMerging(unittest.TestCase):
         self.assertNotIn("Range", mock_head.call_args.kwargs["headers"])
         self.assertNotIn("Range", mock_get.call_args.kwargs["headers"])
 
+    @patch("ytmusicfs.downloader.requests.get")
+    @patch("ytmusicfs.downloader.requests.head")
+    def test_download_task_keeps_partial_cache_after_failure(self, mock_head, mock_get):
+        video_id = "abc123"
+        stream_url = "https://example.com/audio.m4a"
+        path = "/playlists/test/song.m4a"
+        audio_path = self.cache_dir / "audio" / f"{video_id}.m4a"
+        status_path = self.cache_dir / "audio" / f"{video_id}.status"
+        partial = b"\x00\x00\x00\x18ftypm4a " + (b"\x00" * 90)
+        audio_path.write_bytes(partial)
+        status_path.write_text("partial:140")
+
+        head_response = MagicMock()
+        head_response.status_code = 503
+        head_response.headers = {}
+        mock_head.return_value = head_response
+
+        result = self.downloader._download_task(
+            video_id=video_id,
+            stream_url=stream_url,
+            path=path,
+            format_id="140",
+            retries=1,
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(audio_path.read_bytes(), partial)
+        self.assertEqual(status_path.read_text(), "failed:140")
+        mock_get.assert_not_called()
+
     def test_download_task_skips_downgrade_from_141_to_140(self):
         video_id = "abc123"
         path = "/playlists/test/song.m4a"

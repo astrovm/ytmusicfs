@@ -187,7 +187,7 @@ class Downloader:
                 }
             return True
 
-        if cached_format not in (None, format_id) or status_text.startswith("failed:"):
+        if cached_format not in (None, format_id):
             audio_path.unlink(missing_ok=True)
         downloaded = audio_path.stat().st_size if audio_path.exists() else 0
         with self.lock:
@@ -310,7 +310,6 @@ class Downloader:
                         self.active_downloads[video_id]["status"] = "failed"
                     with status_path.open("w") as sf:
                         sf.write(f"failed:{format_id}")
-                    audio_path.unlink(missing_ok=True)
                     return False
 
                 # Only sleep between retries if this wasn't an explicit stop
