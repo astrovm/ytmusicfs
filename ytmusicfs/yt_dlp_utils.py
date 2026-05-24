@@ -334,12 +334,11 @@ class YTDLPUtils:
         ydl_opts = self._stream_extraction_options(browser)
 
         info = None
-        cached_cookies = False
         for attempt in range(1, STREAM_EXTRACTION_ATTEMPTS + 1):
             try:
                 with YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
-                    cached_cookies = self._cache_browser_cookies(browser, ydl)
+                    self._cache_browser_cookies(browser, ydl)
                 break
             except Exception as exc:
                 if not self._is_transient_stream_error(exc):
@@ -358,7 +357,7 @@ class YTDLPUtils:
             raise RuntimeError(f"Failed to extract stream URL for {video_id}")
 
         result = self._stream_result_from_info(info)
-        if self._should_retry_with_cached_cookies(result, cached_cookies):
+        if self._should_retry_with_cookiefile(result, browser):
             retry_result = self._retry_stream_url_with_cached_cookies(video_id, browser)
             if retry_result:
                 self.logger.info(
@@ -375,11 +374,12 @@ class YTDLPUtils:
         )
         return result
 
-    def _should_retry_with_cached_cookies(self, result, cached_cookies):
-        return (
-            cached_cookies
-            and result.get("format_id") != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT
-        )
+    def _should_retry_with_cookiefile(self, result, browser: str) -> bool:
+        if result.get("format_id") == PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT:
+            return False
+        with self._cookie_lock:
+            cookie_file = self._browser_cookie_files.get(browser)
+        return bool(cookie_file and Path(cookie_file).exists())
 
     def _is_transient_stream_error(self, exc: Exception) -> bool:
         error = str(exc)
