@@ -89,6 +89,19 @@ class TestDownloaderCookieMerging(unittest.TestCase):
         with audio_path.open("rb") as f:
             self.assertTrue(f.read().startswith(b"\x00\x00\x00\x18ftyp"))
 
+    def test_download_file_now_runs_in_current_worker(self):
+        with patch.object(self.downloader, "_download_task", return_value=True) as task:
+            result = self.downloader.download_file_now(
+                "abc123",
+                "https://example.com/audio.m4a",
+                "/liked_songs/song.m4a",
+                "141",
+            )
+
+        self.assertTrue(result)
+        self.thread_manager.submit_task.assert_not_called()
+        task.assert_called_once()
+
     @patch("ytmusicfs.downloader.requests.get")
     @patch("ytmusicfs.downloader.requests.head")
     def test_download_task_resumes_existing_progressive_cache(

@@ -7,6 +7,7 @@ import os
 import stat
 import time
 import traceback
+from collections import deque
 from contextlib import suppress
 from typing import Any
 
@@ -25,6 +26,10 @@ from ytmusicfs.repair import LikedSongsRepairer
 from ytmusicfs.thread_manager import ThreadManager
 from ytmusicfs.yt_dlp_utils import YTDLPUtils
 
+FUSE_ATTR_TIMEOUT = 5
+FUSE_ENTRY_TIMEOUT = 5
+FUSE_NEGATIVE_TIMEOUT = 1
+
 
 class YouTubeMusicFS(Operations):
     """YouTube Music FUSE filesystem implementation."""
@@ -33,6 +38,11 @@ class YouTubeMusicFS(Operations):
     STATUS_FILE = "/.ytmusicfs/status.json"
     MIN_AUDIO_SIZE = 1024 * 1024
     ESTIMATED_BYTES_PER_SECOND = 16 * 1024
+    FUSE_ATTR_TIMEOUT = FUSE_ATTR_TIMEOUT
+    FUSE_ENTRY_TIMEOUT = FUSE_ENTRY_TIMEOUT
+    FUSE_NEGATIVE_TIMEOUT = FUSE_NEGATIVE_TIMEOUT
+    PRECACHE_TRACKS_PER_DIRECTORY = 8
+    PRECACHE_IDLE_SECONDS = 2.0
 
     def __init__(
         self,
@@ -129,6 +139,10 @@ class YouTubeMusicFS(Operations):
         self.hot_attrs_by_path: dict[str, dict[str, Any]] = {}
         self.hot_video_ids_by_path: dict[str, str] = {}
         self.hot_dir_entries: dict[str, list[str]] = {}
+        self.precache_lock = self.thread_manager.create_lock()
+        self.precache_queue: deque[tuple[str, str]] = deque()
+        self.precache_queued_paths: set[str] = set()
+        self.precache_worker_running = False
         self.stats_lock = self.thread_manager.create_lock()
         self.stats = {
             "open": 0,
@@ -152,6 +166,11 @@ class YouTubeMusicFS(Operations):
             "range_cache_hits": 0,
             "range_cache_writes": 0,
             "unavailable_cache_hits": 0,
+            "precache_queued": 0,
+            "precache_started": 0,
+            "precache_completed": 0,
+            "precache_skipped": 0,
+            "precache_failed": 0,
         }
         self.last_fs_activity = time.time()
         self.refresh_state_lock = self.thread_manager.create_lock()
@@ -365,6 +384,78 @@ class YouTubeMusicFS(Operations):
         with self.hot_metadata_lock:
             return self.hot_video_ids_by_path.get(path)
 
+    def _resolve_video_id(self, path: str) -> str:
+        video_id = self._get_hot_video_id(path)
+        if video_id:
+            self._record_stat("video_id_hot_hits")
+            return video_id
+        self._record_stat("video_id_fallbacks")
+        return self.metadata_manager.get_video_id(path)
+
+    def _schedule_precache_for_entries(self, dir_path: str, entries: list[str]) -> None:
+        candidates: list[tuple[str, str]] = []
+        unavailable_ids = self.cache.get_unavailable_video_ids()
+        for name in entries:
+            if name in (".", "..") or not name.endswith(".m4a"):
+                continue
+            path = f"{dir_path}/{name}"
+            video_id = self._get_hot_video_id(path)
+            if not video_id or video_id in unavailable_ids:
+                continue
+            candidates.append((path, video_id))
+            if len(candidates) >= self.PRECACHE_TRACKS_PER_DIRECTORY:
+                break
+        if not candidates:
+            return
+
+        start_worker = False
+        with self.precache_lock:
+            for path, video_id in candidates:
+                if path in self.precache_queued_paths:
+                    continue
+                self.precache_queue.append((path, video_id))
+                self.precache_queued_paths.add(path)
+                self._record_stat("precache_queued")
+            if self.precache_queue and not self.precache_worker_running:
+                self.precache_worker_running = True
+                start_worker = True
+
+        if start_worker:
+            self.thread_manager.submit_task("io", self._run_precache_worker)
+
+    def _run_precache_worker(self) -> None:
+        try:
+            while True:
+                while time.time() - self.last_fs_activity < self.PRECACHE_IDLE_SECONDS:
+                    time.sleep(0.25)
+
+                with self.precache_lock:
+                    if not self.precache_queue:
+                        self.precache_worker_running = False
+                        return
+                    path, video_id = self.precache_queue.popleft()
+                    self.precache_queued_paths.discard(path)
+
+                if self.cache.is_track_unavailable(video_id):
+                    self._record_stat("precache_skipped")
+                    continue
+
+                try:
+                    self._record_stat("precache_started")
+                    if self.file_handler.precache(path, video_id):
+                        self._record_stat("precache_completed")
+                    else:
+                        self._record_stat("precache_skipped")
+                except Exception as exc:
+                    self._record_stat("precache_failed")
+                    self.logger.debug("Pre-cache failed for %s: %s", path, exc)
+        finally:
+            with self.precache_lock:
+                if self.precache_queue:
+                    self.thread_manager.submit_task("io", self._run_precache_worker)
+                else:
+                    self.precache_worker_running = False
+
     def _clear_hot_metadata(self) -> None:
         with self.hot_metadata_lock:
             self.hot_attrs_by_path.clear()
@@ -408,18 +499,25 @@ class YouTubeMusicFS(Operations):
         if hot_listing is not None:
             self._record_stat("readdir_hot_hits")
             self._record_elapsed("readdir_total_ms", start_time)
+            self._schedule_precache_for_entries(path, hot_listing)
             return hot_listing
 
         if path in ["/playlists", "/albums", "/liked_songs"]:
             # Make a direct call to the appropriate content function
             if path == "/playlists":
-                return self.fetcher.readdir_playlist_by_type("playlist", "/playlists")
+                result = self.fetcher.readdir_playlist_by_type("playlist", "/playlists")
+                self._schedule_precache_for_entries(path, result)
+                return result
             if path == "/albums":
-                return self.fetcher.readdir_playlist_by_type("album", "/albums")
+                result = self.fetcher.readdir_playlist_by_type("album", "/albums")
+                self._schedule_precache_for_entries(path, result)
+                return result
             if path == "/liked_songs":
-                return self.fetcher.readdir_playlist_by_type(
+                result = self.fetcher.readdir_playlist_by_type(
                     "liked_songs", "/liked_songs"
                 )
+                self._schedule_precache_for_entries(path, result)
+                return result
 
         # Priority 2: Check if we have a cached directory listing
         cache_key = f"{path}_listing_with_attrs"
@@ -428,7 +526,9 @@ class YouTubeMusicFS(Operations):
             self._record_stat("readdir_fallbacks")
             self._update_hot_metadata(path, directory_listing)
             self._record_elapsed("readdir_total_ms", start_time)
-            return [".", "..", *self._filter_unavailable_listing(directory_listing)]
+            result = [".", "..", *self._filter_unavailable_listing(directory_listing)]
+            self._schedule_precache_for_entries(path, result)
+            return result
 
         # Priority 3: Check operation cooldown cache for very recent requests
         operation_key = f"readdir:{path}"
@@ -517,6 +617,7 @@ class YouTubeMusicFS(Operations):
             with self.last_access_lock:
                 self.last_access_results[operation_key] = result
 
+            self._schedule_precache_for_entries(path, result)
             return result
         except Exception as e:
             self.logger.error(f"Error in readdir for {path}: {e}")
@@ -574,12 +675,8 @@ class YouTubeMusicFS(Operations):
         if path.endswith(".m4a"):
             if self.cache.is_path_unavailable(path):
                 raise FuseOSError(errno.ENOENT)
-            audio_video_id = self._get_hot_video_id(path)
-            if audio_video_id:
-                self._record_stat("video_id_hot_hits")
-            else:
-                with suppress(OSError):
-                    audio_video_id = self._get_video_id(path)
+            with suppress(OSError):
+                audio_video_id = self._resolve_video_id(path)
             if audio_video_id and self.cache.is_track_unavailable(audio_video_id):
                 raise FuseOSError(errno.ENOENT)
 
@@ -894,6 +991,7 @@ class YouTubeMusicFS(Operations):
             "readdir_avg_ms": self._average_ms(stats, "readdir_total_ms", "readdir"),
             "read_avg_ms": self._average_ms(stats, "read_total_ms", "read"),
         }
+        profiler = self._get_profiler_summary(stats, timings)
         with self.refresh_state_lock:
             refresh = dict(self.refresh_state)
         payload = {
@@ -903,10 +1001,38 @@ class YouTubeMusicFS(Operations):
             "generated_at": int(time.time()),
             "stats": stats,
             "timings": timings,
+            "profiler": profiler,
             "refresh": refresh,
             "recent_handles": self.file_handler.get_recent_handles(),
         }
         return (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+
+    def _get_profiler_summary(
+        self, stats: dict[str, Any], timings: dict[str, float]
+    ) -> dict[str, Any]:
+        with self.precache_lock:
+            precache_queue_depth = len(self.precache_queue)
+            precache_active = self.precache_worker_running
+        return {
+            "getattr_hot_hit_rate": self._rate(
+                stats.get("getattr_hot_hits", 0),
+                stats.get("getattr_hot_hits", 0) + stats.get("getattr_fallbacks", 0),
+            ),
+            "readdir_hot_hit_rate": self._rate(
+                stats.get("readdir_hot_hits", 0),
+                stats.get("readdir_hot_hits", 0) + stats.get("readdir_fallbacks", 0),
+            ),
+            "video_id_hot_hit_rate": self._rate(
+                stats.get("video_id_hot_hits", 0),
+                stats.get("video_id_hot_hits", 0) + stats.get("video_id_fallbacks", 0),
+            ),
+            "stream_extractions": stats.get("stream_extractions", 0),
+            "probe_eof_skips": stats.get("probe_eof_skips", 0),
+            "range_416_eof": stats.get("range_416_eof", 0),
+            "precache_queue_depth": precache_queue_depth,
+            "precache_active": precache_active,
+            "slowest_operation": max(timings, key=timings.get),
+        }
 
     @staticmethod
     def _average_ms(stats: dict[str, Any], total_key: str, count_key: str) -> float:
@@ -914,6 +1040,12 @@ class YouTubeMusicFS(Operations):
         if not count:
             return 0.0
         return round(float(stats.get(total_key, 0)) / float(count), 3)
+
+    @staticmethod
+    def _rate(numerator: Any, denominator: Any) -> float:
+        if not denominator:
+            return 0.0
+        return round(float(numerator) / float(denominator), 3)
 
     def _record_stat(self, name: str) -> None:
         with self.stats_lock:
@@ -1290,6 +1422,9 @@ def mount_ytmusicfs(
         "fsname": "ytmusicfs",
         "uid": os.getuid(),  # Set mount UID to current user
         "gid": os.getgid(),  # Set mount GID to current group
+        "attr_timeout": FUSE_ATTR_TIMEOUT,
+        "entry_timeout": FUSE_ENTRY_TIMEOUT,
+        "negative_timeout": FUSE_NEGATIVE_TIMEOUT,
     }
 
     FUSE(

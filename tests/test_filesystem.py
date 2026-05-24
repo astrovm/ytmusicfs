@@ -4,6 +4,7 @@ import errno
 import logging
 import os
 import stat
+import threading
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -11,7 +12,7 @@ from unittest.mock import Mock, patch
 from fuse import FuseOSError
 
 # Import the class to test
-from ytmusicfs.filesystem import YouTubeMusicFS
+from ytmusicfs.filesystem import YouTubeMusicFS, mount_ytmusicfs
 
 
 class TestYouTubeMusicFS(unittest.TestCase):
@@ -99,6 +100,7 @@ class TestYouTubeMusicFS(unittest.TestCase):
         self.assertEqual(attrs["st_mode"], stat.S_IFREG | 0o444)
         self.assertIn(b'"browser": "brave"', content)
         self.assertIn(b'"recent_handles"', content)
+        self.assertIn(b'"profiler"', content)
         self.assertIn(b'"refresh"', content)
         self.assertIn(b'"stats"', content)
 
@@ -114,6 +116,24 @@ class TestYouTubeMusicFS(unittest.TestCase):
         self.assertIn(b'"getattr": 1', status)
         self.assertIn(b'"open": 0', status)
         self.assertIn(b'"read": 0', status)
+
+    def test_status_profiler_summarizes_hot_hit_rates(self):
+        self.fs.stats.update(
+            {
+                "getattr_hot_hits": 3,
+                "getattr_fallbacks": 1,
+                "readdir_hot_hits": 1,
+                "readdir_fallbacks": 1,
+                "video_id_hot_hits": 4,
+                "video_id_fallbacks": 0,
+            }
+        )
+
+        status = self.fs.read("/.ytmusicfs/status.json", 4096, 0, 0)
+
+        self.assertIn(b'"getattr_hot_hit_rate": 0.75', status)
+        self.assertIn(b'"readdir_hot_hit_rate": 0.5', status)
+        self.assertIn(b'"video_id_hot_hit_rate": 1.0', status)
 
     def test_status_file_size_stays_stable_while_reading(self):
         attrs = self.fs.getattr("/.ytmusicfs/status.json")
@@ -177,6 +197,44 @@ class TestYouTubeMusicFS(unittest.TestCase):
 
         # Verify router was called
         self.mock_router.route.assert_called_once_with(playlist_path)
+
+    def test_readdir_schedules_idle_precache_for_audio_entries(self):
+        playlist_path = "/playlists/my_playlist"
+        self.fs.precache_lock = threading.RLock()
+        self.fs.hot_video_ids_by_path[f"{playlist_path}/song1.m4a"] = "video1"
+        self.fs.hot_video_ids_by_path[f"{playlist_path}/song2.m4a"] = "video2"
+        self.mock_cache.get.return_value = None
+        self.mock_router.validate_path.return_value = True
+        self.mock_router.route.return_value = [".", "..", "song1.m4a", "song2.m4a"]
+
+        self.fs.readdir(playlist_path, None)
+
+        self.assertEqual(
+            list(self.fs.precache_queue),
+            [
+                (f"{playlist_path}/song1.m4a", "video1"),
+                (f"{playlist_path}/song2.m4a", "video2"),
+            ],
+        )
+        self.mock_thread_manager.submit_task.assert_any_call(
+            "io", self.fs._run_precache_worker
+        )
+
+    def test_mount_uses_short_kernel_metadata_ttls(self):
+        attr_timeout = YouTubeMusicFS.FUSE_ATTR_TIMEOUT
+        entry_timeout = YouTubeMusicFS.FUSE_ENTRY_TIMEOUT
+        negative_timeout = YouTubeMusicFS.FUSE_NEGATIVE_TIMEOUT
+        with (
+            patch("ytmusicfs.filesystem.FUSE") as mock_fuse,
+            patch("ytmusicfs.filesystem.YouTubeMusicFS") as mock_fs_class,
+        ):
+            mount_ytmusicfs("/tmp/ytmusic", cache_dir="/tmp/cache", browser="brave")
+
+        mock_fs_class.assert_called_once_with(cache_dir="/tmp/cache", browser="brave")
+        kwargs = mock_fuse.call_args.kwargs
+        self.assertEqual(kwargs["attr_timeout"], attr_timeout)
+        self.assertEqual(kwargs["entry_timeout"], entry_timeout)
+        self.assertEqual(kwargs["negative_timeout"], negative_timeout)
 
     def test_getattr_root(self):
         """Test getting attributes of the root directory."""

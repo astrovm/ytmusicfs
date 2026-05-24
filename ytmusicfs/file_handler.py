@@ -481,6 +481,44 @@ class FileHandler:
         file_info["cache_started"] = True
         self._record_stat("background_downloads")
 
+    def precache(self, path: str, video_id: str) -> bool:
+        """Fetch stream info and download audio without opening a FUSE handle."""
+        if self._check_cached_audio(video_id):
+            return True
+        if self.cache.is_track_unavailable(video_id):
+            return False
+
+        file_info: dict[str, Any] = {
+            "video_id": video_id,
+            "stream_url": None,
+            "headers": None,
+            "cookies": None,
+            "format_id": None,
+        }
+        if not self._use_cached_stream_info(file_info):
+            result = self._get_stream_info(video_id)
+            if result["status"] == "error":
+                error_msg = result["error"]
+                self._mark_unavailable_if_needed(video_id, path, error_msg)
+                return False
+            self._apply_stream_info(file_info, result)
+            self._cache_stream_info(video_id, file_info)
+
+        format_id = file_info.get("format_id")
+        stream_url = file_info.get("stream_url")
+        if not isinstance(format_id, str) or not isinstance(stream_url, str):
+            return False
+
+        self.downloader.download_file_now(
+            video_id,
+            stream_url,
+            path,
+            format_id,
+            headers=file_info.get("headers"),
+            cookies=file_info.get("cookies"),
+        )
+        return True
+
     def _get_stream_info(self, video_id: str) -> dict[str, Any]:
         if video_id in self.futures:
             future = self.futures[video_id]

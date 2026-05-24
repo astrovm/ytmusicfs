@@ -457,6 +457,39 @@ class TestFileHandler(unittest.TestCase):
         self.assertEqual(data, b"next")
         self.assertEqual(cache_path.read_bytes(), b"seed")
 
+    def test_precache_extracts_stream_and_downloads_now(self):
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        future = Future()
+        future.set_result(
+            {
+                "status": "success",
+                "stream_url": "https://example.com/audio.m4a",
+                "format_id": "141",
+                "http_headers": {"User-Agent": "UnitTest"},
+                "cookies": {"CONSENT": "YES+"},
+            }
+        )
+        self.yt_dlp_utils.extract_stream_url_async.return_value = future
+        self.file_handler.downloader.download_file_now.return_value = True
+
+        result = self.file_handler.precache(path, video_id)
+
+        self.assertTrue(result)
+        self.file_handler.downloader.download_file_now.assert_called_once()
+        args = self.file_handler.downloader.download_file_now.call_args
+        self.assertEqual(
+            args.args,
+            (
+                video_id,
+                "https://example.com/audio.m4a",
+                path,
+                "141",
+            ),
+        )
+        self.assertEqual(args.kwargs["headers"]["User-Agent"], "UnitTest")
+        self.assertEqual(args.kwargs["cookies"], {"CONSENT": "YES+"})
+
     def test_cached_audio_accepts_any_complete_format_status(self):
         video_id = "abc123"
         audio_dir = self.cache_dir / "audio"

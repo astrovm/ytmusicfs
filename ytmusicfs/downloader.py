@@ -100,6 +100,39 @@ class Downloader:
         )
         return True
 
+    def download_file_now(
+        self,
+        video_id: str,
+        stream_url: str,
+        path: str,
+        format_id: str,
+        headers: dict[str, Any] | None = None,
+        cookies: dict[str, Any] | None = None,
+        retries: int = 3,
+        chunk_size: int = 8192,
+    ) -> bool:
+        """Download a file in the current worker."""
+        if self._is_download_complete(video_id, format_id):
+            self.logger.debug(f"Download already complete for {video_id}")
+            return True
+
+        with self.lock:
+            active = self.active_downloads.get(video_id)
+            if active and active.get("status") in {"starting", "downloading"}:
+                self.logger.debug(f"Download already in progress for {video_id}")
+                return True
+
+        return self._download_task(
+            video_id,
+            stream_url,
+            path,
+            format_id,
+            headers,
+            cookies,
+            retries,
+            chunk_size,
+        )
+
     def _download_task(
         self,
         video_id: str,
