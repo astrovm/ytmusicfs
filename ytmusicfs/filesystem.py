@@ -9,6 +9,7 @@ import time
 import traceback
 from collections import deque
 from contextlib import suppress
+from pathlib import Path
 from typing import Any
 
 from fuse import FUSE, FuseOSError, Operations
@@ -749,6 +750,7 @@ class YouTubeMusicFS(Operations):
         # CASE 3: Check cache directly - fastest path
         hot_attrs = self._get_hot_attrs(path)
         if hot_attrs:
+            self._apply_real_audio_size(path, hot_attrs)
             self._record_stat("getattr_hot_hits")
             with self.last_access_lock:
                 self.last_access_results[operation_key] = hot_attrs
@@ -757,6 +759,7 @@ class YouTubeMusicFS(Operations):
 
         cached_attrs = self.cache.get_file_attrs_from_parent_dir(path)
         if cached_attrs:
+            self._apply_real_audio_size(path, cached_attrs)
             self._record_stat("getattr_fallbacks")
             with self.last_access_lock:
                 self.last_access_results[operation_key] = cached_attrs
@@ -812,7 +815,7 @@ class YouTubeMusicFS(Operations):
                 # Audio files
                 video_id = audio_video_id or self._get_video_id(path)
                 duration = self.cache.get_duration(video_id) if video_id else None
-                size = self._audio_size_for_path(path, duration)
+                size = self._audio_size_for_path(path, duration, video_id)
 
                 # Set file mode and type
                 mode = stat.S_IFREG | 0o444  # Regular file, read-only
@@ -1214,11 +1217,39 @@ class YouTubeMusicFS(Operations):
             time.sleep(1)
         return True
 
-    def _get_real_file_size(self, path: str) -> int | None:
+    def _get_real_file_size(self, path: str, video_id: str | None = None) -> int | None:
+        video_id = video_id or self._get_hot_video_id(path)
+        if not video_id:
+            with suppress(OSError):
+                video_id = self.metadata_manager.get_video_id(path)
+        if video_id:
+            cached_audio_size = self._complete_cached_audio_size(video_id)
+            if cached_audio_size is not None:
+                return cached_audio_size
+
         cached_size = self.cache.get(f"filesize:{path}")
         if isinstance(cached_size, int):
             return cached_size
         return None
+
+    def _apply_real_audio_size(self, path: str, attrs: dict[str, Any]) -> None:
+        if not path.endswith(".m4a"):
+            return
+        real_size = self._get_real_file_size(path)
+        if real_size is not None:
+            attrs["st_size"] = real_size
+
+    def _complete_cached_audio_size(self, video_id: str) -> int | None:
+        cache_dir = Path(self.cache.cache_dir)
+        audio_path = cache_dir / "audio" / f"{video_id}.m4a"
+        status_path = cache_dir / "audio" / f"{video_id}.status"
+        try:
+            status = status_path.read_text().strip()
+            if not status.startswith("complete:"):
+                return None
+            return audio_path.stat().st_size
+        except OSError:
+            return None
 
     def _get_advertised_file_size(self, path: str) -> int | None:
         real_size = self._get_real_file_size(path)
@@ -1232,9 +1263,12 @@ class YouTubeMusicFS(Operations):
         return None
 
     def _audio_size_for_path(
-        self, path: str, duration_seconds: float | None = None
+        self,
+        path: str,
+        duration_seconds: float | None = None,
+        video_id: str | None = None,
     ) -> int:
-        real_size = self._get_real_file_size(path)
+        real_size = self._get_real_file_size(path, video_id)
         if real_size is not None:
             return real_size
         if duration_seconds:
@@ -1285,6 +1319,14 @@ class YouTubeMusicFS(Operations):
             "st_size": size,
         }
         self.cache.update_file_attrs_in_parent_dir(path, attr)
+        with self.hot_metadata_lock:
+            if path in self.hot_attrs_by_path:
+                self.hot_attrs_by_path[path] = {
+                    **self.hot_attrs_by_path[path],
+                    **attr,
+                }
+        with self.last_access_lock:
+            self.last_access_results.pop(f"getattr:{path}", None)
 
     def mkdir(self, path, mode):
         """Create a directory.

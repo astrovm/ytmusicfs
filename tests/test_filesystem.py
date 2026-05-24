@@ -7,6 +7,7 @@ import stat
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from fuse import FuseOSError
@@ -75,6 +76,9 @@ class TestYouTubeMusicFS(unittest.TestCase):
             # Initialize the last_access dictionaries
             self.fs.last_access_time = {}
             self.fs.last_access_results = {}
+            self.fs.hot_metadata_lock = (
+                self.mock_thread_manager.create_lock.return_value
+            )
 
     def test_readdir_root(self):
         """Test reading the contents of the root directory."""
@@ -367,6 +371,35 @@ class TestYouTubeMusicFS(unittest.TestCase):
         attrs = self.fs.getattr(file_path, None)
 
         self.assertEqual(attrs["st_size"], 12345)
+
+    def test_getattr_audio_prefers_complete_cached_audio_size(self):
+        file_path = "/liked_songs/song.m4a"
+        video_id = "complete999"
+        audio_dir = Path(self.mock_cache.cache_dir) / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        (audio_dir / f"{video_id}.m4a").write_bytes(b"a" * 200)
+        (audio_dir / f"{video_id}.status").write_text("complete:141")
+        self.mock_cache.get_file_attrs_from_parent_dir.return_value = {
+            "st_mode": stat.S_IFREG | 0o444,
+            "st_nlink": 1,
+            "st_size": 100,
+        }
+        self.mock_cache.get.return_value = 100
+        self.mock_metadata.get_video_id.return_value = video_id
+
+        attrs = self.fs.getattr(file_path, None)
+
+        self.assertEqual(attrs["st_size"], 200)
+
+    def test_update_file_size_updates_hot_attrs_and_getattr_cache(self):
+        file_path = "/liked_songs/song.m4a"
+        self.fs.hot_attrs_by_path[file_path] = {"st_size": 100, "videoId": "abc123"}
+        self.fs.last_access_results[f"getattr:{file_path}"] = {"st_size": 100}
+
+        self.fs._update_file_size(file_path, 200)
+
+        self.assertEqual(self.fs.hot_attrs_by_path[file_path]["st_size"], 200)
+        self.assertNotIn(f"getattr:{file_path}", self.fs.last_access_results)
 
     def test_cached_listing_uses_duration_estimate(self):
         self.mock_cache.get.return_value = None
