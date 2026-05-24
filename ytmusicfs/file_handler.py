@@ -282,6 +282,7 @@ class FileHandler:
                 cache_path, video_id, offset, size
             )
             if cached_data is not None:
+                self._record_stat("progressive_cache_hits")
                 return cached_data
 
             progress = self.downloader.get_progress(video_id)

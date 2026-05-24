@@ -42,6 +42,7 @@ class YouTubeMusicFS(Operations):
     FUSE_ENTRY_TIMEOUT = FUSE_ENTRY_TIMEOUT
     FUSE_NEGATIVE_TIMEOUT = FUSE_NEGATIVE_TIMEOUT
     PRECACHE_TRACKS_PER_DIRECTORY = 8
+    PRECACHE_MAX_QUEUE_DEPTH = 64
     PRECACHE_IDLE_SECONDS = 2.0
 
     def __init__(
@@ -410,7 +411,8 @@ class YouTubeMusicFS(Operations):
 
         start_worker = False
         with self.precache_lock:
-            for path, video_id in candidates:
+            queue_headroom = self.PRECACHE_MAX_QUEUE_DEPTH - len(self.precache_queue)
+            for path, video_id in candidates[:queue_headroom]:
                 if path in self.precache_queued_paths:
                     continue
                 self.precache_queue.append((path, video_id))
@@ -639,12 +641,7 @@ class YouTubeMusicFS(Operations):
         Raises:
             OSError: If the video ID could not be found
         """
-        video_id = self._get_hot_video_id(path)
-        if video_id:
-            self._record_stat("video_id_hot_hits")
-            return video_id
-        self._record_stat("video_id_fallbacks")
-        return self.metadata_manager.get_video_id(path)
+        return self._resolve_video_id(path)
 
     def getattr(self, path: str, fh: int | None = None) -> dict[str, Any]:
         """Get file attributes with optimized caching.
@@ -1039,7 +1036,7 @@ class YouTubeMusicFS(Operations):
         count = stats.get(count_key, 0)
         if not count:
             return 0.0
-        return round(float(stats.get(total_key, 0)) / float(count), 3)
+        return round(stats.get(total_key, 0.0) / count, 3)
 
     @staticmethod
     def _rate(numerator: Any, denominator: Any) -> float:
@@ -1053,9 +1050,9 @@ class YouTubeMusicFS(Operations):
             self.last_fs_activity = time.time()
 
     def _record_elapsed(self, name: str, start_time: float) -> None:
-        elapsed_ms = int((time.time() - start_time) * 1000)
+        elapsed_ms = (time.time() - start_time) * 1000
         with self.stats_lock:
-            self.stats[name] = self.stats.get(name, 0) + elapsed_ms
+            self.stats[name] = self.stats.get(name, 0.0) + elapsed_ms
 
     def _check_repair_notifications(self) -> None:
         """Check for repair triggers and apply cache invalidation."""

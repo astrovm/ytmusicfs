@@ -661,7 +661,9 @@ class TestFileHandler(unittest.TestCase):
             self.file_handler.read(path, size=6, offset=0, fh=second_fh), b"prefix"
         )
         self.yt_dlp_utils.extract_stream_url_async.assert_not_called()
-        self.file_handler.record_stat_callback.assert_not_called()
+        self.file_handler.record_stat_callback.assert_called_once_with(
+            "progressive_cache_hits"
+        )
 
     def test_range_cache_serves_short_eof_read(self):
         path = "/liked_songs/song.m4a"

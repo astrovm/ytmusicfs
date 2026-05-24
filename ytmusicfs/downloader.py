@@ -162,7 +162,9 @@ class Downloader:
         status_path = audio_path.parent / f"{video_id}.status"
 
         # Mark as in-progress before starting download
-        if self._cached_status_format(status_path) not in (None, format_id):
+        cached_format = self._cached_status_format(status_path)
+        status_text = status_path.read_text().strip() if status_path.exists() else ""
+        if cached_format not in (None, format_id) or status_text.startswith("failed:"):
             audio_path.unlink(missing_ok=True)
         downloaded = audio_path.stat().st_size if audio_path.exists() else 0
         with self.lock:
@@ -199,16 +201,16 @@ class Downloader:
                     downloaded = 0
                     request_headers.pop("Range", None)
 
-                # Get the expected total size
-                expected_total = (
+                # Get the expected total file size
+                expected_size = (
                     int(head_response.headers.get("content-length", 0)) + downloaded
                 )
-                self.update_file_size_callback(path, expected_total)
+                self.update_file_size_callback(path, expected_size)
 
                 with self.lock:
                     self.active_downloads[video_id].update(
                         {
-                            "total": expected_total,
+                            "total": expected_size,
                             "status": "downloading",
                             "progress": downloaded,
                         }
@@ -255,9 +257,9 @@ class Downloader:
                                     sf.write(f"downloading:{format_id}")
 
                 # Verify the download is complete
-                if audio_path.stat().st_size < expected_total:
+                if audio_path.stat().st_size < expected_size:
                     raise Exception(
-                        f"Incomplete download: got {audio_path.stat().st_size} bytes, expected {expected_total}"
+                        f"Incomplete download: got {audio_path.stat().st_size} bytes, expected {expected_size}"
                     )
 
                 # Validate the file format
@@ -285,6 +287,7 @@ class Downloader:
                         self.active_downloads[video_id]["status"] = "failed"
                     with status_path.open("w") as sf:
                         sf.write(f"failed:{format_id}")
+                    audio_path.unlink(missing_ok=True)
                     return False
 
                 # Only sleep between retries if this wasn't an explicit stop
