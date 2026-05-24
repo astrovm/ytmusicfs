@@ -538,6 +538,13 @@ class FileHandler:
     ) -> None:
         video_id = file_info["video_id"]
         format_id = result.get("format_id")
+        if format_id != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT:
+            self.logger.warning(
+                "yt-dlp returned non-preferred format %s for %s (expected %s)",
+                format_id,
+                video_id,
+                PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT,
+            )
         if (
             file_info.get("format_id") == PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT
             and format_id != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT

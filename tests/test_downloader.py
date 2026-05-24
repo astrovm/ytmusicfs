@@ -190,6 +190,67 @@ class TestDownloaderCookieMerging(unittest.TestCase):
         self.assertNotIn("Range", mock_head.call_args.kwargs["headers"])
         self.assertNotIn("Range", mock_get.call_args.kwargs["headers"])
 
+    def test_download_task_skips_downgrade_from_141_to_140(self):
+        video_id = "abc123"
+        path = "/playlists/test/song.m4a"
+        audio_path = self.cache_dir / "audio" / f"{video_id}.m4a"
+        status_path = self.cache_dir / "audio" / f"{video_id}.status"
+        data = b"\x00\x00\x00\x18ftypm4a " + (b"\x00" * 90)
+        audio_path.write_bytes(data)
+        status_path.write_text("complete:141")
+
+        result = self.downloader._download_task(
+            video_id=video_id,
+            stream_url="https://example.com/audio.m4a",
+            path=path,
+            format_id="140",
+            retries=1,
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(audio_path.read_bytes(), data)
+        self.thread_manager.submit_task.assert_not_called()
+
+    def test_download_task_replaces_140_with_141(self):
+        video_id = "abc123"
+        path = "/playlists/test/song.m4a"
+        audio_path = self.cache_dir / "audio" / f"{video_id}.m4a"
+        status_path = self.cache_dir / "audio" / f"{video_id}.status"
+        old_data = b"\x00\x00\x00\x18ftypm4a " + (b"\x00" * 90)
+        new_data = b"\x00\x00\x00\x18ftypm4a " + (b"\x01" * 90)
+        audio_path.write_bytes(old_data)
+        status_path.write_text("complete:140")
+
+        with (
+            patch.object(self.downloader, "_validate_file_format", return_value=True),
+            patch("ytmusicfs.downloader.requests.head") as mock_head,
+            patch("ytmusicfs.downloader.requests.get") as mock_get,
+        ):
+            head_response = MagicMock()
+            head_response.status_code = 200
+            head_response.headers = {"content-length": str(len(new_data))}
+            mock_head.return_value = head_response
+
+            get_response = MagicMock()
+            get_response.status_code = 200
+            get_response.iter_content.return_value = [new_data]
+            mock_context = MagicMock()
+            mock_context.__enter__.return_value = get_response
+            mock_context.__exit__.return_value = None
+            mock_get.return_value = mock_context
+
+            result = self.downloader._download_task(
+                video_id=video_id,
+                stream_url="https://example.com/audio.m4a",
+                path=path,
+                format_id="141",
+                retries=1,
+                chunk_size=len(new_data),
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(audio_path.read_bytes(), new_data)
+
 
 if __name__ == "__main__":
     unittest.main()

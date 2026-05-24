@@ -164,6 +164,29 @@ class Downloader:
         # Mark as in-progress before starting download
         cached_format = self._cached_status_format(status_path)
         status_text = status_path.read_text().strip() if status_path.exists() else ""
+
+        # Don't replace a complete higher-quality file with a lower-quality one
+        if (
+            cached_format
+            and status_text.startswith("complete:")
+            and self._format_quality(format_id) <= self._format_quality(cached_format)
+            and audio_path.exists()
+            and self._validate_file_format(audio_path)
+        ):
+            self.logger.info(
+                "Keeping cached format %s for %s, skipping lower-quality %s",
+                cached_format,
+                video_id,
+                format_id,
+            )
+            with self.lock:
+                self.active_downloads[video_id] = {
+                    "status": "complete",
+                    "progress": audio_path.stat().st_size,
+                    "total": audio_path.stat().st_size,
+                }
+            return True
+
         if cached_format not in (None, format_id) or status_text.startswith("failed:"):
             audio_path.unlink(missing_ok=True)
         downloaded = audio_path.stat().st_size if audio_path.exists() else 0
@@ -314,6 +337,10 @@ class Downloader:
             if status.startswith(prefix):
                 return status.removeprefix(prefix)
         return None
+
+    @staticmethod
+    def _format_quality(format_id: str) -> int:
+        return {"141": 3, "140": 2, "139": 1}.get(format_id, 0)
 
     def _is_download_complete(self, video_id: str, format_id: str) -> bool:
         """Check if download is already complete with a valid file.
