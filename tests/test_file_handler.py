@@ -380,7 +380,7 @@ class TestFileHandler(unittest.TestCase):
             {
                 "status": "success",
                 "stream_url": "https://example.com/audio.m4a",
-                "format_id": "140",
+                "format_id": "141",
                 "http_headers": {},
                 "cookies": {},
             }
@@ -395,7 +395,7 @@ class TestFileHandler(unittest.TestCase):
             self.file_handler.read(path, FileHandler.CACHE_START_BYTES, 0, fh)
 
         self.file_handler.downloader.download_file.assert_called_once()
-        self.assertTrue((self.cache_dir / "ranges" / "140" / video_id).exists())
+        self.assertTrue((self.cache_dir / "ranges" / "141" / video_id).exists())
         self.assertEqual(
             (self.cache_dir / "audio" / f"{video_id}.m4a").stat().st_size,
             FileHandler.CACHE_START_BYTES,
@@ -489,6 +489,26 @@ class TestFileHandler(unittest.TestCase):
         )
         self.assertEqual(args.kwargs["headers"]["User-Agent"], "UnitTest")
         self.assertEqual(args.kwargs["cookies"], {"CONSENT": "YES+"})
+
+    def test_precache_skips_non_preferred_format(self):
+        path = "/playlists/my_playlist/song.m4a"
+        video_id = "abc123"
+        future = Future()
+        future.set_result(
+            {
+                "status": "success",
+                "stream_url": "https://example.com/audio.m4a",
+                "format_id": "140",
+                "http_headers": {},
+                "cookies": {},
+            }
+        )
+        self.yt_dlp_utils.extract_stream_url_async.return_value = future
+
+        result = self.file_handler.precache(path, video_id)
+
+        self.assertFalse(result)
+        self.file_handler.downloader.download_file_now.assert_not_called()
 
     def test_cached_audio_accepts_any_complete_format_status(self):
         video_id = "abc123"

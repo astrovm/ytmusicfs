@@ -470,6 +470,14 @@ class FileHandler:
         format_id = file_info.get("format_id")
         if not isinstance(format_id, str) or not format_id:
             return
+        if format_id != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT:
+            self.logger.debug(
+                "Skipping background download for %s: non-preferred format %s",
+                video_id,
+                format_id,
+            )
+            file_info["cache_started"] = True
+            return
 
         self.downloader.download_file(
             video_id,
@@ -508,6 +516,14 @@ class FileHandler:
         format_id = file_info.get("format_id")
         stream_url = file_info.get("stream_url")
         if not isinstance(format_id, str) or not isinstance(stream_url, str):
+            return False
+
+        if format_id != PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT:
+            self.logger.warning(
+                "Skipping precache for %s: non-preferred format %s",
+                video_id,
+                format_id,
+            )
             return False
 
         self.downloader.download_file_now(
