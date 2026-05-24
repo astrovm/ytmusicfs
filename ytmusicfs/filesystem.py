@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import stat
+import threading
 import time
 import traceback
 from collections import deque
@@ -1357,22 +1358,8 @@ class YouTubeMusicFS(Operations):
         self.logger.warning(f"rmdir not supported: {path}")
         raise OSError(errno.EPERM, "Directory removal not supported")
 
-    def __call__(self, op, *args):
-        """Override the __call__ method to ensure correct operation handling.
-
-        This method is called by FUSE for each filesystem operation.
-        """
-        try:
-            # Call the parent class implementation
-            return super().__call__(op, *args)
-        finally:
-            # Nothing to clean up as thread-local cache is no longer used
-            pass
-
     def init(self, path: str) -> None:
         """Start post-mount background work after FUSE daemonization."""
-        import threading
-
         self._check_repair_notifications()
         threading.Thread(
             target=self._automatic_refresh_after_mount, daemon=True
