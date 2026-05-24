@@ -2,6 +2,7 @@
 
 import logging
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -15,12 +16,23 @@ from yt_dlp import YoutubeDL
 
 YOUTUBE_MUSIC_AUDIO_FORMAT = "141/140/bestaudio[ext=m4a]"
 PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT = "141"
-YT_DLP_JS_RUNTIMES = {
-    "deno": {},
-    "node": {},
-    "bun": {},
-    "quickjs": {},
-}
+
+
+def _detect_js_runtimes() -> dict[str, dict[str, str]]:
+    runtimes: dict[str, dict[str, str]] = {}
+    for name, cmd in (
+        ("deno", "deno"),
+        ("node", "node"),
+        ("bun", "bun"),
+        ("quickjs", "qjs"),
+    ):
+        path = shutil.which(cmd)
+        if path:
+            runtimes[name] = {"path": path}
+    return runtimes
+
+
+YT_DLP_JS_RUNTIMES = _detect_js_runtimes()
 UNAVAILABLE_ERRORS = (
     "Video unavailable",
     "This video is not available",
@@ -64,6 +76,15 @@ class YTDLPUtils:
         cookie_file = self.ensure_browser_cookiefile(browser)
         ydl_opts["cookiefile"] = cookie_file
 
+    @staticmethod
+    def _has_auth_cookies(cookie_file: str) -> bool:
+        try:
+            with open(cookie_file) as f:
+                content = f.read()
+        except OSError:
+            return False
+        return "SAPISID" in content and "APISID" in content
+
     def ensure_browser_cookiefile(self, browser: str) -> str:
         """Ensure this browser has one reusable yt-dlp cookie file."""
         if not browser:
@@ -76,6 +97,7 @@ class YTDLPUtils:
                 cookie_file
                 and Path(cookie_file).exists()
                 and time.time() - cookie_time < BROWSER_COOKIEFILE_TTL
+                and self._has_auth_cookies(cookie_file)
             ):
                 return cookie_file
 
@@ -83,6 +105,7 @@ class YTDLPUtils:
                 cookie_file = self._new_cookie_file(browser)
                 self._browser_cookie_files[browser] = cookie_file
 
+        self.logger.info("Refreshing browser cookies from %s", browser)
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
@@ -90,6 +113,12 @@ class YTDLPUtils:
         }
         with YoutubeDL(ydl_opts) as ydl:
             self._save_cookiejar(browser, ydl, cookie_file, refreshed_from_browser=True)
+        if not self._has_auth_cookies(cookie_file):
+            self.logger.warning(
+                "Browser cookie extraction from %s did not include auth cookies "
+                "(SAPISID, APISID). YouTube Music premium formats (141) may not be available.",
+                browser,
+            )
         return cookie_file
 
     def _new_cookie_file(self, browser: str) -> str:
@@ -128,11 +157,14 @@ class YTDLPUtils:
         return ydl_opts
 
     def _cache_browser_cookies(self, browser, ydl):
-        with self._cookie_lock:
-            cookie_file = self._browser_cookie_files.get(browser)
-            if not cookie_file:
-                cookie_file = self._new_cookie_file(browser)
-        return self._save_cookiejar(browser, ydl, cookie_file)
+        """No-op: do not overwrite the browser cookie file with post-extraction cookies.
+
+        yt-dlp's cookiejar after extraction may be missing critical auth cookies
+        (SAPISID, APISID, etc.) that are required for YouTube Music premium formats.
+        Overwriting the browser-extracted file would permanently lose these cookies.
+        The browser cookie file is refreshed periodically by ensure_browser_cookiefile.
+        """
+        return False
 
     def extract_browser_cookies(self, browser):
         """Return YouTube cookies from a local browser profile."""
