@@ -14,6 +14,9 @@ from ytmusicfs.yt_dlp_utils import PARTIAL_PLAYLIST_COMPLETE_RATIO, YTDLPUtils
 class ContentFetcher:
     """Handles fetching and processing of YouTube Music content."""
 
+    PLAYLIST_REGISTRY_CACHE_KEY = "playlist_registry_entries"
+    MIN_REGISTRY_RETAIN_RATIO = 0.8
+
     def __init__(
         self,
         client: Any,  # YouTubeMusicClient
@@ -99,18 +102,18 @@ class ContentFetcher:
             )
             return
 
-        # Clear any existing entries
-        self.PLAYLIST_REGISTRY = []
+        cached_registry = self.cache.get(self.PLAYLIST_REGISTRY_CACHE_KEY)
+        if not isinstance(cached_registry, list):
+            cached_registry = self._registry_from_cached_root_listings()
 
-        # Add liked songs entry
-        self.PLAYLIST_REGISTRY.append(
+        registry = [
             {
                 "name": "liked_songs",
                 "id": "LM",  # YouTube Music's liked songs playlist ID
                 "type": "liked_songs",
                 "path": "/liked_songs",
             }
-        )
+        ]
 
         # Fetch playlists
         playlists = self.client.get_library_playlists(
@@ -132,7 +135,7 @@ class ContentFetcher:
                 p["title"], "playlist", playlist_id
             )
             path = f"/playlists/{sanitized_name}"
-            self.PLAYLIST_REGISTRY.append(
+            registry.append(
                 {
                     "name": sanitized_name,
                     "id": playlist_id,
@@ -150,7 +153,7 @@ class ContentFetcher:
                 continue
             sanitized_name = self._sanitize_registry_name(a["title"], "album", album_id)
             path = f"/albums/{sanitized_name}"
-            self.PLAYLIST_REGISTRY.append(
+            registry.append(
                 {
                     "name": sanitized_name,
                     "id": album_id,  # Albums use browseId as playlist ID
@@ -159,12 +162,77 @@ class ContentFetcher:
                 }
             )
 
-        self.logger.info(
-            f"Initialized playlist registry with {len(self.PLAYLIST_REGISTRY)} entries"
-        )
+        if self._is_suspiciously_partial_registry(registry, cached_registry):
+            self.logger.warning(
+                "Fetched playlist registry has %d entries vs %d cached; using cached registry",
+                len(registry),
+                len(cached_registry),
+            )
+            registry = cached_registry
+        else:
+            self.cache.set(self.PLAYLIST_REGISTRY_CACHE_KEY, registry)
+
+        self.PLAYLIST_REGISTRY = registry
+        self.logger.info("Initialized playlist registry with %d entries", len(registry))
 
         # Record refresh time with status
         self.cache.set_refresh_metadata(cache_key, time.time(), "fresh")
+
+    def _is_suspiciously_partial_registry(
+        self, registry: list[dict[str, Any]], cached_registry: list[Any]
+    ) -> bool:
+        cached_entries = [entry for entry in cached_registry if isinstance(entry, dict)]
+        if not cached_entries:
+            return False
+        if len(registry) < len(cached_entries) * self.MIN_REGISTRY_RETAIN_RATIO:
+            return True
+
+        cached_paths = {
+            str(entry.get("path"))
+            for entry in cached_entries
+            if entry.get("type") in {"playlist", "album"} and entry.get("path")
+        }
+        current_paths = {
+            str(entry.get("path"))
+            for entry in registry
+            if entry.get("type") in {"playlist", "album"} and entry.get("path")
+        }
+        if not cached_paths:
+            return False
+        missing_ratio = len(cached_paths - current_paths) / len(cached_paths)
+        return missing_ratio > (1 - self.MIN_REGISTRY_RETAIN_RATIO)
+
+    def _registry_from_cached_root_listings(self) -> list[dict[str, Any]]:
+        registry = [
+            {
+                "name": "liked_songs",
+                "id": "LM",
+                "type": "liked_songs",
+                "path": "/liked_songs",
+            }
+        ]
+        for root_path, entry_type, id_key in (
+            ("/playlists", "playlist", "playlistId"),
+            ("/albums", "album", "browseId"),
+        ):
+            listing = self.cache.get_directory_listing_with_attrs(root_path)
+            if not isinstance(listing, dict):
+                continue
+            for name, attrs in listing.items():
+                if name in (".", "..") or not isinstance(attrs, dict):
+                    continue
+                entry_id = attrs.get(id_key) or attrs.get("id")
+                if not entry_id:
+                    continue
+                registry.append(
+                    {
+                        "name": name,
+                        "id": entry_id,
+                        "type": entry_type,
+                        "path": f"{root_path}/{name}",
+                    }
+                )
+        return registry
 
     def _sanitize_registry_name(self, title: str, item_type: str, item_id: str) -> str:
         sanitized_name = self.processor.sanitize_filename(title)
@@ -206,6 +274,12 @@ class ContentFetcher:
         # CONSISTENT CACHE KEY: Always use path_processed regardless of playlist type
         cache_key = f"{path}_processed"
         if not playlist_id:
+            self._initialize_playlist_registry(force_refresh=True)
+            playlist_entry = self.get_playlist_entry_from_path(path)
+            if playlist_entry:
+                return self.fetch_playlist_content(
+                    playlist_entry["id"], path, limit, force_refresh
+                )
             existing_tracks = self.cache.get(cache_key)
             if not isinstance(existing_tracks, list):
                 existing_tracks = []
@@ -289,9 +363,18 @@ class ContentFetcher:
             self.logger.warning(f"No {playlist_type} entries found")
             return [".", ".."]
 
-        processed_entries = [
-            {"filename": e["name"], "is_directory": True} for e in entries
-        ]
+        processed_entries = []
+        for entry in entries:
+            processed_entry = {
+                "filename": entry["name"],
+                "is_directory": True,
+                "id": entry["id"],
+            }
+            if entry["type"] == "playlist":
+                processed_entry["playlistId"] = entry["id"]
+            elif entry["type"] == "album":
+                processed_entry["browseId"] = entry["id"]
+            processed_entries.append(processed_entry)
         self._cache_directory_listing_with_attrs(directory_path, processed_entries)
         self.cache.set_refresh_metadata(cache_key, time.time(), "fresh")
         return [".", ".."] + [e["name"] for e in entries]

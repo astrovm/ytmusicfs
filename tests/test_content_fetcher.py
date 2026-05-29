@@ -227,6 +227,76 @@ class TestContentFetcher(unittest.TestCase):
         )
         self.mock_initialize = self.patcher_initialize.start()
 
+    def test_initialize_playlist_registry_keeps_cached_registry_on_partial_fetch(self):
+        self.patcher_initialize.stop()
+
+        cached_registry = [
+            {
+                "name": "liked_songs",
+                "id": "LM",
+                "type": "liked_songs",
+                "path": "/liked_songs",
+            },
+            {
+                "name": "miau",
+                "id": "PL_MIAU",
+                "type": "playlist",
+                "path": "/playlists/miau",
+            },
+            {
+                "name": "miku",
+                "id": "PL_MIKU",
+                "type": "playlist",
+                "path": "/playlists/miku",
+            },
+            {
+                "name": "album",
+                "id": "MPREb_1",
+                "type": "album",
+                "path": "/albums/album",
+            },
+        ]
+        self.cache.get.return_value = cached_registry
+        self.client.get_library_playlists.return_value = [
+            {"title": "miku", "playlistId": "PL_MIKU"}
+        ]
+        self.client.get_library_albums.return_value = []
+        self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
+        self.fetcher.PLAYLIST_REGISTRY = []
+
+        self.fetcher._initialize_playlist_registry()
+
+        self.assertEqual(
+            self.fetcher.get_playlist_id_from_name("miau", type_filter="playlist"),
+            "PL_MIAU",
+        )
+        self.cache.set.assert_not_called()
+
+        self.patcher_initialize = patch.object(
+            ContentFetcher, "_initialize_playlist_registry"
+        )
+        self.mock_initialize = self.patcher_initialize.start()
+
+    def test_readdir_playlist_root_caches_route_ids(self):
+        self.fetcher.PLAYLIST_REGISTRY = [
+            {
+                "name": "miau",
+                "id": "PL_MIAU",
+                "type": "playlist",
+                "path": "/playlists/miau",
+            }
+        ]
+        self.fetcher.cache_directory_callback = Mock()
+        self.cache.get_directory_listing_with_attrs.return_value = None
+
+        result = self.fetcher.readdir_playlist_by_type("playlist", "/playlists")
+
+        self.assertEqual(result, [".", "..", "miau"])
+        self.fetcher.cache_directory_callback.assert_called_once()
+        processed = self.fetcher.cache_directory_callback.call_args.args[1]
+        self.assertEqual(processed[0]["playlistId"], "PL_MIAU")
+        self.assertEqual(processed[0]["id"], "PL_MIAU")
+
     def test_fetch_playlist_content(self):
         """Test fetching playlist content with mocked yt-dlp responses."""
         # Configure the cache mock to return stale data
@@ -285,6 +355,31 @@ class TestContentFetcher(unittest.TestCase):
 
         self.assertEqual(result, ["cached_song.m4a"])
         self.yt_dlp_utils.extract_playlist_content.assert_not_called()
+
+    def test_fetch_playlist_content_missing_id_refreshes_registry_once(self):
+        self.fetcher.PLAYLIST_REGISTRY = []
+        self.cache.get.return_value = []
+
+        def refresh_registry(force_refresh=False):
+            self.assertTrue(force_refresh)
+            self.fetcher.PLAYLIST_REGISTRY = [
+                {
+                    "name": "miau",
+                    "id": "PL_MIAU",
+                    "type": "playlist",
+                    "path": "/playlists/miau",
+                }
+            ]
+
+        self.fetcher._initialize_playlist_registry = Mock(side_effect=refresh_registry)
+        self.fetcher.refresh_content = Mock(
+            return_value=[{"filename": "song.m4a", "videoId": "vid1"}]
+        )
+
+        result = self.fetcher.fetch_playlist_content(None, "/playlists/miau", limit=2)
+
+        self.assertEqual(result, ["song.m4a"])
+        self.fetcher.refresh_content.assert_called_once()
 
     def test_stale_content_read_uses_existing_tracks(self):
         cached_tracks = [{"filename": "cached_song.m4a", "videoId": "vid1"}]
