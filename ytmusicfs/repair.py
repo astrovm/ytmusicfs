@@ -253,6 +253,7 @@ class LikedSongsRepairer:
 
         if changed:
             self._persist_track_cache(updated_tracks, path)
+            self.cache.set(f"video_id:{path}", replacement_track["videoId"])
 
     def _remove_dead_track_from_cache(self, video_id: str, path: str) -> None:
         """Remove an unavailable track that has no verified replacement."""

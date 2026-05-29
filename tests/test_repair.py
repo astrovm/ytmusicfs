@@ -291,10 +291,12 @@ class TestLikedSongsRepairer(unittest.TestCase):
             {"videoId": "new", "title": "Song", "duration": 123},
         )
 
-        self.cache.set.assert_called_once()
-        self.assertEqual(self.cache.set.call_args.args[0], "/playlists/Mix_processed")
-        updated = self.cache.set.call_args.args[1]
+        self.assertEqual(
+            self.cache.set.call_args_list[0].args[0], "/playlists/Mix_processed"
+        )
+        updated = self.cache.set.call_args_list[0].args[1]
         self.assertEqual(updated[0]["videoId"], "new")
+        self.cache.set.assert_any_call(f"video_id:{path}", "new")
         self.cache.delete.assert_any_call("/playlists/Mix_listing_with_attrs")
         self.cache.delete.assert_any_call("/playlists/Mix_listing")
         self.cache.delete.assert_any_call(f"video_id:{path}")

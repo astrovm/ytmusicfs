@@ -249,6 +249,12 @@ class CacheManager:
 
             with self.lock:
                 cursor = self.conn.cursor()
+                if is_directory is not None:
+                    opposite_prefix = "exact_path:" if is_directory else "valid_dir:"
+                    cursor.execute(
+                        "DELETE FROM cache_entries WHERE key = ?",
+                        (self.path_to_key(f"{opposite_prefix}{path}"),),
+                    )
                 cursor.executemany(
                     """
                     INSERT OR REPLACE INTO cache_entries (key, entry, entry_type, metadata)
@@ -767,6 +773,7 @@ class CacheManager:
         self.attrs_cache.pop(path, None)
         self.directory_listings_cache.pop(parent_dir, None)
 
+        self.delete(f"valid_dir:{path}")
         self.delete(f"exact_path:{path}")
         self.delete(f"video_id:{path}")
         self.delete(f"valid_files:{parent_dir}")
@@ -1333,6 +1340,7 @@ class CacheManager:
             self.attrs_cache.pop(path, None)
             for hot_key in (f"hotcache:video_id:{path}",):
                 self.hotcache.pop(hot_key, None)
+            self.delete(f"valid_dir:{path}")
             self.delete(f"video_id:{path}")
             changed = True
             self.logger.debug("Invalidated cache for repaired path %s", path)

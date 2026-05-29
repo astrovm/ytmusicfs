@@ -44,6 +44,7 @@ class TestCacheManager(unittest.TestCase):
         # Patch sqlite3.connect to avoid DB interaction
         self.patcher = patch("sqlite3.connect")
         self.mock_sqlite = self.patcher.start()
+        self.patchers_active = True
 
         # Mock connection and cursor with improved mock configuration
         self.mock_conn = Mock()
@@ -95,8 +96,9 @@ class TestCacheManager(unittest.TestCase):
     def tearDown(self):
         """Clean up after each test method."""
         # Stop patchers
-        self.patcher.stop()
-        self.load_paths_patcher.stop()
+        if self.patchers_active:
+            self.patcher.stop()
+            self.load_paths_patcher.stop()
 
         # Close the cache to release DB connections
         self.cache.close()
@@ -144,6 +146,7 @@ class TestCacheManager(unittest.TestCase):
         self.assertNotIn(parent_dir, self.cache.directory_listings_cache)
         self.cache.delete.assert_has_calls(
             [
+                call(f"valid_dir:{path}"),
                 call(f"exact_path:{path}"),
                 call(f"video_id:{path}"),
                 call(f"valid_files:{parent_dir}"),
@@ -327,6 +330,26 @@ class TestCacheManager(unittest.TestCase):
 
         # Test unknown path
         self.assertIsNone(self.cache.is_directory("/unknown"))
+
+    def test_mark_valid_file_removes_stale_directory_entry(self):
+        path = "/playlists/my_playlist/song.m4a"
+        self.patcher.stop()
+        self.load_paths_patcher.stop()
+        self.patchers_active = False
+        real_cache = CacheManager(
+            thread_manager=self.thread_manager,
+            cache_dir=self.temp_dir,
+            logger=self.logger,
+        )
+
+        real_cache.mark_valid(path, is_directory=True)
+        self.assertEqual(real_cache.get_entry_type(path), "directory")
+
+        real_cache.mark_valid(path, is_directory=False)
+
+        self.assertEqual(real_cache.get_entry_type(path), "file")
+        self.assertFalse(real_cache.is_directory(path))
+        real_cache.close()
 
     def test_directory_listing_with_attrs(self):
         """Test storing and retrieving directory listings with attributes."""

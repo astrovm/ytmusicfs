@@ -59,9 +59,11 @@ class MetadataManager:
         """
         # Check if path is a file based on entry_type
         entry_type = self.cache.get_entry_type(path)
-        if entry_type != "file":
+        if entry_type != "file" and not path.endswith(".m4a"):
             self.logger.warning(f"Attempting to get video ID for non-file: {path}")
             raise OSError(errno.EINVAL, "Not a music file")
+        if entry_type != "file":
+            self.cache.mark_valid(path, is_directory=False)
 
         # Check if we already have the video ID for this path in memory cache
         with self.video_id_cache_lock:

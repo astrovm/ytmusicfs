@@ -259,7 +259,7 @@ class PathRouter:
                             f"Found pattern handler for {path} with pattern {pattern}"
                         )
                         # Mark this path as valid in the cache
-                        if self.cache:
+                        if self.cache and not path.endswith(".m4a"):
                             self.cache.mark_valid(path, is_directory=True)
 
                         # Pass both the full path and the captured values
@@ -288,7 +288,9 @@ class PathRouter:
             for entry in result:
                 if entry not in [".", ".."]:
                     entry_path = f"{path}/{entry}"
-                    # We don't know if it's a directory yet, so don't specify is_directory
-                    self.cache.mark_valid(entry_path)
+                    self.cache.mark_valid(
+                        entry_path,
+                        is_directory=False if entry.endswith(".m4a") else None,
+                    )
 
         return result
