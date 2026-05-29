@@ -7,6 +7,7 @@ import stat
 import threading
 import time
 import unittest
+from concurrent.futures import Future
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -590,6 +591,41 @@ class TestYouTubeMusicFS(unittest.TestCase):
 
         self.mock_cache.invalidate_repaired_paths.assert_called_once()
         self.mock_cache.clear_repair_trigger.assert_called_once()
+
+    @patch("ytmusicfs.filesystem.LikedSongsRepairer")
+    def test_auto_repair_supports_playlist_paths_locally(self, mock_repairer_class):
+        path = "/playlists/Mix/Artist - Song.m4a"
+        repair = Mock()
+        repair.old_video_id = "old"
+        repair.new_video_id = "new"
+        repair.path = path
+        repair.old_track = {"videoId": "old"}
+        repair.replacement = {"videoId": "new"}
+
+        repairer = mock_repairer_class.return_value
+        repairer._plan_one.return_value = repair
+
+        def submit_task(_name, fn):
+            future = Future()
+            future.set_result(fn())
+            return future
+
+        self.mock_thread_manager.submit_task.side_effect = submit_task
+        self.mock_cache.is_no_replacement.return_value = False
+        self.fs.hot_video_ids_by_path[path] = "old"
+        self.fs.hot_attrs_by_path[path] = {"videoId": "old"}
+
+        result = self.fs._auto_repair_on_stream_unavailable("old", path)
+
+        self.assertEqual(result, "new")
+        mock_repairer_class.assert_called_once()
+        self.assertFalse(mock_repairer_class.call_args.kwargs["sync_account"])
+        repairer._replace_cached_liked_track.assert_called_once_with(
+            "old", path, repair.old_track, repair.replacement
+        )
+        self.mock_cache.clear_unavailable_track.assert_called_once_with("old", path)
+        self.assertEqual(self.fs.hot_video_ids_by_path[path], "new")
+        self.assertEqual(self.fs.hot_attrs_by_path[path]["videoId"], "new")
 
 
 if __name__ == "__main__":

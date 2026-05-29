@@ -997,15 +997,16 @@ class TestCacheManager(unittest.TestCase):
 
     def test_invalidate_repaired_paths(self):
         """Invalidating repaired paths should clear only relevant in-memory state."""
-        path = "/liked_songs/song.m4a"
-        parent = "/liked_songs"
+        path = "/playlists/Mix/song.m4a"
+        parent = "/playlists/Mix"
         self.cache.unavailable_video_ids = {"old1"}
         self.cache.unavailable_paths = {path}
         self.cache.valid_paths.add(path)
         self.cache.path_validation_cache[path] = {"valid": True}
         self.cache.attrs_cache[path] = {"st_size": 123}
         self.cache.directory_listings_cache[parent] = {"data": {}}
-        self.cache.hotcache["hotcache:/liked_songs_processed"] = {"data": []}
+        self.cache.hotcache["hotcache:/playlists/Mix_processed"] = {"data": []}
+        self.cache.hotcache["hot:/playlists/Mix_listing_with_attrs"] = {"data": {}}
         self.cache.delete = Mock()
 
         self.cache.invalidate_repaired_paths([{"old_video_id": "old1", "path": path}])
@@ -1016,8 +1017,11 @@ class TestCacheManager(unittest.TestCase):
         self.assertNotIn(path, self.cache.path_validation_cache)
         self.assertNotIn(path, self.cache.attrs_cache)
         self.assertNotIn(parent, self.cache.directory_listings_cache)
-        self.assertNotIn("hotcache:/liked_songs_processed", self.cache.hotcache)
+        self.assertNotIn("hotcache:/playlists/Mix_processed", self.cache.hotcache)
+        self.assertNotIn("hot:/playlists/Mix_listing_with_attrs", self.cache.hotcache)
         self.cache.delete.assert_any_call(f"video_id:{path}")
+        self.cache.delete.assert_any_call("/playlists/Mix_listing_with_attrs")
+        self.cache.delete.assert_any_call("/playlists/Mix_listing")
 
     def test_cache_invalidation_patterns(self):
         """Test different patterns of cache invalidation."""

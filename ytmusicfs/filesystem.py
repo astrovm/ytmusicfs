@@ -1096,7 +1096,7 @@ class YouTubeMusicFS(Operations):
     def _auto_repair_on_stream_unavailable(
         self, video_id: str, path: str
     ) -> str | None:
-        """Transparent auto-repair: find a verified replacement for a dead video ID.
+        """Transparent local auto-repair for cached tracks with dead video IDs.
 
         Args:
             video_id: The unavailable YouTube video ID
@@ -1105,7 +1105,7 @@ class YouTubeMusicFS(Operations):
         Returns:
             New video_id if a verified replacement was found, None otherwise.
         """
-        if not path.startswith("/liked_songs/"):
+        if not path.startswith(("/liked_songs/", "/playlists/", "/albums/")):
             return None
 
         if self.cache.is_no_replacement(video_id):
@@ -1132,6 +1132,7 @@ class YouTubeMusicFS(Operations):
                     repair.replacement,
                 )
                 self.cache.clear_unavailable_track(repair.old_video_id, repair.path)
+                self._replace_hot_video_id(repair.path, repair.new_video_id)
                 self.cache.record_repair_trigger(
                     [
                         {
@@ -1156,6 +1157,13 @@ class YouTubeMusicFS(Operations):
         except TimeoutError:
             self.logger.warning("Auto-repair timed out for %s", path)
             return None
+
+    def _replace_hot_video_id(self, path: str, video_id: str) -> None:
+        with self.hot_metadata_lock:
+            self.hot_video_ids_by_path[path] = video_id
+            attrs = self.hot_attrs_by_path.get(path)
+            if attrs:
+                attrs["videoId"] = video_id
 
     def _automatic_refresh_after_mount(self) -> None:
         """Refresh large library data only after the mounted FS is idle."""

@@ -23,7 +23,7 @@ class LikedSongRepair:
 
 
 class LikedSongsRepairer:
-    """Repair unavailable liked-song video IDs with verified replacements."""
+    """Repair unavailable cached track video IDs with verified replacements."""
 
     def __init__(
         self,
@@ -144,7 +144,7 @@ class LikedSongsRepairer:
         if not old_video_id or not path:
             return None
 
-        old_track = self._find_cached_liked_track(old_video_id, path)
+        old_track = self._find_cached_track(old_video_id, path)
         artist, title = self._artist_title_from_track_or_path(old_track, path)
         if not artist or not title:
             self.logger.info("Skipping %s: cannot derive artist/title", path)
@@ -201,10 +201,8 @@ class LikedSongsRepairer:
             return dict(candidate)
         return None
 
-    def _find_cached_liked_track(
-        self, video_id: str, path: str
-    ) -> dict[str, Any] | None:
-        tracks = self.cache.get("/liked_songs_processed")
+    def _find_cached_track(self, video_id: str, path: str) -> dict[str, Any] | None:
+        tracks = self.cache.get(f"{Path(path).parent!s}_processed")
         if not isinstance(tracks, list):
             return None
         filename = Path(path).name
@@ -222,7 +220,7 @@ class LikedSongsRepairer:
         old_track: dict[str, Any] | None,
         replacement: dict[str, Any],
     ) -> None:
-        tracks = self.cache.get("/liked_songs_processed")
+        tracks = self.cache.get(f"{Path(path).parent!s}_processed")
         if not isinstance(tracks, list):
             return
 
@@ -254,7 +252,7 @@ class LikedSongsRepairer:
                 updated_tracks.append(track)
 
         if changed:
-            self._persist_liked_songs_cache(updated_tracks, path)
+            self._persist_track_cache(updated_tracks, path)
 
     def _remove_dead_track_from_cache(self, video_id: str, path: str) -> None:
         """Remove an unavailable track that has no verified replacement."""
@@ -272,10 +270,14 @@ class LikedSongsRepairer:
     def _persist_liked_songs_cache(
         self, tracks: list[dict[str, Any]], path: str
     ) -> None:
-        """Persist updated liked songs track list and invalidate derived caches."""
-        self.cache.set("/liked_songs_processed", tracks)
-        self.cache.delete("/liked_songs_listing_with_attrs")
-        self.cache.delete("/liked_songs_listing")
+        self._persist_track_cache(tracks, path)
+
+    def _persist_track_cache(self, tracks: list[dict[str, Any]], path: str) -> None:
+        """Persist updated track list and invalidate derived caches."""
+        parent = str(Path(path).parent)
+        self.cache.set(f"{parent}_processed", tracks)
+        self.cache.delete(f"{parent}_listing_with_attrs")
+        self.cache.delete(f"{parent}_listing")
         self.cache.delete(f"video_id:{path}")
 
     def _artist_title_from_track_or_path(

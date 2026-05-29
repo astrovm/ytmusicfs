@@ -1309,7 +1309,7 @@ class CacheManager:
                 self.logger.warning("Failed to remove %s trigger: %s", action, e)
 
     def invalidate_repaired_paths(self, repairs: list[dict[str, Any]]) -> None:
-        """Surgically invalidate in-memory caches for repaired liked-song paths.
+        """Surgically invalidate in-memory caches for repaired track paths.
 
         Args:
             repairs: List of repair dicts with old_video_id and path keys.
@@ -1317,31 +1317,34 @@ class CacheManager:
         if not repairs:
             return
         changed = False
+        parent_dirs = set()
         for repair in repairs:
             old_video_id = repair.get("old_video_id")
             path = repair.get("path")
             if not old_video_id or not path:
                 continue
+            parent_dir = os.path.dirname(path)
+            if parent_dir:
+                parent_dirs.add(parent_dir)
             self.unavailable_video_ids.discard(old_video_id)
             self.unavailable_paths.discard(path)
             self.valid_paths.discard(path)
             self.path_validation_cache.pop(path, None)
             self.attrs_cache.pop(path, None)
-            for hot_key in (
-                f"hotcache:video_id:{path}",
-                f"hot:{path}_listing_with_attrs",
-            ):
+            for hot_key in (f"hotcache:video_id:{path}",):
                 self.hotcache.pop(hot_key, None)
             self.delete(f"video_id:{path}")
             changed = True
             self.logger.debug("Invalidated cache for repaired path %s", path)
         if changed:
-            self.directory_listings_cache.pop("/liked_songs", None)
-            self.hotcache.pop("hotcache:/liked_songs_processed", None)
-            self.delete("/liked_songs_listing_with_attrs")
-            self.delete("/liked_songs_listing")
+            for parent_dir in parent_dirs:
+                self.directory_listings_cache.pop(parent_dir, None)
+                self.hotcache.pop(f"hotcache:{parent_dir}_processed", None)
+                self.hotcache.pop(f"hot:{parent_dir}_listing_with_attrs", None)
+                self.delete(f"{parent_dir}_listing_with_attrs")
+                self.delete(f"{parent_dir}_listing")
             self.logger.info(
-                "Applied repair invalidations for %d liked-song path(s)", len(repairs)
+                "Applied repair invalidations for %d path(s)", len(repairs)
             )
 
     def clear_metadata(self) -> None:

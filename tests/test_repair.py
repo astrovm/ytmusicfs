@@ -239,3 +239,62 @@ class TestLikedSongsRepairer(unittest.TestCase):
             {"checked": 0, "repaired": 0, "removed": 0, "skipped": 0, "failed": 0},
         )
         self.client.search.assert_not_called()
+
+    def test_local_plan_supports_playlist_cached_tracks(self):
+        self.cache.get.return_value = [
+            {
+                "videoId": "old",
+                "artist": "Artist",
+                "title": "Song",
+                "filename": "Artist - Song.m4a",
+            }
+        ]
+        self.client.search.return_value = [
+            {
+                "videoId": "new",
+                "title": "Song",
+                "artists": [{"name": "Artist"}],
+                "duration": 123,
+            }
+        ]
+        self.yt_dlp_utils.extract_stream_url.return_value = {"format_id": "141"}
+
+        repair = self.repairer._plan_one(
+            {"videoId": "old", "path": "/playlists/Mix/Artist - Song.m4a"}
+        )
+
+        self.assertIsNotNone(repair)
+        self.assertEqual(repair.new_video_id, "new")
+        self.cache.get.assert_called_with("/playlists/Mix_processed")
+
+    def test_playlist_replacement_persists_parent_cache_only(self):
+        path = "/playlists/Mix/Artist - Song.m4a"
+        self.cache.get.return_value = [
+            {
+                "videoId": "old",
+                "artist": "Artist",
+                "title": "Song",
+                "filename": "Artist - Song.m4a",
+            }
+        ]
+        self.processor.extract_track_info.return_value = {
+            "videoId": "new",
+            "artist": "Artist",
+            "title": "Song",
+            "duration_seconds": 123,
+        }
+
+        self.repairer._replace_cached_liked_track(
+            "old",
+            path,
+            None,
+            {"videoId": "new", "title": "Song", "duration": 123},
+        )
+
+        self.cache.set.assert_called_once()
+        self.assertEqual(self.cache.set.call_args.args[0], "/playlists/Mix_processed")
+        updated = self.cache.set.call_args.args[1]
+        self.assertEqual(updated[0]["videoId"], "new")
+        self.cache.delete.assert_any_call("/playlists/Mix_listing_with_attrs")
+        self.cache.delete.assert_any_call("/playlists/Mix_listing")
+        self.cache.delete.assert_any_call(f"video_id:{path}")
