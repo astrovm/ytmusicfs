@@ -1202,7 +1202,7 @@ class YouTubeMusicFS(Operations):
         try:
             self.fetcher.refresh_liked_songs_automatic()
         except Exception as exc:
-            self.logger.warning("Automatic refresh failed: %s", exc)
+            self.logger.warning("Automatic liked-songs refresh failed: %s", exc)
             self._set_refresh_state(
                 running=False,
                 phase="idle",
@@ -1210,6 +1210,29 @@ class YouTubeMusicFS(Operations):
                 last_result=f"failed: {exc}",
             )
             return
+
+        self._set_refresh_state(
+            running=False,
+            phase="idle",
+            last_finished=int(time.time()),
+            last_result="ok",
+        )
+
+        # After liked songs, pre-fetch all playlist and album contents so
+        # recursive directory scans (eza, find, file managers) find cached
+        # data immediately rather than blocking on yt-dlp per directory.
+        self._set_refresh_state(
+            running=True,
+            phase="playlists",
+            last_started=int(time.time()),
+            last_result=None,
+        )
+        try:
+            self.fetcher.refresh_all_playlist_contents_automatic()
+        except Exception as exc:
+            self.logger.warning(
+                "Automatic playlist pre-fetch failed: %s", exc
+            )
 
         self._set_refresh_state(
             running=False,

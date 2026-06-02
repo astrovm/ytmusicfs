@@ -328,6 +328,49 @@ class ContentFetcher:
         )
         self._repair_unavailable_liked_songs_locally()
 
+    def refresh_all_playlist_contents_automatic(self) -> None:
+        """Pre-fetch all playlist/album track listings in background after mount.
+
+        Each playlist is fetched via yt-dlp once and cached with directory
+        listing attributes, so subsequent recursive reads (eza, find, file
+        managers) hit Priority 2 fallback cache instantly.
+        """
+        entries = [
+            p for p in self.PLAYLIST_REGISTRY
+            if p["type"] in ("playlist", "album")
+        ]
+        if not entries:
+            self.logger.info("No playlists or albums to pre-fetch")
+            return
+
+        self.logger.info(
+            "Pre-fetching %d playlists/albums in background", len(entries)
+        )
+        for i, entry in enumerate(entries):
+            try:
+                tracks = self.fetch_playlist_content(
+                    entry["id"], entry["path"], force_refresh=True
+                )
+                self.logger.debug(
+                    "Pre-fetched %s %d/%d: %s (%d tracks)",
+                    entry["type"],
+                    i + 1,
+                    len(entries),
+                    entry["name"],
+                    len(tracks),
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "Failed to pre-fetch %s '%s': %s",
+                    entry["type"],
+                    entry["name"],
+                    exc,
+                )
+
+        self.logger.info(
+            "Finished pre-fetching %d playlists/albums", len(entries)
+        )
+
     def readdir_playlist_by_type(
         self, playlist_type: str | None = None, directory_path: str | None = None
     ) -> list[str]:
