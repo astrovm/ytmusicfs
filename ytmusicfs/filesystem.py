@@ -783,7 +783,11 @@ class YouTubeMusicFS(Operations):
                 raise FuseOSError(errno.ENOENT)
 
             if category in ["playlists", "albums"]:
-                # This is likely a directory
+                # This is likely a directory.
+                # The directory listing (with attrs for every entry) was
+                # already bulk-written to cache by _cache_directory_listing
+                # _with_attrs during the earlier readdir, so there is no
+                # need for per-item SQLite writes here.
                 attrs.update(
                     {
                         "st_mode": stat.S_IFDIR | 0o555,
@@ -791,10 +795,6 @@ class YouTubeMusicFS(Operations):
                         "st_size": 4096,
                     }
                 )
-                self.cache.mark_valid(path, is_directory=True)
-
-                # Save these attrs to both caches
-                self.cache.update_file_attrs_in_parent_dir(path, attrs)
 
                 with self.last_access_lock:
                     self.last_access_results[operation_key] = attrs
