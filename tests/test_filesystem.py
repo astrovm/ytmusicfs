@@ -166,8 +166,9 @@ class TestYouTubeMusicFS(unittest.TestCase):
         self.assertIn("my_playlist", result)
         self.assertIn("workout_mix", result)
 
-        # Verify mock was called correctly
-        self.mock_fetcher.readdir_playlist_by_type.assert_called_once_with(
+        # Verify mock was called correctly. It is also called during
+        # filesystem init to prime the hot cache.
+        self.mock_fetcher.readdir_playlist_by_type.assert_called_with(
             "playlist", "/playlists"
         )
 
