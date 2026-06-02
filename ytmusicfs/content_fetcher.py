@@ -300,6 +300,12 @@ class ContentFetcher:
             expected_total_func=lambda: self._get_expected_total_count(playlist_id),
         )
 
+        # Cache the directory listing with attributes so subsequent eza -R
+        # or recursive reads hit Priority 2 (readdir fallback cache) and
+        # skip the router + yt-dlp extraction entirely.
+        if tracks:
+            self._cache_directory_listing_with_attrs(path, tracks)
+
         # Return just the filenames
         return [track["filename"] for track in tracks]
 
