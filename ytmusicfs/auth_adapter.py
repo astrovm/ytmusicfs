@@ -53,16 +53,55 @@ class YTMusicAuthAdapter:
         )
         return client
 
+    @staticmethod
+    def _filter_auth_cookies(
+        cookies: dict[str, str],
+    ) -> dict[str, str]:
+        """Keep only the cookies required for YouTube Music API auth.
+
+        Browser cookie databases often accumulate hundreds of session-tracking
+        cookies (ST-*), which can bloat the Cookie header past YouTube's
+        payload limit (HTTP 413).  Only the standard Google auth cookies are
+        needed for the SAPISIDHASH signing scheme.
+        """
+        auth_cookie_names = {
+            "APISID",
+            "HSID",
+            "LOGIN_INFO",
+            "PREF",
+            "SAPISID",
+            "SID",
+            "SIDCC",
+            "SSID",
+            "__Secure-1PAPISID",
+            "__Secure-1PSID",
+            "__Secure-1PSIDCC",
+            "__Secure-1PSIDTS",
+            "__Secure-3PAPISID",
+            "__Secure-3PSID",
+            "__Secure-3PSIDCC",
+            "CONSISTENCY",
+            "SOCS",
+            "VISITOR_INFO1_LIVE",
+            "VISITOR_PRIVACY_METADATA",
+        }
+        return {
+            name: value
+            for name, value in cookies.items()
+            if name in auth_cookie_names
+        }
+
     def _build_browser_auth(self) -> dict[str, str]:
         cookies = self.yt_dlp_utils.extract_browser_cookies(self.browser)
-        auth_header = _build_sapisidhash(cookies, _YT_ORIGIN)
+        filtered = self._filter_auth_cookies(cookies)
+        auth_header = _build_sapisidhash(filtered, _YT_ORIGIN)
         if not auth_header:
             raise ValueError(
                 f"No YouTube SAPISID cookies found in {self.browser} browser profile"
             )
 
         cookie_header = "; ".join(
-            f"{name}={value}" for name, value in sorted(cookies.items())
+            f"{name}={value}" for name, value in sorted(filtered.items())
         )
         return {
             "Accept": "*/*",
@@ -81,8 +120,8 @@ class YTMusicAuthAdapter:
         # Perform a very small request so we fail fast if auth is invalid.
         for attempt in range(1, _VALIDATION_ATTEMPTS + 1):
             try:
-                result = self.ytmusic.get_library_playlists(limit=1)
-                break
+                self.ytmusic.get_library_playlists(limit=1)
+                return
             except JSONDecodeError as exc:
                 if attempt == _VALIDATION_ATTEMPTS:
                     raise RuntimeError(
@@ -99,11 +138,9 @@ class YTMusicAuthAdapter:
                 )
                 time.sleep(_VALIDATION_RETRY_DELAY_SECONDS)
 
-        if not result:
-            raise ValueError(
-                "YouTube Music returned an empty playlist list. "
-                "Your browser auth may not match an active YouTube Music session."
-            )
+        raise RuntimeError(
+            "YouTube Music auth validation failed"
+        )
 
     def __getattr__(self, name: str) -> Any:
         """Delegate attribute access to the underlying :class:`YTMusic` client."""
