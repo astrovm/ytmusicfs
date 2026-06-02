@@ -263,6 +263,13 @@ class YouTubeMusicFS(Operations):
         self.cache.mark_valid("/albums", is_directory=True)
         self._prime_hot_metadata_from_cache()
 
+        # Eagerly prime the hot cache and persistent directory listing
+        # for playlists and albums so the first ls on these directories
+        # finds metadata in memory rather than going through hundreds of
+        # individual getattr SQLite operations on cold cache.
+        self.fetcher.readdir_playlist_by_type("playlist", "/playlists")
+        self.fetcher.readdir_playlist_by_type("album", "/albums")
+
         self.logger.info("YTMusicFS initialized successfully")
         self.logger.debug(
             f"Using browser: {browser}, cache_dir: {self.cache.cache_dir}"
