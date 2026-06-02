@@ -1179,48 +1179,13 @@ class YouTubeMusicFS(Operations):
                 attrs["videoId"] = video_id
 
     def _automatic_refresh_after_mount(self) -> None:
-        """Refresh large library data only after the mounted FS is idle."""
-        self._set_refresh_state(
-            running=False,
-            phase="scheduled",
-            last_result="waiting for idle filesystem",
-        )
-        if not self._sleep_refresh_delay(15):
-            return
+        """Pre-fetch all playlist/album contents after mount.
 
-        while time.time() - self.last_fs_activity < 8:
-            self._record_refresh_backoff()
-            if not self._sleep_refresh_delay(5):
-                return
-
-        self._set_refresh_state(
-            running=True,
-            phase="liked_songs",
-            last_started=int(time.time()),
-            last_result=None,
-        )
-        try:
-            self.fetcher.refresh_liked_songs_automatic()
-        except Exception as exc:
-            self.logger.warning("Automatic liked-songs refresh failed: %s", exc)
-            self._set_refresh_state(
-                running=False,
-                phase="idle",
-                last_finished=int(time.time()),
-                last_result=f"failed: {exc}",
-            )
-            return
-
-        self._set_refresh_state(
-            running=False,
-            phase="idle",
-            last_finished=int(time.time()),
-            last_result="ok",
-        )
-
-        # After liked songs, pre-fetch all playlist and album contents so
-        # recursive directory scans (eza, find, file managers) find cached
-        # data immediately rather than blocking on yt-dlp per directory.
+        Starts immediately (no idle delay) so the background pre-fetch races
+        ahead of any on-demand reads.  With 16 extraction workers all 132
+        playlists/albums are dispatched concurrently; large playlists that
+        take ~26s to paginate don't block smaller ones.
+        """
         self._set_refresh_state(
             running=True,
             phase="playlists",

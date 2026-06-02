@@ -34,7 +34,7 @@ class ThreadManager:
         self._default_configs = {
             "io": {"max_workers": 8, "thread_name_prefix": "io_pool"},
             "api": {"max_workers": 4, "thread_name_prefix": "api_pool"},
-            "extraction": {"max_workers": 4, "thread_name_prefix": "extract_pool"},
+            "extraction": {"max_workers": 16, "thread_name_prefix": "extract_pool"},
             "processing": {"max_workers": 2, "thread_name_prefix": "process_pool"},
         }
 

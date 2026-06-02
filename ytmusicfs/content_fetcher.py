@@ -249,6 +249,8 @@ class ContentFetcher:
         )
         return fallback
 
+    MAX_DIR_LISTING_TRACKS = 10000
+
     def fetch_playlist_content(
         self,
         playlist_id: str,
