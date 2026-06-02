@@ -509,6 +509,11 @@ class YouTubeMusicFS(Operations):
         hot_listing = self._get_hot_readdir(path)
         if hot_listing is not None:
             self._record_stat("readdir_hot_hits")
+            elapsed = (time.time() - start_time) * 1000
+            if elapsed > 1:
+                self.logger.info(
+                    f"readdir hot cache HIT for {path} took {elapsed:.1f}ms"
+                )
             self._record_elapsed("readdir_total_ms", start_time)
             self._schedule_precache_for_entries(path, hot_listing)
             return hot_listing
@@ -517,6 +522,11 @@ class YouTubeMusicFS(Operations):
             # Make a direct call to the appropriate content function
             if path == "/playlists":
                 result = self.fetcher.readdir_playlist_by_type("playlist", "/playlists")
+                elapsed = (time.time() - start_time) * 1000
+                if elapsed > 10:
+                    self.logger.info(
+                        f"readdir fixed path for {path} took {elapsed:.1f}ms ({len(result)} entries)"
+                    )
                 self._schedule_precache_for_entries(path, result)
                 return result
             if path == "/albums":
@@ -762,6 +772,8 @@ class YouTubeMusicFS(Operations):
             self._record_stat("getattr_hot_hits")
             with self.last_access_lock:
                 self.last_access_results[operation_key] = hot_attrs
+            elapsed = (time.time() - start_time) * 1000
+            self.logger.debug("getattr %s -> hot cache (%.1fms)", path, elapsed)
             self._record_elapsed("getattr_total_ms", start_time)
             return hot_attrs
 
@@ -771,11 +783,8 @@ class YouTubeMusicFS(Operations):
             self._record_stat("getattr_fallbacks")
             with self.last_access_lock:
                 self.last_access_results[operation_key] = cached_attrs
-            processing_time = time.time() - start_time
-            if processing_time > 0.1:
-                self.logger.info(
-                    f"getattr for {path} took {processing_time:.3f}s (from cache)"
-                )
+            elapsed = (time.time() - start_time) * 1000
+            self.logger.debug("getattr %s -> parent cache (%.1fms)", path, elapsed)
             self._record_elapsed("getattr_total_ms", start_time)
             return cached_attrs
 
@@ -805,11 +814,10 @@ class YouTubeMusicFS(Operations):
 
                 with self.last_access_lock:
                     self.last_access_results[operation_key] = attrs
-                processing_time = time.time() - start_time
-                if processing_time > 0.1:
-                    self.logger.info(
-                        f"getattr for {path} took {processing_time:.3f}s (playlist/album dir)"
-                    )
+                elapsed = (time.time() - start_time) * 1000
+                self.logger.debug(
+                    "getattr %s -> playlist/album dir (%.1fms)", path, elapsed
+                )
                 return attrs
 
         # CASE 5: Use the router to validate - fallback approach
@@ -855,12 +863,10 @@ class YouTubeMusicFS(Operations):
             with self.last_access_lock:
                 self.last_access_results[operation_key] = attrs
 
-            # Log slow getattr operations
-            processing_time = time.time() - start_time
-            if processing_time > 0.1:
-                self.logger.info(
-                    f"getattr for {path} took {processing_time:.3f}s (from router)"
-                )
+            elapsed = (time.time() - start_time) * 1000
+            self.logger.debug(
+                "getattr %s -> router fallback (%.1fms)", path, elapsed
+            )
 
             return attrs
         except Exception as e:
