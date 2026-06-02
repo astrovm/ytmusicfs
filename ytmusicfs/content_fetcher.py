@@ -292,9 +292,12 @@ class ContentFetcher:
             return []
 
         # Use the centralized refresh method with the fast API-based fetcher
+        entry_type = "album" if path.startswith("/albums/") else "playlist"
         tracks = self.refresh_content(
             cache_key,
-            lambda lim: self._fetch_playlist_tracks_fast(playlist_id, lim),
+            lambda lim: self._fetch_playlist_tracks_fast(
+                playlist_id, lim, entry_type
+            ),
             path,
             limit,
             force_refresh,
@@ -401,9 +404,16 @@ class ContentFetcher:
     def _fetch_playlist_entry(
         self, entry: dict[str, Any]
     ) -> tuple[str, str, int]:
-        """Fetch a single playlist/album and return (name, type, track_count)."""
+        """Fetch a single playlist/album and return (name, type, track_count).
+
+        Uses force_refresh=False so the background pre-fetch skips entries
+        that have already been fetched on-demand (e.g. by eza during the
+        15-second idle window).  Without this guard every playlist would
+        be fetched twice: once by the synchronous eza readdir and again by
+        the background worker.
+        """
         tracks = self.fetch_playlist_content(
-            entry["id"], entry["path"], force_refresh=True
+            entry["id"], entry["path"], force_refresh=False
         )
         return entry["name"], entry["type"], len(tracks)
 
@@ -506,19 +516,31 @@ class ContentFetcher:
         )
 
     def _fetch_playlist_tracks_fast(
-        self, playlist_id: str, limit: int
+        self, playlist_id: str, limit: int, entry_type: str = "playlist"
     ) -> list[dict[str, Any]]:
         """Fetch playlist tracks via ytmusicapi instead of yt-dlp.
 
         Returns track metadata (videoId, title, artists, duration) without
-        resolving stream URLs — typically 0.2–0.5s per playlist regardless
-        of size, vs up to 45s via yt-dlp for large playlists.
+        resolving stream URLs.
         """
-        result = self.client.get_playlist(playlist_id, limit=limit)
-        self._last_api_track_count = (
-            result.get("trackCount") if isinstance(result, dict) else None
-        )
-        raw_tracks = result.get("tracks", []) if isinstance(result, dict) else []
+        if entry_type == "album":
+            # Albums use browse IDs (MPREb_...) — get_album returns tracks
+            # under "tracks" with the same format as get_playlist.
+            result = self.client.get_album(playlist_id)
+            self._last_api_track_count = (
+                result.get("trackCount") if isinstance(result, dict) else None
+            )
+            raw_tracks = (
+                result.get("tracks", []) if isinstance(result, dict) else []
+            )
+        else:
+            result = self.client.get_playlist(playlist_id, limit=limit)
+            self._last_api_track_count = (
+                result.get("trackCount") if isinstance(result, dict) else None
+            )
+            raw_tracks = (
+                result.get("tracks", []) if isinstance(result, dict) else []
+            )
         return [
             {
                 "videoId": t.get("videoId"),
