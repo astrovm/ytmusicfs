@@ -4,6 +4,7 @@ import logging
 import time
 import traceback
 from collections.abc import Callable
+from concurrent.futures import Future
 from typing import Any
 
 from ytmusicfs.cache import CacheManager
@@ -334,6 +335,9 @@ class ContentFetcher:
         Each playlist is fetched via yt-dlp once and cached with directory
         listing attributes, so subsequent recursive reads (eza, find, file
         managers) hit Priority 2 fallback cache instantly.
+
+        Fetches are dispatched to the extraction thread pool so multiple
+        playlists are resolved concurrently (default: 4 workers).
         """
         entries = [
             p for p in self.PLAYLIST_REGISTRY
@@ -343,33 +347,63 @@ class ContentFetcher:
             self.logger.info("No playlists or albums to pre-fetch")
             return
 
+        tm = self.yt_dlp_utils.thread_manager
+        if not tm:
+            self.logger.warning(
+                "No thread manager available; pre-fetching sequentially"
+            )
+            for entry in entries:
+                self._fetch_playlist_entry(entry)
+            return
+
         self.logger.info(
-            "Pre-fetching %d playlists/albums in background", len(entries)
+            "Pre-fetching %d playlists/albums (pool: %s)",
+            len(entries),
+            "extraction",
         )
-        for i, entry in enumerate(entries):
+
+        futures: list[Future] = []
+        for entry in entries:
+            future = tm.submit_task(
+                "extraction", self._fetch_playlist_entry, entry
+            )
+            futures.append(future)
+
+        completed = 0
+        for i, future in enumerate(futures):
             try:
-                tracks = self.fetch_playlist_content(
-                    entry["id"], entry["path"], force_refresh=True
-                )
+                name, typ, count = future.result(timeout=600)
+                completed += 1
                 self.logger.debug(
-                    "Pre-fetched %s %d/%d: %s (%d tracks)",
-                    entry["type"],
-                    i + 1,
+                    "Pre-fetched %s (%d/%d): %s (%d tracks)",
+                    typ,
+                    completed,
                     len(entries),
-                    entry["name"],
-                    len(tracks),
+                    name,
+                    count,
                 )
             except Exception as exc:
                 self.logger.warning(
-                    "Failed to pre-fetch %s '%s': %s",
-                    entry["type"],
-                    entry["name"],
+                    "Failed to pre-fetch entry %d/%d: %s",
+                    i + 1,
+                    len(entries),
                     exc,
                 )
 
         self.logger.info(
-            "Finished pre-fetching %d playlists/albums", len(entries)
+            "Finished pre-fetching %d/%d playlists/albums",
+            completed,
+            len(futures),
         )
+
+    def _fetch_playlist_entry(
+        self, entry: dict[str, Any]
+    ) -> tuple[str, str, int]:
+        """Fetch a single playlist/album and return (name, type, track_count)."""
+        tracks = self.fetch_playlist_content(
+            entry["id"], entry["path"], force_refresh=True
+        )
+        return entry["name"], entry["type"], len(tracks)
 
     def readdir_playlist_by_type(
         self, playlist_type: str | None = None, directory_path: str | None = None
