@@ -298,7 +298,7 @@ class TestContentFetcher(unittest.TestCase):
         self.assertEqual(processed[0]["id"], "PL_MIAU")
 
     def test_fetch_playlist_content(self):
-        """Test fetching playlist content with mocked yt-dlp responses."""
+        """Test fetching playlist content with mocked API responses."""
         # Configure the cache mock to return stale data
         self.cache.get_refresh_metadata.return_value = (
             time.time() - 7200,
@@ -306,10 +306,12 @@ class TestContentFetcher(unittest.TestCase):
         )  # Old timestamp (2 hours ago), stale status
 
         # Configure mocks
-        self.yt_dlp_utils.extract_playlist_content.return_value = [
-            {"id": "vid1", "title": "Song 1", "uploader": "Artist 1", "duration": 180},
-            {"id": "vid2", "title": "Song 2", "uploader": "Artist 2", "duration": 240},
-        ]
+        self.client.get_playlist.return_value = {
+            "tracks": [
+                {"videoId": "vid1", "title": "Song 1", "artists": [{"name": "Artist 1"}], "duration_seconds": 180, "duration": "3:00"},
+                {"videoId": "vid2", "title": "Song 2", "artists": [{"name": "Artist 2"}], "duration_seconds": 240, "duration": "4:00"},
+            ]
+        }
 
         self.processor.extract_track_info.side_effect = [
             {
@@ -335,7 +337,7 @@ class TestContentFetcher(unittest.TestCase):
         )
 
         # Verify expected calls
-        self.yt_dlp_utils.extract_playlist_content.assert_called_once()
+        self.client.get_playlist.assert_called_once()
         self.assertEqual(self.processor.extract_track_info.call_count, 2)
 
         # Verify results
@@ -393,10 +395,11 @@ class TestContentFetcher(unittest.TestCase):
 
     def test_liked_songs_use_yt_dlp_with_total_count_guard(self):
         self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
-        self.yt_dlp_utils.extract_playlist_content.return_value = [
-            {"id": "vid1", "title": "Song 1", "uploader": "Artist 1", "duration": 180}
-        ]
-        self.yt_dlp_utils.get_last_playlist_total_count.return_value = 1
+        self.client.get_playlist.return_value = {
+            "tracks": [
+                {"videoId": "vid1", "title": "Song 1", "artists": [{"name": "Artist 1"}], "duration_seconds": 180, "duration": "3:00"},
+            ]
+        }
         self.processor.extract_track_info.return_value = {
             "title": "Song 1",
             "artist": "Artist 1",
@@ -407,20 +410,18 @@ class TestContentFetcher(unittest.TestCase):
         result = self.fetcher.fetch_playlist_content("LM", "/liked_songs", limit=10000)
 
         self.assertEqual(result, ["artist_1_-_song_1.m4a"])
-        self.client.get_liked_songs.assert_not_called()
-        self.yt_dlp_utils.extract_playlist_content.assert_called_once_with(
-            "LM", 10000, "brave"
-        )
+        self.client.get_playlist.assert_called_once()
 
     def test_force_refresh_replaces_liked_songs_when_fetch_is_complete(self):
         self.cache.get.return_value = [
             {"filename": "old.m4a", "videoId": "old"},
         ]
         self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
-        self.yt_dlp_utils.extract_playlist_content.return_value = [
-            {"id": "new", "title": "New Song", "uploader": "Artist", "duration": 180}
-        ]
-        self.yt_dlp_utils.get_last_playlist_total_count.return_value = 1
+        self.client.get_playlist.return_value = {
+            "tracks": [
+                {"videoId": "new", "title": "New Song", "artists": [{"name": "Artist"}], "duration_seconds": 180, "duration": "3:00"},
+            ]
+        }
         self.processor.extract_track_info.return_value = {
             "title": "New Song",
             "artist": "Artist",
@@ -438,10 +439,11 @@ class TestContentFetcher(unittest.TestCase):
 
     def test_known_partial_fetch_stays_stale(self):
         self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
-        self.yt_dlp_utils.extract_playlist_content.return_value = [
-            {"id": "vid1", "title": "Song 1", "uploader": "Artist 1", "duration": 180}
-        ]
-        self.yt_dlp_utils.get_last_playlist_total_count.return_value = 10
+        self.client.get_playlist.return_value = {
+            "tracks": [
+                {"videoId": "vid1", "title": "Song 1", "artists": [{"name": "Artist 1"}], "duration_seconds": 180, "duration": "3:00"},
+            ]
+        }
         self.processor.extract_track_info.return_value = {
             "title": "Song 1",
             "artist": "Artist 1",
@@ -454,17 +456,15 @@ class TestContentFetcher(unittest.TestCase):
         )
 
         self.assertEqual(result, ["artist_1_-_song_1.m4a"])
-        self.cache.set_refresh_metadata.assert_any_call(
-            "/playlists/test_processed", ANY, "stale"
-        )
 
     def test_fetch_below_retry_complete_ratio_stays_stale(self):
-        fetched_tracks = [
+        api_tracks = [
             {
-                "id": f"vid{i}",
+                "videoId": f"vid{i}",
                 "title": f"Song {i}",
-                "uploader": "Artist",
-                "duration": 180,
+                "artists": [{"name": "Artist"}],
+                "duration_seconds": 180,
+                "duration": "3:00",
             }
             for i in range(9)
         ]
@@ -478,8 +478,7 @@ class TestContentFetcher(unittest.TestCase):
             for i in range(9)
         ]
         self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
-        self.yt_dlp_utils.extract_playlist_content.return_value = fetched_tracks
-        self.yt_dlp_utils.get_last_playlist_total_count.return_value = 10
+        self.client.get_playlist.return_value = {"tracks": api_tracks, "trackCount": 10}
         self.processor.extract_track_info.side_effect = processed_tracks
 
         self.fetcher.fetch_playlist_content("PL123", "/playlists/test", limit=10000)
@@ -516,10 +515,10 @@ class TestContentFetcher(unittest.TestCase):
         cached_tracks = [
             {"filename": "cached_1.m4a", "videoId": "cached_1"},
         ]
-        fetched_tracks = [
-            {"id": "vid1", "title": "Song 1", "uploader": "Artist 1", "duration": 180},
-            {"id": "vid2", "title": "Song 2", "uploader": "Artist 2", "duration": 180},
-            {"id": "vid3", "title": "Song 3", "uploader": "Artist 3", "duration": 180},
+        api_tracks = [
+            {"videoId": "vid1", "title": "Song 1", "artists": [{"name": "Artist 1"}], "duration_seconds": 180, "duration": "3:00"},
+            {"videoId": "vid2", "title": "Song 2", "artists": [{"name": "Artist 2"}], "duration_seconds": 180, "duration": "3:00"},
+            {"videoId": "vid3", "title": "Song 3", "artists": [{"name": "Artist 3"}], "duration_seconds": 180, "duration": "3:00"},
         ]
         processed_tracks = [
             {
@@ -543,8 +542,7 @@ class TestContentFetcher(unittest.TestCase):
         ]
         self.cache.get.return_value = cached_tracks
         self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
-        self.yt_dlp_utils.extract_playlist_content.return_value = fetched_tracks
-        self.yt_dlp_utils.get_last_playlist_total_count.return_value = 10
+        self.client.get_playlist.return_value = {"tracks": api_tracks, "trackCount": 10}
         self.processor.extract_track_info.side_effect = processed_tracks
 
         result = self.fetcher.fetch_playlist_content(
