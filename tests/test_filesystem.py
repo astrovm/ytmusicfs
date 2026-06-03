@@ -257,6 +257,79 @@ class TestYouTubeMusicFS(unittest.TestCase):
         self.assertEqual(kwargs["entry_timeout"], entry_timeout)
         self.assertEqual(kwargs["negative_timeout"], negative_timeout)
 
+    def test_automatic_refresh_prefetches_after_liked_songs(self):
+        self.fs.last_fs_activity = time.time() - 20
+        self.mock_thread_manager.is_shutdown.return_value = False
+
+        with (
+            patch.object(self.fs, "_sleep_refresh_delay", return_value=True),
+            patch.object(self.fs, "_prefetch_playlist_album_contents") as mock_prefetch,
+        ):
+            self.fs._automatic_refresh_after_mount()
+
+        self.mock_fetcher.refresh_liked_songs_automatic.assert_called_once_with()
+        mock_prefetch.assert_called_once_with()
+
+    def test_playlist_prefetch_skips_cached_and_fetches_uncached_entries(self):
+        self.fs.last_fs_activity = time.time() - 20
+        self.mock_thread_manager.is_shutdown.return_value = False
+        self.mock_fetcher.PLAYLIST_REGISTRY = [
+            {
+                "name": "cached",
+                "id": "PL_CACHED",
+                "type": "playlist",
+                "path": "/playlists/cached",
+            },
+            {
+                "name": "uncached",
+                "id": "PL_UNCACHED",
+                "type": "playlist",
+                "path": "/playlists/uncached",
+            },
+            {
+                "name": "album",
+                "id": "MPREb_123",
+                "type": "album",
+                "path": "/albums/album",
+            },
+            {
+                "name": "liked_songs",
+                "id": "LM",
+                "type": "liked_songs",
+                "path": "/liked_songs",
+            },
+        ]
+        self.mock_cache.get.side_effect = lambda key: (
+            [{"filename": "song.m4a"}] if key == "/playlists/cached_processed" else []
+        )
+
+        self.fs._prefetch_playlist_album_contents()
+
+        self.mock_fetcher.fetch_playlist_content.assert_any_call(
+            "PL_UNCACHED", "/playlists/uncached", force_refresh=False
+        )
+        self.mock_fetcher.fetch_playlist_content.assert_any_call(
+            "MPREb_123", "/albums/album", force_refresh=False
+        )
+        self.assertEqual(self.mock_fetcher.fetch_playlist_content.call_count, 2)
+        with self.fs.refresh_state_lock:
+            prefetch = self.fs.refresh_state["playlist_prefetch"]
+        self.assertEqual(prefetch["queued"], 3)
+        self.assertEqual(prefetch["skipped"], 1)
+        self.assertEqual(prefetch["completed"], 2)
+        self.assertEqual(prefetch["failed"], 0)
+
+    def test_playlist_prefetch_backs_off_while_filesystem_is_active(self):
+        self.fs.last_fs_activity = time.time()
+        self.mock_thread_manager.is_shutdown.return_value = False
+
+        with patch.object(self.fs, "_sleep_refresh_delay", return_value=False):
+            result = self.fs._wait_for_playlist_prefetch_idle()
+
+        self.assertFalse(result)
+        with self.fs.refresh_state_lock:
+            self.assertGreater(self.fs.refresh_state["backoffs"], 0)
+
     def test_getattr_root(self):
         """Test getting attributes of the root directory."""
         # Configure the cache mock to recognize the path

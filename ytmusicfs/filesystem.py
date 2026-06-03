@@ -46,6 +46,8 @@ class YouTubeMusicFS(Operations):
     PRECACHE_TRACKS_PER_DIRECTORY = 8
     PRECACHE_MAX_QUEUE_DEPTH = 64
     PRECACHE_IDLE_SECONDS = 2.0
+    PLAYLIST_PREFETCH_IDLE_SECONDS = 8.0
+    PLAYLIST_PREFETCH_BACKOFF_SECONDS = 5
 
     def __init__(
         self,
@@ -184,6 +186,13 @@ class YouTubeMusicFS(Operations):
             "last_finished": None,
             "last_result": None,
             "backoffs": 0,
+            "playlist_prefetch": {
+                "queued": 0,
+                "completed": 0,
+                "skipped": 0,
+                "failed": 0,
+                "current": None,
+            },
         }
 
         # Store the browser parameter
@@ -1193,12 +1202,82 @@ class YouTubeMusicFS(Operations):
             )
             return
 
+        self._prefetch_playlist_album_contents()
+
         self._set_refresh_state(
             running=False,
             phase="idle",
             last_finished=int(time.time()),
             last_result="ok",
         )
+
+    def _prefetch_playlist_album_contents(self) -> None:
+        entries = [
+            entry
+            for entry in self.fetcher.PLAYLIST_REGISTRY
+            if entry.get("type") in ("playlist", "album")
+        ]
+        self._set_playlist_prefetch_state(
+            queued=len(entries),
+            completed=0,
+            skipped=0,
+            failed=0,
+            current=None,
+        )
+        if not entries:
+            return
+
+        self._set_refresh_state(phase="playlist_prefetch")
+        for entry in entries:
+            if self.thread_manager.is_shutdown():
+                self._set_playlist_prefetch_state(current=None)
+                self._set_refresh_state(last_result="cancelled during shutdown")
+                return
+            if not self._wait_for_playlist_prefetch_idle():
+                return
+
+            path = entry.get("path")
+            playlist_id = entry.get("id")
+            name = entry.get("name")
+            if not isinstance(path, str) or not isinstance(playlist_id, str):
+                self._increment_playlist_prefetch_state("skipped")
+                continue
+            if self.cache.get(f"{path}_processed"):
+                self._increment_playlist_prefetch_state("skipped")
+                continue
+
+            self._set_playlist_prefetch_state(current=name or path)
+            try:
+                self.fetcher.fetch_playlist_content(
+                    playlist_id,
+                    path,
+                    force_refresh=False,
+                )
+                self._increment_playlist_prefetch_state("completed")
+            except Exception as exc:
+                self._increment_playlist_prefetch_state("failed")
+                self.logger.warning("Playlist prefetch failed for %s: %s", path, exc)
+            finally:
+                self._set_playlist_prefetch_state(current=None)
+
+    def _wait_for_playlist_prefetch_idle(self) -> bool:
+        while time.time() - self.last_fs_activity < self.PLAYLIST_PREFETCH_IDLE_SECONDS:
+            self._record_refresh_backoff()
+            if not self._sleep_refresh_delay(self.PLAYLIST_PREFETCH_BACKOFF_SECONDS):
+                return False
+        return True
+
+    def _set_playlist_prefetch_state(self, **updates: object) -> None:
+        with self.refresh_state_lock:
+            state = dict(self.refresh_state.get("playlist_prefetch", {}))
+            state.update(updates)
+            self.refresh_state["playlist_prefetch"] = state
+
+    def _increment_playlist_prefetch_state(self, key: str) -> None:
+        with self.refresh_state_lock:
+            state = dict(self.refresh_state.get("playlist_prefetch", {}))
+            state[key] = int(state.get(key, 0)) + 1
+            self.refresh_state["playlist_prefetch"] = state
 
     def _set_refresh_state(self, **updates: object) -> None:
         with self.refresh_state_lock:
