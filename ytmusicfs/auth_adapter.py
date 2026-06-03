@@ -81,8 +81,8 @@ class YTMusicAuthAdapter:
         # Perform a very small request so we fail fast if auth is invalid.
         for attempt in range(1, _VALIDATION_ATTEMPTS + 1):
             try:
-                result = self.ytmusic.get_library_playlists(limit=1)
-                break
+                self.ytmusic.get_library_playlists(limit=1)
+                return
             except JSONDecodeError as exc:
                 if attempt == _VALIDATION_ATTEMPTS:
                     raise RuntimeError(
@@ -98,12 +98,6 @@ class YTMusicAuthAdapter:
                     _VALIDATION_ATTEMPTS,
                 )
                 time.sleep(_VALIDATION_RETRY_DELAY_SECONDS)
-
-        if not result:
-            raise ValueError(
-                "YouTube Music returned an empty playlist list. "
-                "Your browser auth may not match an active YouTube Music session."
-            )
 
     def __getattr__(self, name: str) -> Any:
         """Delegate attribute access to the underlying :class:`YTMusic` client."""
