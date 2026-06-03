@@ -53,8 +53,16 @@ class YTMusicAuthAdapter:
         )
         return client
 
+    @staticmethod
+    def _filter_browser_cookies(cookies: dict[str, str]) -> dict[str, str]:
+        return {
+            name: value for name, value in cookies.items() if not name.startswith("ST-")
+        }
+
     def _build_browser_auth(self) -> dict[str, str]:
-        cookies = self.yt_dlp_utils.extract_browser_cookies(self.browser)
+        cookies = self._filter_browser_cookies(
+            self.yt_dlp_utils.extract_browser_cookies(self.browser)
+        )
         auth_header = _build_sapisidhash(cookies, _YT_ORIGIN)
         if not auth_header:
             raise ValueError(

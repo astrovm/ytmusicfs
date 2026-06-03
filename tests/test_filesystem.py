@@ -9,7 +9,7 @@ import time
 import unittest
 from concurrent.futures import Future
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from fuse import FuseOSError
 
@@ -202,6 +202,22 @@ class TestYouTubeMusicFS(unittest.TestCase):
 
         # Verify router was called
         self.mock_router.route.assert_called_once_with(playlist_path)
+
+    def test_getattr_playlist_directory_does_not_rewrite_cached_attrs(self):
+        self.mock_cache.get_file_attrs_from_parent_dir.return_value = None
+        self.mock_router.validate_path.return_value = True
+
+        attrs = self.fs.getattr("/playlists/my_playlist")
+
+        self.assertEqual(attrs["st_mode"], stat.S_IFDIR | 0o555)
+        self.assertEqual(attrs["st_nlink"], 2)
+        self.assertEqual(attrs["st_size"], 4096)
+        self.mock_router.validate_path.assert_called_once_with("/playlists/my_playlist")
+        self.mock_cache.update_file_attrs_in_parent_dir.assert_not_called()
+        self.assertNotIn(
+            call("/playlists/my_playlist", is_directory=True),
+            self.mock_cache.mark_valid.mock_calls,
+        )
 
     def test_readdir_schedules_idle_precache_for_audio_entries(self):
         playlist_path = "/playlists/my_playlist"

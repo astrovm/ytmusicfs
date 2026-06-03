@@ -33,6 +33,32 @@ def test_browser_cookie_auth_builds_ytmusic_headers(mock_ytmusic):
 
 
 @patch("ytmusicfs.auth_adapter.YTMusic")
+def test_browser_cookie_auth_drops_session_tracking_cookies(mock_ytmusic):
+    client = mock_ytmusic.return_value
+    client.get_library_playlists.return_value = [{"title": "Playlist"}]
+    ytdlp = Mock()
+    ytdlp.extract_browser_cookies.return_value = {
+        "SAPISID": "sapisid",
+        "SID": "sid",
+        "ST-123": "tracking",
+        "ST-long": "x" * 100_000,
+        "PREF": "pref",
+    }
+
+    YTMusicAuthAdapter(
+        browser="brave",
+        yt_dlp_utils=ytdlp,
+    )
+
+    auth = mock_ytmusic.call_args.kwargs["auth"]
+    assert "SAPISID=sapisid" in auth["Cookie"]
+    assert "SID=sid" in auth["Cookie"]
+    assert "PREF=pref" in auth["Cookie"]
+    assert "ST-123=" not in auth["Cookie"]
+    assert "ST-long=" not in auth["Cookie"]
+
+
+@patch("ytmusicfs.auth_adapter.YTMusic")
 def test_browser_cookie_auth_accepts_empty_playlist_list(mock_ytmusic):
     client = mock_ytmusic.return_value
     client.get_library_playlists.return_value = []

@@ -346,6 +346,62 @@ class TestContentFetcher(unittest.TestCase):
         # Verify cache operations
         self.assertEqual(self.cache.set.call_count, 1)  # Cache the result
 
+    def test_fetch_album_content_uses_api_metadata(self):
+        self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
+        self.client.get_album.return_value = {
+            "title": "Album Name",
+            "trackCount": 1,
+            "tracks": [
+                {
+                    "videoId": "vid1",
+                    "title": "Song 1",
+                    "artists": [{"name": "Artist 1"}],
+                    "duration": "3:00",
+                }
+            ],
+        }
+        self.processor.extract_track_info.return_value = {
+            "title": "Song 1",
+            "artist": "Artist 1",
+            "album": "Album Name",
+            "videoId": "vid1",
+            "duration_seconds": 180,
+        }
+
+        result = self.fetcher.fetch_playlist_content(
+            "MPREb_123", "/albums/test", limit=10000
+        )
+
+        self.assertEqual(result, ["artist_1_-_song_1.m4a"])
+        self.client.get_album.assert_called_once_with("MPREb_123")
+        self.yt_dlp_utils.extract_playlist_content.assert_not_called()
+        self.processor.extract_track_info.assert_called_once()
+        track_info = self.processor.extract_track_info.call_args.args[0]
+        self.assertEqual(track_info["album"], "Album Name")
+
+    def test_fetch_regular_playlist_content_keeps_yt_dlp_path(self):
+        self.cache.get_refresh_metadata.return_value = (time.time() - 7200, "stale")
+        self.yt_dlp_utils.extract_playlist_content.return_value = [
+            {"id": "vid1", "title": "Song 1", "uploader": "Artist 1", "duration": 180}
+        ]
+        self.yt_dlp_utils.get_last_playlist_total_count.return_value = 1
+        self.processor.extract_track_info.return_value = {
+            "title": "Song 1",
+            "artist": "Artist 1",
+            "videoId": "vid1",
+            "duration_seconds": 180,
+        }
+
+        result = self.fetcher.fetch_playlist_content(
+            "PL123", "/playlists/test", limit=10000
+        )
+
+        self.assertEqual(result, ["artist_1_-_song_1.m4a"])
+        self.yt_dlp_utils.extract_playlist_content.assert_called_once_with(
+            "PL123", 10000, "brave"
+        )
+        self.client.get_album.assert_not_called()
+
     def test_fetch_playlist_content_missing_id_uses_cache(self):
         """Missing route IDs should degrade to cached entries instead of crashing."""
         cached_tracks = [{"filename": "cached_song.m4a", "videoId": "vid1"}]

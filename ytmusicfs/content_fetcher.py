@@ -290,14 +290,28 @@ class ContentFetcher:
             self.logger.error("Missing playlist ID for %s", path)
             return []
 
-        # Use the centralized refresh method
+        expected_total: int | None = None
+
+        def fetch_tracks(lim: int) -> list[dict[str, Any]]:
+            nonlocal expected_total
+            if path.startswith("/albums/"):
+                result = self.client.get_album(playlist_id)
+                expected_total = self._api_track_count(result)
+                return self._api_track_entries(result, lim)
+            return self._fetch_playlist_tracks(playlist_id, lim)
+
+        def get_expected_total() -> int | None:
+            if path.startswith("/albums/"):
+                return expected_total
+            return self._get_expected_total_count(playlist_id)
+
         tracks = self.refresh_content(
             cache_key,
-            lambda lim: self._fetch_playlist_tracks(playlist_id, lim),
+            fetch_tracks,
             path,
             limit,
             force_refresh,
-            expected_total_func=lambda: self._get_expected_total_count(playlist_id),
+            expected_total_func=get_expected_total,
         )
 
         # Return just the filenames
@@ -419,6 +433,34 @@ class ContentFetcher:
         return self.yt_dlp_utils.extract_playlist_content(
             playlist_id, limit, self.browser
         )
+
+    @staticmethod
+    def _api_track_count(result: object) -> int | None:
+        count = result.get("trackCount") if isinstance(result, dict) else None
+        return count if isinstance(count, int) else None
+
+    @staticmethod
+    def _api_track_entries(result: object, limit: int) -> list[dict[str, Any]]:
+        if not isinstance(result, dict):
+            return []
+
+        album = result.get("title") if isinstance(result.get("title"), str) else None
+        year = result.get("year")
+        tracks = result.get("tracks", [])
+        if not isinstance(tracks, list):
+            return []
+
+        entries = []
+        for track in tracks[:limit]:
+            if not isinstance(track, dict) or not track.get("videoId"):
+                continue
+            entry = dict(track)
+            if album and "album" not in entry:
+                entry["album"] = album
+            if year and "year" not in entry:
+                entry["year"] = year
+            entries.append(entry)
+        return entries
 
     def _get_expected_total_count(self, playlist_id: str) -> int | None:
         if not playlist_id:
