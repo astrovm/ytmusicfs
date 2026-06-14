@@ -13,6 +13,7 @@ from typing import Any, ClassVar
 
 from ytmusicfs import __version__
 from ytmusicfs.config import ConfigManager
+from ytmusicfs.dependencies import RepairDependencies
 
 LOG_DIR = Path.home() / ".cache" / "ytmusicfs" / "logs"
 LOG_FILE = LOG_DIR / "ytmusicfs.log"
@@ -556,13 +557,15 @@ class RepairCommandHandler:
             client = YouTubeMusicClient(auth_adapter, logger=self.logger)
             processor = TrackProcessor(cache_manager=cache, logger=self.logger)
             repairer = LikedSongsRepairer(
-                client=client,
-                cache=cache,
-                processor=processor,
-                yt_dlp_utils=yt_dlp_utils,
-                browser=str(browser),
-                sync_account=True,
-                logger=self.logger,
+                RepairDependencies(
+                    client=client,
+                    cache=cache,
+                    processor=processor,
+                    yt_dlp=yt_dlp_utils,
+                    browser=str(browser),
+                    sync_account=True,
+                    logger=self.logger,
+                )
             )
             repairs, dead_tracks, stats = repairer.plan_repairs()
             if repairs or dead_tracks:
@@ -697,17 +700,7 @@ class ServiceCommandHandler:
         return 0
 
 
-def main() -> int:
-    """Command-line entry point for YTMusicFS."""
-    parser = argparse.ArgumentParser(
-        description="YTMusicFS - Mount YouTube Music as a filesystem"
-    )
-    parser.add_argument(
-        "--version", "-v", action="version", version=f"YTMusicFS {__version__}"
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    # Mount command
+def _add_mount_commands(subparsers: Any) -> None:
     mount_parser = subparsers.add_parser("mount", help="Mount YouTube Music filesystem")
     mount_parser.add_argument("--mount-point", "-m", help="Mount point directory")
     mount_parser.add_argument("--cache-dir", "-c", help="Cache directory")
@@ -738,6 +731,8 @@ def main() -> int:
         func=lambda args: UnmountCommandHandler(args, setup_logging(args)).execute()
     )
 
+
+def _add_library_commands(subparsers: Any) -> None:
     status_parser = subparsers.add_parser("status", help="Show YTMusicFS status")
     add_common_options(status_parser)
     status_parser.set_defaults(
@@ -779,6 +774,8 @@ def main() -> int:
         func=lambda args: RepairCommandHandler(args, setup_logging(args)).execute()
     )
 
+
+def _add_cache_commands(subparsers: Any) -> None:
     cache_parser = subparsers.add_parser("cache", help="Inspect or clear cache")
     add_common_options(cache_parser)
     cache_subparsers = cache_parser.add_subparsers(dest="cache_action", required=True)
@@ -818,6 +815,8 @@ def main() -> int:
         func=lambda args: LogsCommandHandler(args, setup_logging(args)).execute(),
     )
 
+
+def _add_service_command(subparsers: Any) -> None:
     service_parser = subparsers.add_parser(
         "service", help="Manage the systemd user service"
     )
@@ -842,6 +841,26 @@ def main() -> int:
             func=lambda args: ServiceCommandHandler(args, setup_logging(args)).execute()
         )
 
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command tree without performing command work."""
+    parser = argparse.ArgumentParser(
+        description="YTMusicFS - Mount YouTube Music as a filesystem"
+    )
+    parser.add_argument(
+        "--version", "-v", action="version", version=f"YTMusicFS {__version__}"
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    _add_mount_commands(subparsers)
+    _add_library_commands(subparsers)
+    _add_cache_commands(subparsers)
+    _add_service_command(subparsers)
+    return parser
+
+
+def main() -> int:
+    """Parse arguments and dispatch one command."""
+    parser = build_parser()
     args = parser.parse_args()
     return args.func(args)
 

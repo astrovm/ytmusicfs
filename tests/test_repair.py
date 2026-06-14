@@ -2,6 +2,7 @@ import logging
 import unittest
 from unittest.mock import Mock
 
+from ytmusicfs.dependencies import RepairDependencies
 from ytmusicfs.repair import LikedSongsRepairer
 
 
@@ -13,13 +14,15 @@ class TestLikedSongsRepairer(unittest.TestCase):
         self.yt_dlp_utils = Mock()
         self.cache.is_no_replacement.return_value = False
         self.repairer = LikedSongsRepairer(
-            client=self.client,
-            cache=self.cache,
-            processor=self.processor,
-            yt_dlp_utils=self.yt_dlp_utils,
-            browser="brave",
-            sync_account=True,
-            logger=logging.getLogger("test"),
+            RepairDependencies(
+                client=self.client,
+                cache=self.cache,
+                processor=self.processor,
+                yt_dlp=self.yt_dlp_utils,
+                browser="brave",
+                sync_account=True,
+                logger=logging.getLogger("test"),
+            )
         )
 
     def test_repair_likes_verified_replacement_and_unlikes_old_video(self):

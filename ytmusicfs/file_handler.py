@@ -14,7 +14,8 @@ import requests
 from ytmusicfs.dependencies import DownloaderDependencies, FileHandlerDependencies
 from ytmusicfs.downloader import Downloader
 from ytmusicfs.http_utils import ensure_headers_and_cookies
-from ytmusicfs.models import DownloadRequest, FileHandleState
+from ytmusicfs.models import DownloadRequest, FileHandleState, StreamRequest
+from ytmusicfs.retry import RetryPolicy
 from ytmusicfs.yt_dlp_utils import PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT
 
 
@@ -52,7 +53,6 @@ class FileHandler:
         self.stream_info_cache: dict[str, dict[str, Any]] = {}
         self.recent_handles: deque[dict[str, Any]] = deque(maxlen=100)
 
-        # Initialize Downloader
         self.downloader = Downloader(
             DownloaderDependencies(
                 thread_manager=dependencies.thread_manager,
@@ -137,93 +137,72 @@ class FileHandler:
 
         return fh
 
-    def _stream_content(
-        self,
-        stream_url: str,
-        offset: int,
-        size: int,
-        path: str | None = None,
-        auth_headers: dict[str, str] | None = None,
-        cookies: dict[str, str] | None = None,
-        retries: int = 3,
-    ) -> bytes:
-        """Stream content directly from URL when file is not yet cached.
+    def _stream_content(self, request: StreamRequest) -> bytes:
+        """Read one byte range from a remote audio stream."""
+        header_source = dict(request.headers) if request.headers else {}
+        base_headers, cookies = ensure_headers_and_cookies(
+            header_source, request.cookies
+        )
 
-        Args:
-            stream_url: URL to stream from
-            offset: Byte offset to start from
-            size: Number of bytes to read
-            retries: Number of retry attempts
-
-        Returns:
-            Requested bytes
-        """
-        buffer_size = 32768  # 32KB buffer (increased from 16KB)
-        # Request more than needed to ensure smooth playback
-        prefetch_size = buffer_size * 4
-
-        # Calculate end byte (inclusive) according to HTTP range spec
-        end_byte = offset + size + prefetch_size - 1
-        header_source = dict(auth_headers) if auth_headers else {}
-        base_headers, cookies = ensure_headers_and_cookies(header_source, cookies)
-
-        for attempt in range(retries):
+        for attempt in RetryPolicy(request.retries, exponential=True):
             try:
-                request_headers = dict(base_headers)
-                request_headers["Range"] = f"bytes={offset}-{end_byte}"
-                self.logger.debug(f"Streaming with range: {offset}-{end_byte}")
-                request_kwargs = {
-                    "headers": request_headers,
-                    "stream": True,
-                    "timeout": 30,
-                }
-                if cookies:
-                    request_kwargs["cookies"] = cookies
-
-                with requests.get(stream_url, **request_kwargs) as response:
-                    if response.status_code == 416:
-                        self._record_stat("range_416_eof")
-                        self.logger.debug(
-                            "Stream range past EOF for %s at offset %s",
-                            path or stream_url,
-                            offset,
-                        )
-                        return b""
-
-                    if response.status_code not in (200, 206):
-                        raise OSError(
-                            errno.EIO, f"Stream failed: HTTP {response.status_code}"
-                        )
-
-                    if path:
-                        self._update_size_from_response(path, response, offset)
-
-                    # Collect all data chunks
-                    data = b""
-                    for chunk in response.iter_content(chunk_size=buffer_size):
-                        data += chunk
-                        # Once we have enough data, we can return
-                        if len(data) >= size:
-                            break
-
-                    # Return exactly what was requested
-                    return data[:size]
-
-            except requests.exceptions.RequestException as e:
-                self.logger.warning(f"Stream attempt {attempt + 1} failed: {e}")
-                if attempt == retries - 1:
+                return self._request_stream_range(request, base_headers, cookies)
+            except requests.exceptions.RequestException as error:
+                self.logger.warning(
+                    "Stream attempt %d failed: %s", attempt.number, error
+                )
+                if attempt.is_last:
                     raise OSError(
-                        errno.EIO, f"Failed to stream after {retries} attempts: {e}"
-                    ) from e
-                # Exponential backoff before retry
-                time.sleep(2**attempt)
-            except Exception as e:
-                # Non-request related exceptions
-                self.logger.error(f"Unexpected streaming error: {e}")
-                raise OSError(errno.EIO, f"Streaming error: {e!s}") from e
-
-        # Should not reach here but just in case
+                        errno.EIO,
+                        f"Failed to stream after {request.retries} attempts: {error}",
+                    ) from error
+                time.sleep(attempt.delay)
+            except Exception as error:
+                self.logger.error("Unexpected streaming error: %s", error)
+                raise OSError(errno.EIO, f"Streaming error: {error!s}") from error
         raise OSError(errno.EIO, "Failed to stream content after all retries")
+
+    def _request_stream_range(
+        self,
+        request: StreamRequest,
+        base_headers: dict[str, str],
+        cookies: dict[str, str] | None,
+    ) -> bytes:
+        buffer_size = 32768
+        end_byte = request.offset + request.size + buffer_size * 4 - 1
+        headers = {**base_headers, "Range": f"bytes={request.offset}-{end_byte}"}
+        self.logger.debug("Streaming with range: %d-%d", request.offset, end_byte)
+        with requests.get(
+            request.url,
+            headers=headers,
+            cookies=cookies,
+            stream=True,
+            timeout=30,
+        ) as response:
+            if response.status_code == 416:
+                self._record_stat("range_416_eof")
+                self.logger.debug(
+                    "Stream range past EOF for %s at offset %d",
+                    request.path or request.url,
+                    request.offset,
+                )
+                return b""
+            if response.status_code not in (200, 206):
+                raise OSError(errno.EIO, f"Stream failed: HTTP {response.status_code}")
+            if request.path:
+                self._update_size_from_response(request.path, response, request.offset)
+            return self._read_response_bytes(response, request.size, buffer_size)
+
+    @staticmethod
+    def _read_response_bytes(
+        response: requests.Response, size: int, buffer_size: int
+    ) -> bytes:
+        data = bytearray()
+        for chunk in response.iter_content(chunk_size=buffer_size):
+            data.extend(chunk)
+            if len(data) >= size:
+                break
+        return bytes(data[:size])
 
     def read(self, path: str, size: int, offset: int, fh: int) -> bytes:
         """Read from local caches before opening a remote stream."""
@@ -292,16 +271,20 @@ class FileHandler:
             return cached_data
 
         progress = self.downloader.get_progress(video_id)
-        if not progress:
-            return None
-        if progress.get("status") == "complete":
-            return self._read_file(cache_path, offset, size)
-        if (
-            progress.get("status") == "downloading"
-            and progress.get("progress", 0) >= offset + size
-        ):
+        if self._download_has_range(progress, offset, size):
             return self._read_file(cache_path, offset, size)
         return None
+
+    @staticmethod
+    def _download_has_range(
+        progress: dict[str, Any] | None, offset: int, size: int
+    ) -> bool:
+        if not progress:
+            return False
+        return progress.get("status") == "complete" or (
+            progress.get("status") == "downloading"
+            and progress.get("progress", 0) >= offset + size
+        )
 
     def _ensure_stream_ready(self, path: str, file_info: FileHandleState) -> None:
         video_id = file_info["video_id"]
@@ -409,12 +392,14 @@ class FileHandler:
 
         self.logger.debug("Streaming from URL for %s at offset %s", video_id, offset)
         data = self._stream_content(
-            stream_url,
-            offset,
-            size,
-            path=path,
-            auth_headers=file_info.get("headers"),
-            cookies=file_info.get("cookies"),
+            StreamRequest(
+                url=stream_url,
+                offset=offset,
+                size=size,
+                path=path,
+                headers=file_info.get("headers"),
+                cookies=file_info.get("cookies"),
+            )
         )
         self._cache_range(file_info, offset, data)
         self._write_progressive_audio_cache(file_info, offset, data)
@@ -671,15 +656,8 @@ class FileHandler:
         if size <= 0:
             return b""
         status_path = cache_path.with_name(f"{video_id}.status")
-        try:
-            status = status_path.read_text() if status_path.exists() else ""
-            if status == "failed" or status.startswith("failed:"):
-                return None
-            if status.startswith("partial:"):
-                cached_format = status.removeprefix("partial:")
-                if cached_format != format_id:
-                    return None
-        except OSError:
+        status = FileHandler._read_cache_status(status_path)
+        if status is None or not FileHandler._cache_status_matches(status, format_id):
             return None
         try:
             cache_size = cache_path.stat().st_size
@@ -690,6 +668,21 @@ class FileHandler:
         with cache_path.open("rb") as cached:
             cached.seek(offset)
             return cached.read(size)
+
+    @staticmethod
+    def _read_cache_status(status_path: Path) -> str | None:
+        try:
+            return status_path.read_text() if status_path.exists() else ""
+        except OSError:
+            return None
+
+    @staticmethod
+    def _cache_status_matches(status: str, format_id: Any) -> bool:
+        if status == "failed" or status.startswith("failed:"):
+            return False
+        return not status.startswith("partial:") or (
+            status.removeprefix("partial:") == format_id
+        )
 
     def _write_progressive_audio_cache(
         self, file_info: dict[str, Any], offset: int, data: bytes

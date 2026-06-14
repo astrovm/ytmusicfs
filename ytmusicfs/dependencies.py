@@ -51,3 +51,14 @@ class ContentFetcherDependencies:
     logger: logging.Logger
     yt_dlp: YTDLPProtocol
     browser: str
+
+
+@dataclass(frozen=True)
+class RepairDependencies:
+    client: MusicClientProtocol
+    cache: ContentCacheProtocol
+    processor: TrackProcessorProtocol
+    yt_dlp: YTDLPProtocol
+    browser: str
+    sync_account: bool = False
+    logger: logging.Logger | None = None

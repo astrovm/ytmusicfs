@@ -708,7 +708,8 @@ class TestYouTubeMusicFS(unittest.TestCase):
 
         self.assertEqual(result, "new")
         mock_repairer_class.assert_called_once()
-        self.assertFalse(mock_repairer_class.call_args.kwargs["sync_account"])
+        dependencies = mock_repairer_class.call_args.args[0]
+        self.assertFalse(dependencies.sync_account)
         repairer._replace_cached_liked_track.assert_called_once_with(
             "old", path, repair.old_track, repair.replacement
         )

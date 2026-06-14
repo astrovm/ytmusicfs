@@ -748,7 +748,8 @@ class TestContentFetcher(unittest.TestCase):
             "LM", 10000, "brave"
         )
         mock_repairer_class.assert_called_once()
-        self.assertFalse(mock_repairer_class.call_args.kwargs["sync_account"])
+        dependencies = mock_repairer_class.call_args.args[0]
+        self.assertFalse(dependencies.sync_account)
 
     def test_get_playlist_id_from_name(self):
         """Test retrieving playlist ID from its name."""

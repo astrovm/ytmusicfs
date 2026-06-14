@@ -108,3 +108,14 @@ class DownloadRequest:
     cookies: dict[str, Any] | None = None
     retries: int = 3
     chunk_size: int = 8192
+
+
+@dataclass(frozen=True)
+class StreamRequest:
+    url: str
+    offset: int
+    size: int
+    path: str | None = None
+    headers: dict[str, str] | None = None
+    cookies: dict[str, str] | None = None
+    retries: int = 3

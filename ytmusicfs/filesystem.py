@@ -20,7 +20,11 @@ from ytmusicfs.auth_adapter import YTMusicAuthAdapter
 from ytmusicfs.cache import CacheManager
 from ytmusicfs.client import YouTubeMusicClient
 from ytmusicfs.content_fetcher import ContentFetcher
-from ytmusicfs.dependencies import ContentFetcherDependencies, FileHandlerDependencies
+from ytmusicfs.dependencies import (
+    ContentFetcherDependencies,
+    FileHandlerDependencies,
+    RepairDependencies,
+)
 from ytmusicfs.file_handler import FileHandler
 from ytmusicfs.metadata import MetadataManager
 from ytmusicfs.path_router import PathRouter
@@ -958,13 +962,14 @@ class YouTubeMusicFS(Operations):
 
         def _find_replacement() -> str | None:
             repairer = LikedSongsRepairer(
-                client=self.client,
-                cache=self.cache,
-                processor=self.processor,
-                yt_dlp_utils=self.yt_dlp_utils,
-                browser=self.browser,
-                sync_account=False,
-                logger=self.logger,
+                RepairDependencies(
+                    client=self.client,
+                    cache=self.cache,
+                    processor=self.processor,
+                    yt_dlp=self.yt_dlp_utils,
+                    browser=self.browser,
+                    logger=self.logger,
+                )
             )
             unavailable = {"videoId": video_id, "path": path}
             repair = repairer._plan_one(unavailable)

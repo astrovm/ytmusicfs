@@ -7,10 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ytmusicfs.cache import CacheManager
-from ytmusicfs.client import YouTubeMusicClient
-from ytmusicfs.processor import TrackProcessor
-from ytmusicfs.yt_dlp_utils import YTDLPUtils
+from ytmusicfs.dependencies import RepairDependencies
 
 
 @dataclass(frozen=True)
@@ -25,23 +22,14 @@ class LikedSongRepair:
 class LikedSongsRepairer:
     """Repair unavailable cached track video IDs with verified replacements."""
 
-    def __init__(
-        self,
-        client: YouTubeMusicClient,
-        cache: CacheManager,
-        processor: TrackProcessor,
-        yt_dlp_utils: YTDLPUtils,
-        browser: str,
-        sync_account: bool = False,
-        logger: logging.Logger | None = None,
-    ) -> None:
-        self.client = client
-        self.cache = cache
-        self.processor = processor
-        self.yt_dlp_utils = yt_dlp_utils
-        self.browser = browser
-        self.sync_account = sync_account
-        self.logger = logger or logging.getLogger("YTMusicFS")
+    def __init__(self, dependencies: RepairDependencies) -> None:
+        self.client = dependencies.client
+        self.cache = dependencies.cache
+        self.processor = dependencies.processor
+        self.yt_dlp_utils = dependencies.yt_dlp
+        self.browser = dependencies.browser
+        self.sync_account = dependencies.sync_account
+        self.logger = dependencies.logger or logging.getLogger("YTMusicFS")
 
     def repair(self) -> dict[str, int]:
         repairs, dead_tracks, stats = self.plan_repairs()

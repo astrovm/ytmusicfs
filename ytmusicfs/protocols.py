@@ -48,6 +48,20 @@ class ContentCacheProtocol(Protocol):
 
     def set_durations_batch(self, durations: dict[str, int]) -> None: ...
 
+    def clear_unavailable_track(
+        self, video_id: str, path: str | None = None
+    ) -> None: ...
+
+    def delete(self, path: str) -> None: ...
+
+    def is_no_replacement(self, video_id: str) -> bool: ...
+
+    def mark_no_replacement(
+        self, video_id: str, path: str, ttl: int = 86400
+    ) -> None: ...
+
+    def record_repair_trigger(self, repairs: list[dict[str, Any]]) -> None: ...
+
 
 class MusicClientProtocol(Protocol):
     def get_library_playlists(self, limit: int = 1000) -> list[dict[Any, Any]]: ...
@@ -55,6 +69,17 @@ class MusicClientProtocol(Protocol):
     def get_library_albums(self, limit: int = 1000) -> list[dict[Any, Any]]: ...
 
     def get_album(self, browse_id: str) -> dict[Any, Any]: ...
+
+    def rate_song(self, video_id: str, rating: str) -> bool: ...
+
+    def search(
+        self,
+        query: str,
+        filter_type: str | None = None,
+        scope: str | None = None,
+        limit: int = 100,
+        ignore_spelling: bool = False,
+    ) -> list[dict[str, Any]]: ...
 
 
 class TrackProcessorProtocol(Protocol):
@@ -73,6 +98,8 @@ class YTDLPProtocol(Protocol):
     def extract_stream_url_async(
         self, video_id: str, browser: str
     ) -> Future[object]: ...
+
+    def extract_stream_url(self, video_id: str, browser: str) -> dict[str, Any]: ...
 
 
 DirectoryCacheCallback = Callable[[str, list[dict[str, Any]]], None]

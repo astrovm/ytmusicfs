@@ -15,6 +15,7 @@ import requests
 
 from ytmusicfs.dependencies import FileHandlerDependencies
 from ytmusicfs.file_handler import FileHandler
+from ytmusicfs.models import StreamRequest
 
 
 class TestFileHandler(unittest.TestCase):
@@ -258,12 +259,12 @@ class TestFileHandler(unittest.TestCase):
 
             # Verify _stream_content was called with the right arguments
             self.file_handler._stream_content.assert_called_once_with(
-                stream_url,
-                offset,
-                size,
-                path=path,
-                auth_headers=None,
-                cookies=None,
+                StreamRequest(
+                    url=stream_url,
+                    offset=offset,
+                    size=size,
+                    path=path,
+                )
             )
 
     def test_release_reports_recent_read_ranges(self):
@@ -314,12 +315,14 @@ class TestFileHandler(unittest.TestCase):
         self.assertIn("Authorization", file_info["headers"])
         self.assertEqual(file_info["cookies"], {"SAPISID": "abc123", "foo": "bar"})
         mock_stream.assert_called_once_with(
-            "https://example.com/stream.m4a",
-            0,
-            1024,
-            path=path,
-            auth_headers=file_info["headers"],
-            cookies=file_info["cookies"],
+            StreamRequest(
+                url="https://example.com/stream.m4a",
+                offset=0,
+                size=1024,
+                path=path,
+                headers=file_info["headers"],
+                cookies=file_info["cookies"],
+            )
         )
         self.file_handler.downloader.download_file.assert_not_called()
 
@@ -711,12 +714,14 @@ class TestFileHandler(unittest.TestCase):
         )
         file_info = self.file_handler.open_files[second_fh]
         mock_stream.assert_called_once_with(
-            "https://example.com/audio.m4a",
-            0,
-            1024,
-            path=path,
-            auth_headers=file_info["headers"],
-            cookies=file_info["cookies"],
+            StreamRequest(
+                url="https://example.com/audio.m4a",
+                offset=0,
+                size=1024,
+                path=path,
+                headers=file_info["headers"],
+                cookies=file_info["cookies"],
+            )
         )
         self.file_handler.record_stat_callback.assert_any_call("stream_info_cache_hits")
 
@@ -896,12 +901,12 @@ class TestFileHandler(unittest.TestCase):
 
             # Verify _stream_content was called with the right arguments
             self.file_handler._stream_content.assert_called_once_with(
-                stream_url,
-                offset,
-                size,
-                path=path,
-                auth_headers=None,
-                cookies=None,
+                StreamRequest(
+                    url=stream_url,
+                    offset=offset,
+                    size=size,
+                    path=path,
+                )
             )
 
     def test_read_sanitizes_headers_and_cookies(self):
@@ -935,8 +940,9 @@ class TestFileHandler(unittest.TestCase):
 
         self.assertEqual(result, b"payload")
 
-        headers = mock_stream.call_args.kwargs["auth_headers"]
-        cookies = mock_stream.call_args.kwargs["cookies"]
+        request = mock_stream.call_args.args[0]
+        headers = request.headers
+        cookies = request.cookies
 
         self.assertNotIn("Host", headers)
         self.assertEqual(headers["User-Agent"], "UnitTest")
@@ -961,11 +967,12 @@ class TestFileHandler(unittest.TestCase):
         mock_requests_get.return_value = mock_context
 
         data = self.file_handler._stream_content(
-            "https://example.com/audio.m4a",
-            offset=0,
-            size=16,
-            auth_headers={"user-agent": "Real UA"},
-            cookies=None,
+            StreamRequest(
+                url="https://example.com/audio.m4a",
+                offset=0,
+                size=16,
+                headers={"user-agent": "Real UA"},
+            )
         )
 
         self.assertEqual(data, b"a" * 16)
@@ -989,11 +996,13 @@ class TestFileHandler(unittest.TestCase):
         self.file_handler.record_stat_callback = Mock()
 
         data = self.file_handler._stream_content(
-            "https://example.com/audio.m4a",
-            offset=FileHandler.PROBE_EOF_OFFSET,
-            size=4096,
-            path="/liked_songs/song.m4a",
-            retries=1,
+            StreamRequest(
+                url="https://example.com/audio.m4a",
+                offset=FileHandler.PROBE_EOF_OFFSET,
+                size=4096,
+                path="/liked_songs/song.m4a",
+                retries=1,
+            )
         )
 
         self.assertEqual(data, b"")
@@ -1012,11 +1021,13 @@ class TestFileHandler(unittest.TestCase):
         mock_requests_get.return_value = mock_context
 
         data = self.file_handler._stream_content(
-            "https://example.com/audio.m4a",
-            offset=0,
-            size=4096,
-            path="/liked_songs/song.m4a",
-            retries=1,
+            StreamRequest(
+                url="https://example.com/audio.m4a",
+                offset=0,
+                size=4096,
+                path="/liked_songs/song.m4a",
+                retries=1,
+            )
         )
 
         self.assertEqual(data, b"a" * 4096)
@@ -1113,11 +1124,9 @@ class TestFileHandler(unittest.TestCase):
         # Create a patched version of _stream_content that handles status codes correctly
         original_stream_content = self.file_handler._stream_content
 
-        def patched_stream_content(
-            url, off, sz, auth_headers=None, cookies=None, retries=3
-        ):
+        def patched_stream_content(request):
             # Mock the behavior we want for this test
-            for attempt in range(retries):
+            for attempt in range(request.retries):
                 try:
                     # Get response from the mock
                     with mock_requests_get() as resp:
@@ -1127,21 +1136,22 @@ class TestFileHandler(unittest.TestCase):
                                 f"HTTP {resp.status_code}"
                             )
                         # For successful response, return the content
-                        return resp.content[:sz]
+                        return resp.content[: request.size]
                 except requests.exceptions.RequestException as exc:
-                    if attempt == retries - 1:
+                    if attempt == request.retries - 1:
                         raise OSError(
-                            errno.EIO, f"Failed after {retries} attempts: {exc}"
+                            errno.EIO,
+                            f"Failed after {request.retries} attempts: {exc}",
                         )
                     time.sleep(2**attempt)
-            raise OSError(errno.EIO, f"Failed after {retries} attempts")
+            raise OSError(errno.EIO, f"Failed after {request.retries} attempts")
 
         # Use the patched method for this test
         self.file_handler._stream_content = patched_stream_content
 
         # Call the method
         data = self.file_handler._stream_content(
-            stream_url, offset, size, retries=retries
+            StreamRequest(stream_url, offset, size, retries=retries)
         )
 
         # Verify requests.get was called twice (once for failure, once for success)
@@ -1180,13 +1190,11 @@ class TestFileHandler(unittest.TestCase):
         # Create a patched version of _stream_content that handles status codes as errors
         original_stream_content = self.file_handler._stream_content
 
-        def patched_stream_content(
-            url, off, sz, auth_headers=None, cookies=None, retries=3
-        ):
+        def patched_stream_content(request):
             # Ensure the mock is called the expected number of times
-            responses = [mock_response_fail] * retries
+            responses = [mock_response_fail] * request.retries
 
-            for attempt in range(retries):
+            for attempt in range(request.retries):
                 try:
                     # Call the mock each time to increment call count
                     mock_requests_get()
@@ -1197,7 +1205,7 @@ class TestFileHandler(unittest.TestCase):
                                 f"HTTP {resp.status_code}"
                             )
                 except requests.exceptions.RequestException:
-                    if attempt == retries - 1:
+                    if attempt == request.retries - 1:
                         raise OSError(
                             errno.EIO, f"HTTP {mock_response_fail.status_code}"
                         )
@@ -1211,7 +1219,9 @@ class TestFileHandler(unittest.TestCase):
 
         # Expect OSError when max retries are exceeded
         with self.assertRaises(OSError) as context:
-            self.file_handler._stream_content(stream_url, offset, size, retries=retries)
+            self.file_handler._stream_content(
+                StreamRequest(stream_url, offset, size, retries=retries)
+            )
 
         # Verify error code and message
         self.assertEqual(context.exception.errno, errno.EIO)
@@ -1250,15 +1260,17 @@ class TestFileHandler(unittest.TestCase):
         mock_requests_get.return_value = mock_context
 
         data = self.file_handler._stream_content(
-            stream_url,
-            offset,
-            size,
-            auth_headers={
-                "Cookie": "SID=headerSid; HSID=headerHsid",
-                "User-Agent": "UnitTest",
-            },
-            cookies={"SID": "mappingSid", "CONSENT": "YES+"},
-            retries=1,
+            StreamRequest(
+                url=stream_url,
+                offset=offset,
+                size=size,
+                headers={
+                    "Cookie": "SID=headerSid; HSID=headerHsid",
+                    "User-Agent": "UnitTest",
+                },
+                cookies={"SID": "mappingSid", "CONSENT": "YES+"},
+                retries=1,
+            )
         )
 
         self.assertEqual(data, chunk[:size])

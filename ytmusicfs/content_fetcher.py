@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
-from ytmusicfs.dependencies import ContentFetcherDependencies
+from ytmusicfs.dependencies import ContentFetcherDependencies, RepairDependencies
 from ytmusicfs.models import RefreshStatus, RegistryEntry
 from ytmusicfs.yt_dlp_utils import PARTIAL_PLAYLIST_COMPLETE_RATIO
 
@@ -438,13 +438,14 @@ class ContentFetcher:
         from ytmusicfs.repair import LikedSongsRepairer
 
         stats = LikedSongsRepairer(
-            client=self.client,
-            cache=self.cache,
-            processor=self.processor,
-            yt_dlp_utils=self.yt_dlp_utils,
-            browser=self.browser,
-            sync_account=False,
-            logger=self.logger,
+            RepairDependencies(
+                client=self.client,
+                cache=self.cache,
+                processor=self.processor,
+                yt_dlp=self.yt_dlp_utils,
+                browser=self.browser,
+                logger=self.logger,
+            )
         ).repair()
         return stats["repaired"] > 0
 
