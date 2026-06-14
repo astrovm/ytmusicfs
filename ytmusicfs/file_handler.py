@@ -801,8 +801,7 @@ class FileHandler:
             if fh not in self.open_files:
                 return 0
 
-            # Don't stop the download - let it continue in the background
-            # This ensures files are fully downloaded even after the handle is closed
+            # Downloads outlive playback handles so future opens can use the cache.
 
             self.recent_handles.append(
                 {
@@ -827,10 +826,8 @@ class FileHandler:
                 }
             )
 
-            # Just remove the file handle from our tracking
             del self.open_files[fh]
 
-            # Remove path_to_fh entry for this path
             if path in self.path_to_fh and self.path_to_fh[path] == fh:
                 del self.path_to_fh[path]
 
@@ -852,7 +849,6 @@ class FileHandler:
         cache_path = audio_dir / f"{video_id}.m4a"
         status_path = audio_dir / f"{video_id}.status"
 
-        # First check for status file (most reliable)
         if status_path.exists():
             try:
                 with open(status_path) as f:

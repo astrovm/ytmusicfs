@@ -280,7 +280,6 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
 
             valid_filenames.add(filename)
 
-            # Check if this is explicitly a directory
             is_directory = track.get("is_directory", False)
             if is_directory:
                 attrs = {
@@ -304,22 +303,17 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
                     track.get("duration_seconds"),
                 )
 
-            # Preserve important metadata fields from the original track
             for key, value in track.items():
                 if key in ["browseId", "channelId", "id", "playlistId", "videoId"]:
                     attrs[key] = value
 
             listing_with_attrs[filename] = attrs
 
-        # Publish the in-memory snapshot before slower persistent cache writes.
+        # Publish memory first so concurrent FUSE reads never wait on SQLite.
         self._update_hot_metadata(dir_path, listing_with_attrs)
 
-        # Cache the directory listing with attributes. This also persists child
-        # path validity in a single batch, avoiding per-track SQLite writes.
         self.cache.set_directory_listing_with_attrs(dir_path, listing_with_attrs)
-        # Also cache the filenames separately for backward compatibility
         self.cache.set(f"valid_files:{dir_path}", list(valid_filenames))
-        # Mark this directory as valid
         self.cache.mark_valid(dir_path, is_directory=True)
 
     def _update_hot_metadata(
@@ -795,7 +789,6 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
                 return data[offset : offset + size]
             self._record_stat("read")
 
-            # Delegate to file handler
             start_time = time.time()
             try:
                 return self.file_handler.read(path, size, offset, fh)
@@ -912,7 +905,7 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
     def _check_repair_notifications(self) -> None:
         """Check for repair triggers and apply cache invalidation."""
         try:
-            # Check cache triggers first (clear takes priority)
+            # Clear wins when both cache trigger files exist.
             cache_action = self.cache.get_pending_cache_trigger()
             if cache_action:
                 if cache_action == "clear":
@@ -927,7 +920,6 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
                 )
                 return
 
-            # Check repair triggers
             trigger = self.cache.get_pending_repair_trigger()
             if trigger:
                 repairs = trigger.get("repairs", [])
@@ -1228,7 +1220,6 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
         try:
             self.logger.debug(f"release: {path} (fh={fh})")
 
-            # Delegate to file handler
             return self.file_handler.release(path, fh)
 
         except Exception as e:
@@ -1246,7 +1237,6 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
         file_size_cache_key = f"filesize:{path}"
         self.cache.set(file_size_cache_key, size)
 
-        # Also update the file attributes in the parent directory's cached listing
         attr = {
             "st_mode": stat.S_IFREG | 0o644,
             "st_atime": time.time(),
@@ -1276,7 +1266,6 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             0 on success
         """
         self.logger.debug(f"mkdir: {path}")
-        # For now, disallow creating directories anywhere
         self.logger.warning(f"mkdir not supported: {path}")
         raise OSError(errno.EPERM, "Directory creation not supported")
 
@@ -1290,7 +1279,6 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             0 on success
         """
         self.logger.debug(f"rmdir: {path}")
-        # For now, disallow removing directories anywhere
         self.logger.warning(f"rmdir not supported: {path}")
         raise OSError(errno.EPERM, "Directory removal not supported")
 
@@ -1328,7 +1316,6 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             except Exception as e:
                 self.logger.error(f"Error cleaning up yt-dlp resources: {e}")
 
-        # Shutdown thread pool via ThreadManager
         if hasattr(self, "thread_manager") and self.thread_manager is not None:
             try:
                 self.logger.info("Shutting down ThreadManager")
@@ -1336,7 +1323,6 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             except Exception as e:
                 self.logger.error(f"Error shutting down ThreadManager: {e}")
 
-        # Close the cache if it exists
         if hasattr(self, "cache") and self.cache is not None:
             try:
                 self.cache.close()
@@ -1374,10 +1360,9 @@ def mount_ytmusicfs(
         foreground: Run in the foreground (for debugging)
         browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
     """
-    # Set fuse logger to WARNING level to suppress debug messages about unsupported operations
+    # fusepy logs unsupported optional callbacks at debug level.
     logging.getLogger("fuse").setLevel(logging.WARNING)
 
-    # Define FUSE options
     fuse_options = {
         "foreground": foreground,
         "nothreads": False,

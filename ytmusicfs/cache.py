@@ -41,10 +41,8 @@ class CacheManager:
             maxsize: Maximum number of items to keep in memory cache (default: 1000)
             logger: Logger instance to use
         """
-        # Set up logger
         self.logger = logger or logging.getLogger("CacheManager")
 
-        # Set up cache directory
         if cache_dir:
             self.cache_dir = Path(cache_dir)
         else:
@@ -52,14 +50,11 @@ class CacheManager:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.logger.info(f"Using cache directory: {self.cache_dir}")
 
-        # Store thread manager
         self.thread_manager = thread_manager
 
-        # Initialize a single lock for database operations
         self.lock = thread_manager.create_lock()
         self.logger.debug("Using ThreadManager for lock creation in CacheManager")
 
-        # Initialize SQLite database
         self.db_path = self.cache_dir / "cache.db"
         self.conn: sqlite3.Connection = sqlite3.connect(
             str(self.db_path), check_same_thread=False
@@ -71,7 +66,6 @@ class CacheManager:
         with self.lock:
             cursor = self.conn.cursor()
 
-            # Create tables if they don't exist
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS cache_entries (
                     key TEXT PRIMARY KEY,
@@ -88,7 +82,6 @@ class CacheManager:
                 )
             """)
 
-            # Create the new refresh_tracker table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS refresh_tracker (
                     key TEXT PRIMARY KEY,
@@ -99,8 +92,7 @@ class CacheManager:
 
             self.conn.commit()
 
-        # Enhanced in-memory cache for high-frequency lookups with larger size
-        self.maxsize = maxsize * 2  # Double the size for more aggressive caching
+        self.maxsize = maxsize * 2
         self.hotcache: LRUCache[str, Any] = LRUCache(maxsize=self.maxsize)
         self.cache_timeout = cache_timeout
 
@@ -114,24 +106,20 @@ class CacheManager:
         self._load_valid_paths()
         self._load_unavailable_tracks()
 
-        # Track cache hits/misses for performance monitoring
         self.stats = {"hits": 0, "misses": 0, "db_hits": 0, "db_misses": 0}
 
-        # Add static commonly accessed paths to avoid repeated lookups
         self._preload_common_paths()
 
     def _preload_common_paths(self) -> None:
         """Preload common paths into the cache for faster access."""
-        # Add root path and standard directories
         common_paths = ["/", "/playlists", "/albums", "/liked_songs"]
 
         for path in common_paths:
             self.mark_valid(path, is_directory=True)
-            # Add to path validation cache with long expiry
             self.path_validation_cache[path] = {
                 "valid": True,
                 "is_directory": True,
-                "time": time.time() + self.cache_timeout * 2,  # Double timeout
+                "time": time.time() + self.cache_timeout * 2,
             }
 
     def _load_valid_paths(self) -> None:
@@ -141,25 +129,23 @@ class CacheManager:
 
         try:
             cursor = self.conn.cursor()
-            # Load paths from valid_dir entries
             cursor.execute(
                 "SELECT key, entry_type FROM cache_entries WHERE key LIKE 'valid_dir:%'"
             )
             for row in cursor.fetchall():
                 path = self.key_to_path(row[0].replace("valid_dir:", ""))
                 self.valid_paths.add(path)
-                if row[1]:  # If entry_type exists
+                if row[1]:
                     self.path_types[path] = row[1]
                 valid_paths_count += 1
 
-            # Also load paths from exact_path entries
             cursor.execute(
                 "SELECT key, entry_type FROM cache_entries WHERE key LIKE 'exact_path:%'"
             )
             for row in cursor.fetchall():
                 path = self.key_to_path(row[0].replace("exact_path:", ""))
                 self.valid_paths.add(path)
-                if row[1]:  # If entry_type exists
+                if row[1]:
                     self.path_types[path] = row[1]
                 valid_paths_count += 1
         except sqlite3.Error as e:
@@ -410,7 +396,6 @@ class CacheManager:
         Returns:
             The cached data if valid, None otherwise
         """
-        # Check hot cache for frequently accessed items
         hotcache_key = f"hotcache:{path}"
         if hotcache_key in self.hotcache:
             cache_entry = self.hotcache[hotcache_key]
@@ -419,7 +404,6 @@ class CacheManager:
                 self.logger.debug(f"Hot cache hit for {path}")
                 return cache_entry["data"]
 
-        # Fall back to database
         db_key = self.path_to_key(path)
         try:
             with self.lock:
@@ -431,7 +415,6 @@ class CacheManager:
                 if row:
                     cache_data = json.loads(row[0])
                     if time.time() - cache_data["time"] < self.cache_timeout:
-                        # Update hot cache for future lookups
                         self.hotcache[hotcache_key] = cache_data
                         self.stats["db_hits"] += 1
                         return cache_data["data"]
@@ -498,22 +481,18 @@ class CacheManager:
             return
 
         try:
-            # Prepare values for batch insertion
             values = []
             now = time.time()
 
             for key, value in entries.items():
-                # Update memory cache
                 hotcache_key = f"hotcache:{key}"
                 cache_entry = {"data": value, "time": now}
                 self.hotcache[hotcache_key] = cache_entry
 
-                # Prepare for database insert
                 db_key = self.path_to_key(key)
                 entry_str = json.dumps(cache_entry)
                 values.append((db_key, entry_str))
 
-            # Execute batch operation
             if values:
                 with self.lock:
                     cursor = self.conn.cursor()
@@ -538,12 +517,10 @@ class CacheManager:
         Args:
             path: The path to delete from cache
         """
-        # Remove from hot cache
         for hotcache_key in (f"hotcache:{path}", f"hot:{path}"):
             if hotcache_key in self.hotcache:
                 del self.hotcache[hotcache_key]
 
-        # Remove from database
         db_key = self.path_to_key(path)
         try:
             with self.lock:
@@ -565,20 +542,14 @@ class CacheManager:
         Returns:
             Sanitized cache key suitable for database storage
         """
-        # Simple sanitization: replace slashes and special characters
         key = path.replace("/", "_").replace("'", "''").replace(" ", "_")
 
-        # Only hash if the key is too long (> 200 chars)
         MAX_KEY_LENGTH = 200
         if len(key) > MAX_KEY_LENGTH:
-            # Get the first 30 chars for readability
             prefix = key[:30]
-            # Hash the full path for uniqueness
             path_hash = hashlib.md5(path.encode("utf-8")).hexdigest()
-            # Create a new key with prefix and hash
             key = f"{prefix}_{path_hash}"
 
-            # Store the mapping for this hash for potential recovery
             self._store_hash_mapping(key, path)
 
         return key
@@ -592,21 +563,18 @@ class CacheManager:
         Returns:
             Original filesystem path
         """
-        # Fast path: most keys aren't hashed
         if (
             "_" in key
             and len(key) > 30
             and key[30:31] == "_"
             and len(key) - key.rfind("_") == 33
         ):
-            # This is a hashed key, try to look up the original path
             original_path = self.get_original_path(key)
             if original_path:
                 return original_path
             self.logger.warning(f"Cannot convert hashed key back to path: {key}")
-            return key  # Return as is if we can't reconstruct the original
+            return key
 
-        # Regular key - just replace underscores with slashes and restore quotes
         return key.replace("_", "/").replace("''", "'")
 
     def _store_hash_mapping(self, hashed_key: str, original_path: str) -> None:
@@ -761,19 +729,15 @@ class CacheManager:
         if not durations:
             return
 
-        # Build a batch entries dictionary
         cache_entries = {}
         now = time.time()
 
         for video_id, duration in durations.items():
-            # Update hot cache
             hotcache_key = f"hotcache:duration:{video_id}"
             self.hotcache[hotcache_key] = {"data": duration, "time": now}
 
-            # Add to batch entries for database
             cache_entries[f"duration:{video_id}"] = duration
 
-        # Use batch cache operation for efficiency
         self.set_batch(cache_entries)
         self.logger.info(
             f"Cached {len(durations)} durations in a single batch operation"
@@ -791,34 +755,28 @@ class CacheManager:
             Dictionary mapping filenames to their attributes,
             or None if not cached or expired
         """
-        # First check in memory cache for very fast access
         if path in self.directory_listings_cache:
             cached = self.directory_listings_cache[path]
             current_time = time.time()
 
-            # Check if the cache is still fresh
             if current_time - cached["time"] < self.cache_timeout:
                 self.logger.debug(f"In-memory cache hit for directory listing: {path}")
                 self.stats["hits"] += 1
                 return self._as_directory_listing(cached.get("data"))
 
-        # Dedicated cache key for directory listings
         cache_key = f"{path}_listing_with_attrs"
 
-        # Try hot cache first (faster than database)
         hot_key = f"hot:{cache_key}"
         hot_cached = self.hotcache.get(hot_key)
         if hot_cached and time.time() - hot_cached["time"] < self.cache_timeout:
             self.logger.debug(f"Hot cache hit for directory listing: {path}")
             self.stats["hits"] += 1
-            # Update memory cache for future access
             self.directory_listings_cache[path] = {
                 "data": hot_cached["data"],
                 "time": hot_cached["time"],
             }
             return self._as_directory_listing(hot_cached.get("data"))
 
-        # Try database as last resort
         db_key = self.path_to_key(cache_key)
         try:
             with self.lock:
@@ -831,13 +789,11 @@ class CacheManager:
                     try:
                         cache_data = json.loads(row[0])
                         if time.time() - cache_data["time"] < self.cache_timeout:
-                            # Valid cache entry, update memory caches for future lookups
                             listing = self._as_directory_listing(cache_data.get("data"))
                             if listing is None:
                                 self.stats["db_misses"] += 1
                                 return None
 
-                            # Update in-memory and hot caches
                             self.directory_listings_cache[path] = {
                                 "data": listing,
                                 "time": cache_data["time"],
@@ -882,74 +838,53 @@ class CacheManager:
             self.logger.debug(f"Skipping empty directory listing for {path}")
             return
 
-        # Update both in-memory caches
         current_time = time.time()
 
-        # Update quick-access cached directory listing
         self.directory_listings_cache[path] = {
             "data": listing_with_attrs,
             "time": current_time,
         }
 
-        # Prepare batch entries for related paths - this improves validation performance
         batch_entries = {}
 
-        # First ensure the directory itself is marked as valid
-        # Use set_batch later rather than calling mark_valid to reduce overhead
+        # Persist child validity in one batch with the listing.
         batch_entries[f"valid_dir:{path}"] = {"data": True, "time": current_time}
 
-        # Create full path entries for each file for quick validation
         for filename, attrs in listing_with_attrs.items():
-            # Skip special entries
             if filename in [".", ".."]:
                 continue
 
-            # Determine if this entry is a directory based on mode
             is_dir = bool(attrs.get("st_mode", 0) & stat.S_IFDIR == stat.S_IFDIR)
-
-            # Create full child path
             child_path = f"{path}/{filename}"
-
-            # Use the appropriate entry type for the validation cache
             entry_type = "valid_dir:" if is_dir else "exact_path:"
             batch_entries[f"{entry_type}{child_path}"] = {
                 "data": True,
                 "time": current_time,
             }
 
-            # Also update attrs cache for quick lookups
             self.attrs_cache[child_path] = attrs
 
-        # Dedicated cache key for directory listings
         cache_key = f"{path}_listing_with_attrs"
-
-        # Update hot cache for quick access
         hot_key = f"hot:{cache_key}"
         self.hotcache[hot_key] = {
             "data": listing_with_attrs,
             "time": current_time,
         }
 
-        # Prepare for database storage
         db_key = self.path_to_key(cache_key)
         entry = {
             "data": listing_with_attrs,
             "time": current_time,
         }
 
-        # Update database in a background task to avoid blocking
         try:
-            # Use the entry_type for directories
             entry_type = "directory"
-
-            # Add metadata for improved stats tracking
             metadata = {
                 "entries_count": len(listing_with_attrs),
                 "cached_at": current_time,
                 "path_length": len(path),
             }
 
-            # Convert to string for storage
             entry_str = json.dumps(entry)
             metadata_str = json.dumps(metadata)
 
@@ -966,7 +901,6 @@ class CacheManager:
                 self.conn.commit()
                 self._pending_writes = 0
 
-            # Use batch update for all related entries
             self.set_batch(batch_entries)
 
             self.logger.debug(
@@ -1410,24 +1344,19 @@ class CacheManager:
         parent_dir = os.path.dirname(path)
         filename = os.path.basename(path)
 
-        # Update the in-memory attrs_cache first
         self.attrs_cache[path] = {"attrs": attrs, "time": time.time()}
 
-        # Update the in-memory directory listing cache if present
         if parent_dir in self.directory_listings_cache:
             cached = self.directory_listings_cache[parent_dir]
             dir_listing = cached["data"]
             if dir_listing:
                 dir_listing[filename] = attrs
-                # No need to re-store in cache since dict is modified in-place
                 self.logger.debug(
                     f"Updated attributes for {filename} in {parent_dir} memory cache"
                 )
 
-        # Get the database cached directory listing
         dir_listing = self.get_directory_listing_with_attrs(parent_dir)
 
-        # Update the listing if it exists in the database
         if dir_listing is not None:
             dir_listing[filename] = attrs
             self.set_directory_listing_with_attrs(parent_dir, dir_listing)

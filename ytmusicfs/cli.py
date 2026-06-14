@@ -717,7 +717,6 @@ def _add_mount_commands(subparsers: Any) -> None:
         func=lambda args: MountCommandHandler(args, setup_logging(args)).execute()
     )
 
-    # Unmount command
     unmount_parser = subparsers.add_parser(
         "unmount", help="Unmount YouTube Music filesystem"
     )

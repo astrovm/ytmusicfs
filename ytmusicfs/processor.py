@@ -170,22 +170,17 @@ class TrackProcessor:
         Returns:
             Dictionary with formatted track metadata.
         """
-        # Try to get the video ID from the track
         video_id = track.get("videoId")
 
-        # Handle duration
         duration_seconds = None
         duration_formatted = "0:00"
-        is_new_duration = (
-            False  # Flag to indicate if this is a newly discovered duration
-        )
+        is_new_duration = False
 
-        # First priority: Use track's provided duration_seconds if available (from yt-dlp)
+        # Prefer source metadata, then the persistent cache, then parsed text.
         if "duration_seconds" in track and track["duration_seconds"] is not None:
             duration_seconds = track["duration_seconds"]
             duration_formatted = self._format_duration(duration_seconds)
-            is_new_duration = True  # Mark as new duration to be included in batch
-        # Second priority: Check cache for duration
+            is_new_duration = True
         elif video_id and self.cache_manager:
             cached_duration = self.cache_manager.get_duration(video_id)
             if cached_duration is not None:
@@ -194,33 +189,25 @@ class TrackProcessor:
                 )
                 duration_seconds = cached_duration
                 duration_formatted = self._format_duration(duration_seconds)
-        # Third priority: Parse from track data if not in cache
         else:
             duration_seconds, duration_formatted = self.parse_duration(track)
             if duration_seconds is not None:
-                is_new_duration = True  # Mark as new duration to be included in batch
+                is_new_duration = True
 
-        # Handle artist information
-        # yt-dlp flat extraction provides only uploader, not detailed artist info
+        # yt-dlp uses a flat artist string; ytmusicapi uses artist objects.
         if "artist" in track and isinstance(track["artist"], str):
-            # Already processed artist string from yt-dlp, but still need to clean potential "- Topic" suffix
             artist = self._clean_artist_name(track["artist"])
         elif "artists" in track and isinstance(track["artists"], list):
-            # ytmusicapi provides a list of artist objects
             artist = self.clean_artists(track["artists"])
         else:
-            # Fallback - clean uploader name to remove "- Topic" suffix
             artist = self._clean_artist_name(track.get("uploader", "Unknown Artist"))
 
-        # Get album info - try for existing data or use defaults
         if "album" in track and isinstance(track["album"], str):
             album = track["album"]
             album_artist = self._clean_artist_name(track.get("album_artist", artist))
         else:
-            # Try to extract from track data or use default
             album, album_artist = self.extract_album_info(track)
 
-        # Handle year - might not be available in yt-dlp flat extraction
         if "year" in track and track["year"] is not None:
             year = track["year"]
         else:
@@ -236,8 +223,8 @@ class TrackProcessor:
             "track_number": track.get("trackNumber", track.get("index", 0)),
             "year": year,
             "genre": track.get("genre", "Unknown Genre"),
-            "videoId": video_id,  # Include the video ID in the track info for reference
-            "is_new_duration": is_new_duration,  # Flag for batch processing
+            "videoId": video_id,
+            "is_new_duration": is_new_duration,
         }
 
     def process_tracks(
@@ -257,10 +244,8 @@ class TrackProcessor:
         filename_counts: dict[str, int] = {}
 
         for track in tracks:
-            # Extract track info
             track_info = self.extract_track_info(track)
 
-            # Collect newly discovered durations for batch processing
             if (
                 track_info.get("is_new_duration")
                 and track_info.get("videoId")
@@ -268,11 +253,9 @@ class TrackProcessor:
             ):
                 durations_batch[track_info["videoId"]] = track_info["duration_seconds"]
 
-            # Remove the temporary flag
             if "is_new_duration" in track_info:
                 del track_info["is_new_duration"]
 
-            # Generate filename
             filename = self.sanitize_filename(
                 f"{track_info['artist']} - {track_info['title']}.m4a"
             )
@@ -295,7 +278,6 @@ class TrackProcessor:
             stem, extension = filename.rsplit(".", 1)
             track["filename"] = f"{stem} [{suffix}].{extension}"
 
-        # Batch update all durations at once
         if durations_batch and self.cache_manager:
             self.logger.debug(f"Batch updating {len(durations_batch)} track durations")
             self.cache_manager.set_durations_batch(durations_batch)

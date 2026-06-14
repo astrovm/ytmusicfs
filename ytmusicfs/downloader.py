@@ -300,7 +300,6 @@ class Downloader:
         audio_path = self.cache_dir / "audio" / f"{video_id}.m4a"
         status_path = self.cache_dir / "audio" / f"{video_id}.status"
 
-        # First, check the status file
         if status_path.exists():
             try:
                 with status_path.open("r") as f:
@@ -310,7 +309,6 @@ class Downloader:
                     and audio_path.exists()
                     and self._validate_file_format(audio_path)
                 ):
-                    # We have a complete status and the file exists and is valid
                     with self.lock:
                         self.active_downloads[video_id] = {
                             "status": "complete",
@@ -321,13 +319,11 @@ class Downloader:
             except Exception as e:
                 self.logger.warning(f"Error checking status for {video_id}: {e}")
 
-        # If status check doesn't confirm completion, do a more thorough check
         if (
             audio_path.exists()
             and audio_path.stat().st_size > 0
             and self._validate_file_format(audio_path)
         ):
-            # File exists and passes validation, mark as complete
             self.logger.debug(
                 "Ignoring unmarked cached audio for %s while checking format %s",
                 video_id,
@@ -346,22 +342,16 @@ class Downloader:
             True if the file passes basic validation, False otherwise
         """
         try:
-            # Check if file exists and has a valid size
             if not file_path.exists() or file_path.stat().st_size < 100:
                 return False
 
-            # Basic m4a validation - check for ftyp header
             with open(file_path, "rb") as f:
-                # Read the first 12 bytes
                 header = f.read(12)
-                # Check for 'ftyp' at position 4
                 if len(header) >= 8 and header[4:8] == b"ftyp":
                     return True
 
-                # If not at the beginning, seek to 0 and try again
-                # (some files have metadata before the ftyp box)
+                # Some M4A files place metadata before the ftyp box.
                 f.seek(0)
-                # Read a larger chunk to search for the ftyp marker
                 larger_chunk = f.read(4096)
                 if b"ftyp" in larger_chunk:
                     return True
@@ -391,11 +381,10 @@ class Downloader:
         """
         with self.lock:
             if video_id in self.active_downloads:
-                # Use a flag instead of immediately changing status - let the download thread handle it
+                # The worker owns the final state transition.
                 self.active_downloads[video_id]["stop_requested"] = True
                 self.logger.debug(f"Requested stop of download for {video_id}")
 
-                # Only update status file if download is not complete
                 if self.active_downloads[video_id]["status"] != "complete":
                     status_path = self.cache_dir / "audio" / f"{video_id}.status"
                     try:

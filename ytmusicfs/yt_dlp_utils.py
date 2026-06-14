@@ -498,7 +498,6 @@ class YTDLPUtils:
         """
         self.logger.debug(f"Submitting async extraction task for video ID: {video_id}")
 
-        # ThreadManager must be set before calling this function
         if not self.thread_manager:
             raise RuntimeError("ThreadManager not set in YTDLPUtils")
 

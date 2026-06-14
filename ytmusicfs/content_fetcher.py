@@ -90,7 +90,6 @@ class ContentFetcher:
         Args:
             force_refresh: Whether to force a refresh even if the registry was recently refreshed
         """
-        # Check if registry refresh is needed
         cache_key = "playlist_registry"
         last_refresh, _status = self.cache.get_refresh_metadata(cache_key)
         refresh_interval = 3600  # 1 hour default
@@ -124,22 +123,18 @@ class ContentFetcher:
         registry: list[RegistryEntry] = [
             {
                 "name": "liked_songs",
-                "id": "LM",  # YouTube Music's liked songs playlist ID
+                "id": "LM",
                 "type": "liked_songs",
                 "path": "/liked_songs",
             }
         ]
 
-        # Fetch playlists
-        playlists = self.client.get_library_playlists(
-            limit=1000
-        )  # Initial fetch for IDs
+        playlists = self.client.get_library_playlists(limit=1000)
         for p in playlists:
             playlist_id = p.get("playlistId")
             if not playlist_id:
                 self.logger.warning("Skipping playlist without playlistId: %s", p)
                 continue
-            # Skip podcast playlist type (SE)
             if playlist_id == "SE":
                 self.logger.info(
                     "Skipping podcast playlist (SE) - podcasts not supported"
@@ -159,8 +154,7 @@ class ContentFetcher:
                 }
             )
 
-        # Fetch albums
-        albums = self.client.get_library_albums(limit=1000)  # Initial fetch for IDs
+        albums = self.client.get_library_albums(limit=1000)
         for a in albums:
             album_id = a.get("browseId")
             if not album_id:
@@ -171,7 +165,7 @@ class ContentFetcher:
             registry.append(
                 {
                     "name": sanitized_name,
-                    "id": album_id,  # Albums use browseId as playlist ID
+                    "id": album_id,
                     "type": "album",
                     "path": path,
                 }
@@ -190,7 +184,6 @@ class ContentFetcher:
         self._set_playlist_registry(registry)
         self.logger.info("Initialized playlist registry with %d entries", len(registry))
 
-        # Record refresh time with status
         self.cache.set_refresh_metadata(cache_key, time.time(), "fresh")
 
     def _is_suspiciously_partial_registry(
@@ -281,12 +274,11 @@ class ContentFetcher:
         Returns:
             List of track filenames
         """
-        # Simple check for the podcast playlist ID "SE"
         if playlist_id == "SE":
             self.logger.info("Skipping podcast playlist (SE) - podcasts not supported")
             return []
 
-        # CONSISTENT CACHE KEY: Always use path_processed regardless of playlist type
+        # All playlist types share one processed-cache naming scheme.
         cache_key = f"{path}_processed"
         if not playlist_id:
             self._initialize_playlist_registry(force_refresh=True)
@@ -331,7 +323,6 @@ class ContentFetcher:
             )
         )
 
-        # Return just the filenames
         return [track["filename"] for track in tracks]
 
     def refresh_liked_songs_automatic(self) -> None:
@@ -373,9 +364,7 @@ class ContentFetcher:
 
         cache_key = f"{directory_path}_listing"
         cached_listing = self.cache.get_directory_listing_with_attrs(directory_path)
-        # Only serve cached directory listing for playlist/album roots.
-        # /liked_songs lists tracks directly; its content cache (1-hour) must
-        # drive refreshes, not the directory-listing cache (30-day).
+        # Liked songs use the shorter content TTL, not the root-listing TTL.
         if cached_listing and playlist_type in ("playlist", "album"):
             self.logger.debug(f"Instant cache hit for {directory_path}")
             return [".", "..", *self._filter_unavailable_listing(cached_listing)]
@@ -392,7 +381,6 @@ class ContentFetcher:
                 if not self._is_track_unavailable(track)
             ]
 
-        # For playlists and albums, list directories
         entries = [p for p in self.PLAYLIST_REGISTRY if p["type"] == playlist_type]
         if not entries:
             self.logger.warning(f"No {playlist_type} entries found")

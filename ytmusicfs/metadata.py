@@ -55,12 +55,10 @@ class MetadataManager:
         if entry_type != "file":
             self.cache.mark_valid(path, is_directory=False)
 
-        # Check if we already have the video ID for this path in memory cache
         with self.video_id_cache_lock:
             if path in self.video_id_cache:
                 return self.video_id_cache[path]
 
-        # Check for video ID in persistent cache
         cache_key = f"video_id:{path}"
         video_id = self.cache.get(cache_key)
         if isinstance(video_id, str) and video_id:
@@ -71,13 +69,11 @@ class MetadataManager:
         dir_path = os.path.dirname(path)
         filename = os.path.basename(path)
 
-        # First try to get attributes from the parent directory's cached listing
         file_attrs = self.cache.get_file_attrs_from_parent_dir(path)
         if file_attrs and isinstance(file_attrs.get("videoId"), str):
             video_id = file_attrs["videoId"]
             return self._remember_video_id(path, video_id)
 
-        # If we don't have a content fetcher, we can't go further
         if not self.content_fetcher:
             self.logger.error(
                 f"No content fetcher available to lookup video ID for {path}"

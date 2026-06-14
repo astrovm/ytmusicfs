@@ -35,17 +35,11 @@ class ThreadManager:
             "processing": (2, "process_pool"),
         }
 
-        # Lock for thread pool access
         self._pools_lock = threading.RLock()
-
-        # Shutdown flag
         self._shutdown = False
-
-        # Active tasks tracking
         self._active_tasks = 0
         self._active_tasks_lock = threading.RLock()
 
-        # Create default pools
         for pool_name, (max_workers, prefix) in self._default_configs.items():
             self.get_pool(
                 pool_name,
@@ -114,7 +108,6 @@ class ThreadManager:
 
         future = pool.submit(fn, *args, **kwargs)
 
-        # Add callback to track task completion
         future.add_done_callback(self._task_done_callback)
 
         return future
@@ -129,7 +122,6 @@ class ThreadManager:
         with self._active_tasks_lock:
             self._active_tasks -= 1
 
-        # Check for and log exceptions
         if future.exception():
             self.logger.error(f"Task failed with exception: {future.exception()}")
 
@@ -167,12 +159,10 @@ class ThreadManager:
         )
 
         if wait and timeout is not None:
-            # Wait for active tasks to complete
             start_time = time.time()
             while self._active_tasks > 0 and (time.time() - start_time) < timeout:
                 time.sleep(0.1)
 
-        # Shutdown all pools
         with self._pools_lock:
             for pool_name, pool in self._pools.items():
                 self.logger.debug(f"Shutting down '{pool_name}' thread pool")
