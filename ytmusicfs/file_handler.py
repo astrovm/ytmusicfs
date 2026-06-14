@@ -14,7 +14,7 @@ import requests
 from ytmusicfs.dependencies import DownloaderDependencies, FileHandlerDependencies
 from ytmusicfs.downloader import Downloader
 from ytmusicfs.http_utils import ensure_headers_and_cookies
-from ytmusicfs.models import FileHandleState
+from ytmusicfs.models import DownloadRequest, FileHandleState
 from ytmusicfs.yt_dlp_utils import PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT
 
 
@@ -438,12 +438,14 @@ class FileHandler:
         if not isinstance(format_id, str) or not format_id:
             return
         self.downloader.download_file(
-            video_id,
-            file_info["stream_url"],
-            path,
-            format_id,
-            headers=file_info.get("headers"),
-            cookies=file_info.get("cookies"),
+            DownloadRequest(
+                video_id=video_id,
+                stream_url=file_info["stream_url"],
+                path=path,
+                format_id=format_id,
+                headers=file_info.get("headers"),
+                cookies=file_info.get("cookies"),
+            )
         )
         file_info["cache_started"] = True
         self._record_stat("background_downloads")
@@ -477,12 +479,14 @@ class FileHandler:
             return False
 
         self.downloader.download_file_now(
-            video_id,
-            stream_url,
-            path,
-            format_id,
-            headers=file_info.get("headers"),
-            cookies=file_info.get("cookies"),
+            DownloadRequest(
+                video_id=video_id,
+                stream_url=stream_url,
+                path=path,
+                format_id=format_id,
+                headers=file_info.get("headers"),
+                cookies=file_info.get("cookies"),
+            )
         )
         return True
 

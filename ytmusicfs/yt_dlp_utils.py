@@ -14,6 +14,8 @@ from typing import Any
 
 from yt_dlp import YoutubeDL
 
+from ytmusicfs.retry import RetryPolicy
+
 YOUTUBE_MUSIC_AUDIO_FORMAT = "141/140/bestaudio[ext=m4a]"
 PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT = "141"
 
@@ -271,7 +273,7 @@ class YTDLPUtils:
 
         best_tracks: list[dict[str, Any]] = []
         best_playlist_count = None
-        for attempt in range(1, PARTIAL_PLAYLIST_RETRY_ATTEMPTS + 1):
+        for attempt in RetryPolicy(PARTIAL_PLAYLIST_RETRY_ATTEMPTS, base_delay=0):
             try:
                 with YoutubeDL(ydl_opts) as ydl:
                     result = ydl.extract_info(url, download=False)
@@ -301,7 +303,7 @@ class YTDLPUtils:
 
             self.logger.warning(
                 f"Playlist {playlist_id} returned {len(tracks)} of "
-                f"{playlist_count} tracks on attempt {attempt}. "
+                f"{playlist_count} tracks on attempt {attempt.number}. "
                 "YouTube rate limiting may have reduced the result."
             )
 
@@ -336,7 +338,7 @@ class YTDLPUtils:
         ydl_opts = self._stream_extraction_options(browser)
 
         info = None
-        for attempt in range(1, STREAM_EXTRACTION_ATTEMPTS + 1):
+        for attempt in RetryPolicy(STREAM_EXTRACTION_ATTEMPTS, base_delay=0):
             try:
                 with YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=False)
@@ -345,13 +347,13 @@ class YTDLPUtils:
             except Exception as exc:
                 if not self._is_transient_stream_error(exc):
                     raise
-                if attempt == STREAM_EXTRACTION_ATTEMPTS:
+                if attempt.is_last:
                     raise
                 self.logger.warning(
                     "Transient stream extraction failure for %s on attempt %s/%s: %s",
                     video_id,
-                    attempt,
-                    STREAM_EXTRACTION_ATTEMPTS,
+                    attempt.number,
+                    attempt.total,
                     exc,
                 )
 

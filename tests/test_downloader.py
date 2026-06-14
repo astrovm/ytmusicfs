@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 from ytmusicfs.dependencies import DownloaderDependencies
 from ytmusicfs.downloader import Downloader
+from ytmusicfs.models import DownloadRequest
 
 
 class TestDownloaderCookieMerging(unittest.TestCase):
@@ -58,17 +59,19 @@ class TestDownloaderCookieMerging(unittest.TestCase):
         mock_get.return_value = mock_context
 
         result = self.downloader._download_task(
-            video_id=video_id,
-            stream_url=stream_url,
-            path=path,
-            format_id="141",
-            headers={
-                "User-Agent": "UnitTest",
-                "Cookie": "SID=headerSid; HSID=headerHsid",
-            },
-            cookies={"SID": "mappingSid", "CONSENT": "YES+"},
-            retries=1,
-            chunk_size=len(chunk),
+            DownloadRequest(
+                video_id=video_id,
+                stream_url=stream_url,
+                path=path,
+                format_id="141",
+                headers={
+                    "User-Agent": "UnitTest",
+                    "Cookie": "SID=headerSid; HSID=headerHsid",
+                },
+                cookies={"SID": "mappingSid", "CONSENT": "YES+"},
+                retries=1,
+                chunk_size=len(chunk),
+            )
         )
 
         self.assertTrue(result)
@@ -94,16 +97,17 @@ class TestDownloaderCookieMerging(unittest.TestCase):
 
     def test_download_file_now_runs_in_current_worker(self):
         with patch.object(self.downloader, "_download_task", return_value=True) as task:
-            result = self.downloader.download_file_now(
-                "abc123",
-                "https://example.com/audio.m4a",
-                "/liked_songs/song.m4a",
-                "141",
+            request = DownloadRequest(
+                video_id="abc123",
+                stream_url="https://example.com/audio.m4a",
+                path="/liked_songs/song.m4a",
+                format_id="141",
             )
+            result = self.downloader.download_file_now(request)
 
         self.assertTrue(result)
         self.thread_manager.submit_task.assert_not_called()
-        task.assert_called_once()
+        task.assert_called_once_with(request)
 
     @patch("ytmusicfs.downloader.requests.get")
     @patch("ytmusicfs.downloader.requests.head")
@@ -132,12 +136,14 @@ class TestDownloaderCookieMerging(unittest.TestCase):
         mock_get.return_value = mock_context
 
         result = self.downloader._download_task(
-            video_id=video_id,
-            stream_url=stream_url,
-            path=path,
-            format_id="141",
-            retries=1,
-            chunk_size=len(suffix),
+            DownloadRequest(
+                video_id=video_id,
+                stream_url=stream_url,
+                path=path,
+                format_id="141",
+                retries=1,
+                chunk_size=len(suffix),
+            )
         )
 
         self.assertTrue(result)
@@ -180,12 +186,14 @@ class TestDownloaderCookieMerging(unittest.TestCase):
         mock_get.return_value = mock_context
 
         result = self.downloader._download_task(
-            video_id=video_id,
-            stream_url=stream_url,
-            path=path,
-            format_id="141",
-            retries=1,
-            chunk_size=len(new_data),
+            DownloadRequest(
+                video_id=video_id,
+                stream_url=stream_url,
+                path=path,
+                format_id="141",
+                retries=1,
+                chunk_size=len(new_data),
+            )
         )
 
         self.assertTrue(result)
@@ -211,11 +219,13 @@ class TestDownloaderCookieMerging(unittest.TestCase):
         mock_head.return_value = head_response
 
         result = self.downloader._download_task(
-            video_id=video_id,
-            stream_url=stream_url,
-            path=path,
-            format_id="140",
-            retries=1,
+            DownloadRequest(
+                video_id=video_id,
+                stream_url=stream_url,
+                path=path,
+                format_id="140",
+                retries=1,
+            )
         )
 
         self.assertFalse(result)
@@ -233,11 +243,13 @@ class TestDownloaderCookieMerging(unittest.TestCase):
         status_path.write_text("complete:141")
 
         result = self.downloader._download_task(
-            video_id=video_id,
-            stream_url="https://example.com/audio.m4a",
-            path=path,
-            format_id="140",
-            retries=1,
+            DownloadRequest(
+                video_id=video_id,
+                stream_url="https://example.com/audio.m4a",
+                path=path,
+                format_id="140",
+                retries=1,
+            )
         )
 
         self.assertTrue(result)
@@ -273,12 +285,14 @@ class TestDownloaderCookieMerging(unittest.TestCase):
             mock_get.return_value = mock_context
 
             result = self.downloader._download_task(
-                video_id=video_id,
-                stream_url="https://example.com/audio.m4a",
-                path=path,
-                format_id="141",
-                retries=1,
-                chunk_size=len(new_data),
+                DownloadRequest(
+                    video_id=video_id,
+                    stream_url="https://example.com/audio.m4a",
+                    path=path,
+                    format_id="141",
+                    retries=1,
+                    chunk_size=len(new_data),
+                )
             )
 
         self.assertTrue(result)

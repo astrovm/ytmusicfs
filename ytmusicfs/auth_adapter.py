@@ -10,6 +10,7 @@ from typing import Any
 from ytmusicapi import YTMusic
 
 from ytmusicfs.http_utils import _build_sapisidhash
+from ytmusicfs.retry import RetryPolicy
 
 _YT_ORIGIN = "https://music.youtube.com"
 _VALIDATION_ATTEMPTS = 3
@@ -87,12 +88,14 @@ class YTMusicAuthAdapter:
 
     def _validate_client(self) -> None:
         # Perform a very small request so we fail fast if auth is invalid.
-        for attempt in range(1, _VALIDATION_ATTEMPTS + 1):
+        for attempt in RetryPolicy(
+            _VALIDATION_ATTEMPTS, _VALIDATION_RETRY_DELAY_SECONDS
+        ):
             try:
                 self.ytmusic.get_library_playlists(limit=1)
                 return
             except JSONDecodeError as exc:
-                if attempt == _VALIDATION_ATTEMPTS:
+                if attempt.is_last:
                     raise RuntimeError(
                         "YouTube Music auth validation returned an empty or "
                         "non-JSON response after "
@@ -102,10 +105,10 @@ class YTMusicAuthAdapter:
                 self.logger.warning(
                     "YouTube Music auth validation returned an empty or "
                     "non-JSON response; retrying (%s/%s)",
-                    attempt,
-                    _VALIDATION_ATTEMPTS,
+                    attempt.number,
+                    attempt.total,
                 )
-                time.sleep(_VALIDATION_RETRY_DELAY_SECONDS)
+                time.sleep(attempt.delay)
 
     def __getattr__(self, name: str) -> Any:
         """Delegate attribute access to the underlying :class:`YTMusic` client."""

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, TypedDict
 
@@ -95,3 +96,15 @@ class DownloadProgress(TypedDict, total=False):
     progress: int
     total: int
     stop_requested: bool
+
+
+@dataclass(frozen=True)
+class DownloadRequest:
+    video_id: str
+    stream_url: str
+    path: str
+    format_id: str
+    headers: dict[str, Any] | None = None
+    cookies: dict[str, Any] | None = None
+    retries: int = 3
+    chunk_size: int = 8192

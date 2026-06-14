@@ -362,14 +362,14 @@ class TestFileHandler(unittest.TestCase):
         self.assertEqual(mock_stream.call_count, 2)
         audio_path = self.cache_dir / "audio" / f"{video_id}.m4a"
         self.assertEqual(audio_path.read_bytes(), first_read + second_read)
-        self.file_handler.downloader.download_file.assert_called_once_with(
-            video_id,
-            "https://example.com/audio.m4a",
-            path,
-            "141",
-            headers=file_info["headers"],
-            cookies=file_info["cookies"],
-        )
+        self.file_handler.downloader.download_file.assert_called_once()
+        request = self.file_handler.downloader.download_file.call_args.args[0]
+        self.assertEqual(request.video_id, video_id)
+        self.assertEqual(request.stream_url, "https://example.com/audio.m4a")
+        self.assertEqual(request.path, path)
+        self.assertEqual(request.format_id, "141")
+        self.assertEqual(request.headers, file_info["headers"])
+        self.assertEqual(request.cookies, file_info["cookies"])
 
     def test_best_available_stream_writes_audio_and_range_cache(self):
         path = "/playlists/my_playlist/song.m4a"
@@ -514,10 +514,11 @@ class TestFileHandler(unittest.TestCase):
             self.file_handler.read(path, FileHandler.CACHE_START_BYTES, 0, fh)
 
         self.file_handler.downloader.download_file.assert_called_once()
-        self.assertEqual(
-            self.file_handler.downloader.download_file.call_args.args[:4],
-            (video_id, "https://example.com/audio.m4a", path, "140"),
-        )
+        request = self.file_handler.downloader.download_file.call_args.args[0]
+        self.assertEqual(request.video_id, video_id)
+        self.assertEqual(request.stream_url, "https://example.com/audio.m4a")
+        self.assertEqual(request.path, path)
+        self.assertEqual(request.format_id, "140")
 
     def test_precache_extracts_stream_and_downloads_now(self):
         path = "/playlists/my_playlist/song.m4a"
@@ -539,18 +540,13 @@ class TestFileHandler(unittest.TestCase):
 
         self.assertTrue(result)
         self.file_handler.downloader.download_file_now.assert_called_once()
-        args = self.file_handler.downloader.download_file_now.call_args
-        self.assertEqual(
-            args.args,
-            (
-                video_id,
-                "https://example.com/audio.m4a",
-                path,
-                "141",
-            ),
-        )
-        self.assertEqual(args.kwargs["headers"]["User-Agent"], "UnitTest")
-        self.assertEqual(args.kwargs["cookies"], {"CONSENT": "YES+"})
+        request = self.file_handler.downloader.download_file_now.call_args.args[0]
+        self.assertEqual(request.video_id, video_id)
+        self.assertEqual(request.stream_url, "https://example.com/audio.m4a")
+        self.assertEqual(request.path, path)
+        self.assertEqual(request.format_id, "141")
+        self.assertEqual(request.headers["User-Agent"], "UnitTest")
+        self.assertEqual(request.cookies, {"CONSENT": "YES+"})
 
     def test_precache_downloads_best_available_non_preferred_format(self):
         path = "/playlists/my_playlist/song.m4a"
@@ -571,10 +567,11 @@ class TestFileHandler(unittest.TestCase):
 
         self.assertTrue(result)
         self.file_handler.downloader.download_file_now.assert_called_once()
-        self.assertEqual(
-            self.file_handler.downloader.download_file_now.call_args.args[:4],
-            (video_id, "https://example.com/audio.m4a", path, "140"),
-        )
+        request = self.file_handler.downloader.download_file_now.call_args.args[0]
+        self.assertEqual(request.video_id, video_id)
+        self.assertEqual(request.stream_url, "https://example.com/audio.m4a")
+        self.assertEqual(request.path, path)
+        self.assertEqual(request.format_id, "140")
 
     def test_cached_audio_accepts_any_complete_format_status(self):
         video_id = "abc123"

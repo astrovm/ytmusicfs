@@ -7,6 +7,7 @@ from json import JSONDecodeError
 from typing import Any, TypeVar
 
 from ytmusicfs.auth_adapter import YTMusicAuthAdapter
+from ytmusicfs.retry import RetryPolicy
 
 _API_ATTEMPTS = 3
 _API_RETRY_DELAY_SECONDS = 1.0
@@ -189,11 +190,11 @@ class YouTubeMusicClient:
     def _call_with_json_retry(
         self, operation: str, func: Callable[..., T], *args: Any, **kwargs: Any
     ) -> T:
-        for attempt in range(1, _API_ATTEMPTS + 1):
+        for attempt in RetryPolicy(_API_ATTEMPTS, _API_RETRY_DELAY_SECONDS):
             try:
                 return func(*args, **kwargs)
             except JSONDecodeError:
-                if attempt == _API_ATTEMPTS:
+                if attempt.is_last:
                     self.logger.error(
                         "Failed to %s: empty or non-JSON response after %s attempts",
                         operation,
@@ -205,10 +206,10 @@ class YouTubeMusicClient:
                     "YouTube Music returned an empty or non-JSON response while "
                     "trying to %s; retrying (%s/%s)",
                     operation,
-                    attempt,
-                    _API_ATTEMPTS,
+                    attempt.number,
+                    attempt.total,
                 )
-                time.sleep(_API_RETRY_DELAY_SECONDS)
+                time.sleep(attempt.delay)
             except Exception as exc:
                 self.logger.error("Failed to %s: %s", operation, exc)
                 raise

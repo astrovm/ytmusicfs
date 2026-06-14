@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 
+import errno
 import time
 from pathlib import Path
-from typing import Any
 
 import requests
 
 from ytmusicfs.dependencies import DownloaderDependencies
 from ytmusicfs.http_utils import ensure_headers_and_cookies
-from ytmusicfs.models import DownloadProgress
+from ytmusicfs.models import DownloadProgress, DownloadRequest, DownloadStatus
+from ytmusicfs.retry import RetryPolicy
 
 
 class Downloader:
@@ -23,289 +24,254 @@ class Downloader:
         self.lock = dependencies.thread_manager.create_lock()
         self.logger.debug("Using ThreadManager for lock creation in Downloader")
 
-    def download_file(
-        self,
-        video_id: str,
-        stream_url: str,
-        path: str,
-        format_id: str,
-        headers: dict[str, Any] | None = None,
-        cookies: dict[str, Any] | None = None,
-        retries: int = 3,
-        chunk_size: int = 8192,
-    ) -> bool:
-        """Download a file using an on-demand stream URL.
-
-        Args:
-            video_id: YouTube video ID.
-            stream_url: URL to download from (not cached).
-            path: Filesystem path for size updates.
-            headers: Authentication headers required for the request.
-            cookies: Cookies required for the request.
-            retries: Number of retry attempts.
-            chunk_size: Size of chunks to download.
-
-        Returns:
-            True if download succeeds, False otherwise.
-        """
-        audio_path = self.cache_dir / "audio" / f"{video_id}.m4a"
+    def download_file(self, request: DownloadRequest) -> bool:
+        """Schedule an audio download unless it is complete or already active."""
+        audio_path = self._audio_path(request.video_id)
         audio_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Check if download is already complete with valid file
-        if self._is_download_complete(video_id, format_id):
-            self.logger.debug(f"Download already complete for {video_id}")
+        if self._is_download_complete(request.video_id, request.format_id):
+            self.logger.debug("Download already complete for %s", request.video_id)
             return True
 
-        # Check if there's already an active download for this video
         with self.lock:
-            if (
-                video_id in self.active_downloads
-                and self.active_downloads[video_id]["status"] == "downloading"
-            ):
-                self.logger.debug(f"Download already in progress for {video_id}")
+            active = self.active_downloads.get(request.video_id)
+            if active and active.get("status") == DownloadStatus.DOWNLOADING:
+                self.logger.debug(
+                    "Download already in progress for %s", request.video_id
+                )
                 return True
 
-        # Start download as a background task using ThreadManager
-        self.logger.debug(f"Submitting download task for {video_id} to ThreadManager")
-        self.thread_manager.submit_task(
-            "io",
-            self._download_task,
-            video_id,
-            stream_url,
-            path,
-            format_id,
-            headers,
-            cookies,
-            retries,
-            chunk_size,
-        )
+        self.logger.debug("Submitting download task for %s", request.video_id)
+        self.thread_manager.submit_task("io", self._download_task, request)
         return True
 
-    def download_file_now(
-        self,
-        video_id: str,
-        stream_url: str,
-        path: str,
-        format_id: str,
-        headers: dict[str, Any] | None = None,
-        cookies: dict[str, Any] | None = None,
-        retries: int = 3,
-        chunk_size: int = 8192,
-    ) -> bool:
+    def download_file_now(self, request: DownloadRequest) -> bool:
         """Download a file in the current worker."""
-        if self._is_download_complete(video_id, format_id):
-            self.logger.debug(f"Download already complete for {video_id}")
+        if self._is_download_complete(request.video_id, request.format_id):
+            self.logger.debug("Download already complete for %s", request.video_id)
             return True
 
         with self.lock:
-            active = self.active_downloads.get(video_id)
-            if active and active.get("status") in {"starting", "downloading"}:
-                self.logger.debug(f"Download already in progress for {video_id}")
+            active = self.active_downloads.get(request.video_id)
+            if active and active.get("status") in {
+                DownloadStatus.STARTING,
+                DownloadStatus.DOWNLOADING,
+            }:
+                self.logger.debug(
+                    "Download already in progress for %s", request.video_id
+                )
                 return True
 
-        return self._download_task(
-            video_id,
-            stream_url,
-            path,
-            format_id,
-            headers,
-            cookies,
-            retries,
-            chunk_size,
-        )
+        return self._download_task(request)
 
-    def _download_task(
-        self,
-        video_id: str,
-        stream_url: str,
-        path: str,
-        format_id: str,
-        headers: dict[str, Any] | None = None,
-        cookies: dict[str, Any] | None = None,
-        retries: int = 3,
-        chunk_size: int = 8192,
-    ) -> bool:
-        """Internal download task that can be run in a thread.
-
-        Args:
-            video_id: YouTube video ID.
-            stream_url: URL to download from (not cached).
-            path: Filesystem path for size updates.
-            headers: Authentication headers required for the request.
-            cookies: Cookies required for the request.
-            retries: Number of retry attempts.
-            chunk_size: Size of chunks to download.
-
-        Returns:
-            True if download succeeds, False otherwise.
-        """
-        audio_path = self.cache_dir / "audio" / f"{video_id}.m4a"
-        status_path = audio_path.parent / f"{video_id}.status"
-
-        # Mark as in-progress before starting download
+    def _download_task(self, request: DownloadRequest) -> bool:
+        audio_path = self._audio_path(request.video_id)
+        status_path = self._status_path(request.video_id)
         cached_format = self._cached_status_format(status_path)
         status_text = status_path.read_text().strip() if status_path.exists() else ""
+        if self._keep_existing_download(
+            request, audio_path, cached_format, status_text
+        ):
+            return True
 
-        # Don't replace a complete higher-quality file with a lower-quality one
-        if (
+        if cached_format not in (None, request.format_id):
+            audio_path.unlink(missing_ok=True)
+        downloaded = audio_path.stat().st_size if audio_path.exists() else 0
+        self._set_progress(
+            request.video_id,
+            status=DownloadStatus.STARTING,
+            progress=downloaded,
+            total=0,
+        )
+        status_path.write_text(f"downloading:{request.format_id}")
+        base_headers, cookies = ensure_headers_and_cookies(
+            request.headers, request.cookies
+        )
+
+        policy = RetryPolicy(request.retries, exponential=True)
+        for attempt in policy:
+            try:
+                request_headers, downloaded, expected_size = self._probe_stream(
+                    request, audio_path, base_headers, cookies, downloaded
+                )
+                downloaded = self._write_stream(
+                    request,
+                    request_headers,
+                    cookies,
+                    downloaded,
+                )
+                self._validate_download(audio_path, expected_size)
+                self._mark_complete(request, status_path, downloaded)
+                return True
+            except Exception as error:
+                self.logger.warning(
+                    "Download attempt %s failed for %s: %s",
+                    attempt.number,
+                    request.video_id,
+                    error,
+                )
+                if attempt.is_last:
+                    self._mark_failed(request, status_path)
+                    return False
+                if self._stop_requested(request.video_id):
+                    self.logger.debug("Not retrying an explicitly stopped download")
+                    return False
+                time.sleep(attempt.delay)
+        return False
+
+    def _audio_path(self, video_id: str) -> Path:
+        return self.cache_dir / "audio" / f"{video_id}.m4a"
+
+    def _status_path(self, video_id: str) -> Path:
+        return self.cache_dir / "audio" / f"{video_id}.status"
+
+    def _keep_existing_download(
+        self,
+        request: DownloadRequest,
+        audio_path: Path,
+        cached_format: str | None,
+        status_text: str,
+    ) -> bool:
+        if not (
             cached_format
             and status_text.startswith("complete:")
-            and self._format_quality(format_id) <= self._format_quality(cached_format)
+            and self._format_quality(request.format_id)
+            <= self._format_quality(cached_format)
             and audio_path.exists()
             and self._validate_file_format(audio_path)
         ):
-            self.logger.info(
-                "Keeping cached format %s for %s, skipping lower-quality %s",
-                cached_format,
-                video_id,
-                format_id,
-            )
-            with self.lock:
-                self.active_downloads[video_id] = {
-                    "status": "complete",
-                    "progress": audio_path.stat().st_size,
-                    "total": audio_path.stat().st_size,
-                }
-            return True
+            return False
 
-        if cached_format not in (None, format_id):
-            audio_path.unlink(missing_ok=True)
-        downloaded = audio_path.stat().st_size if audio_path.exists() else 0
+        size = audio_path.stat().st_size
+        self.logger.info(
+            "Keeping cached format %s for %s, skipping lower-quality %s",
+            cached_format,
+            request.video_id,
+            request.format_id,
+        )
+        self._set_progress(
+            request.video_id,
+            status=DownloadStatus.COMPLETE,
+            progress=size,
+            total=size,
+        )
+        return True
+
+    def _set_progress(
+        self,
+        video_id: str,
+        *,
+        status: DownloadStatus,
+        progress: int,
+        total: int,
+    ) -> None:
         with self.lock:
             self.active_downloads[video_id] = {
-                "progress": downloaded,
-                "total": 0,
-                "status": "starting",
+                "status": status,
+                "progress": progress,
+                "total": total,
             }
 
-        with status_path.open("w") as sf:
-            sf.write(f"downloading:{format_id}")
+    def _probe_stream(
+        self,
+        request: DownloadRequest,
+        audio_path: Path,
+        base_headers: dict[str, str],
+        cookies: dict[str, str] | None,
+        downloaded: int,
+    ) -> tuple[dict[str, str], int, int]:
+        request_headers = dict(base_headers)
+        if downloaded:
+            request_headers["Range"] = f"bytes={downloaded}-"
 
-        base_headers, cookies_data = ensure_headers_and_cookies(headers, cookies)
+        response = requests.head(
+            request.stream_url,
+            headers=request_headers,
+            cookies=cookies,
+            timeout=10,
+        )
+        if response.status_code not in (200, 206):
+            raise OSError(
+                errno.EIO, f"Stream URL check failed: HTTP {response.status_code}"
+            )
 
-        for attempt in range(retries):
-            try:
-                request_headers = dict(base_headers)
-                if downloaded:
-                    request_headers["Range"] = f"bytes={downloaded}-"
+        if downloaded and response.status_code == 200:
+            audio_path.unlink(missing_ok=True)
+            downloaded = 0
+            request_headers.pop("Range", None)
 
-                # Verify the stream URL is still valid
-                head_kwargs = {"headers": request_headers, "timeout": 10}
-                if cookies_data:
-                    head_kwargs["cookies"] = cookies_data
+        expected_size = int(response.headers.get("content-length", 0)) + downloaded
+        self.update_file_size_callback(request.path, expected_size)
+        self._set_progress(
+            request.video_id,
+            status=DownloadStatus.DOWNLOADING,
+            progress=downloaded,
+            total=expected_size,
+        )
+        return request_headers, downloaded, expected_size
 
-                head_response = requests.head(stream_url, **head_kwargs)
-                if head_response.status_code not in (200, 206):
-                    raise Exception(
-                        f"Stream URL check failed: HTTP {head_response.status_code}"
-                    )
+    def _write_stream(
+        self,
+        request: DownloadRequest,
+        request_headers: dict[str, str],
+        cookies: dict[str, str] | None,
+        downloaded: int,
+    ) -> int:
+        audio_path = self._audio_path(request.video_id)
+        status_path = self._status_path(request.video_id)
+        with requests.get(
+            request.stream_url,
+            headers=request_headers,
+            cookies=cookies,
+            stream=True,
+            timeout=30,
+        ) as response:
+            if response.status_code not in (200, 206):
+                raise OSError(errno.EIO, f"HTTP {response.status_code}")
 
-                if downloaded and head_response.status_code == 200:
-                    audio_path.unlink(missing_ok=True)
-                    downloaded = 0
-                    request_headers.pop("Range", None)
-
-                # Get the expected total file size
-                expected_size = (
-                    int(head_response.headers.get("content-length", 0)) + downloaded
-                )
-                self.update_file_size_callback(path, expected_size)
-
-                with self.lock:
-                    self.active_downloads[video_id].update(
-                        {
-                            "total": expected_size,
-                            "status": "downloading",
-                            "progress": downloaded,
-                        }
-                    )
-
-                # Download the file
-                get_headers = dict(request_headers)
-                get_kwargs = {
-                    "headers": get_headers,
-                    "stream": True,
-                    "timeout": 30,
-                }
-                if cookies_data:
-                    get_kwargs["cookies"] = cookies_data
-
-                with requests.get(stream_url, **get_kwargs) as response:
-                    if response.status_code not in (200, 206):
-                        raise Exception(f"HTTP {response.status_code}")
-
-                    with audio_path.open("ab") as f:
-                        for chunk in response.iter_content(chunk_size=chunk_size):
-                            # Check if download is marked for stopping
-                            with self.lock:
-                                if (
-                                    video_id in self.active_downloads
-                                    and self.active_downloads[video_id].get(
-                                        "stop_requested", False
-                                    )
-                                ):
-                                    self.logger.info(
-                                        f"Download of {video_id} was explicitly stopped"
-                                    )
-                                    raise Exception("Download stopped by request")
-
-                            f.write(chunk)
-                            downloaded += len(chunk)
-
-                            with self.lock:
-                                self.active_downloads[video_id]["progress"] = downloaded
-
-                            # Periodically update status file (but not on every chunk to reduce I/O)
-                            if downloaded % (chunk_size * 50) == 0:
-                                with status_path.open("w") as sf:
-                                    sf.write(f"downloading:{format_id}")
-
-                # Verify the download is complete
-                if audio_path.stat().st_size < expected_size:
-                    raise Exception(
-                        f"Incomplete download: got {audio_path.stat().st_size} bytes, expected {expected_size}"
-                    )
-
-                # Validate the file format
-                if not self._validate_file_format(audio_path):
-                    raise Exception("Invalid file format")
-
-                # Mark as complete in status file first (most important for recovery)
-                with status_path.open("w") as sf:
-                    sf.write(f"complete:{format_id}")
-
-                with self.lock:
-                    self.active_downloads[video_id]["status"] = "complete"
-
-                self.logger.info(
-                    f"Download completed for {video_id} ({downloaded} bytes)"
-                )
-                return True
-
-            except Exception as e:
-                self.logger.warning(
-                    f"Download attempt {attempt + 1} failed for {video_id}: {e}"
-                )
-                if attempt == retries - 1:
-                    with self.lock:
-                        self.active_downloads[video_id]["status"] = "failed"
-                    with status_path.open("w") as sf:
-                        sf.write(f"failed:{format_id}")
-                    return False
-
-                # Only sleep between retries if this wasn't an explicit stop
-                with self.lock:
-                    if video_id in self.active_downloads and self.active_downloads[
-                        video_id
-                    ].get("stop_requested", False):
-                        self.logger.debug(
-                            "Not retrying download that was explicitly stopped"
+            with audio_path.open("ab") as audio_file:
+                for chunk in response.iter_content(chunk_size=request.chunk_size):
+                    if self._stop_requested(request.video_id):
+                        self.logger.info(
+                            "Download of %s was explicitly stopped", request.video_id
                         )
-                        return False
+                        raise OSError(errno.ECANCELED, "Download stopped by request")
+                    audio_file.write(chunk)
+                    downloaded += len(chunk)
+                    with self.lock:
+                        self.active_downloads[request.video_id]["progress"] = downloaded
+                    if downloaded % (request.chunk_size * 50) == 0:
+                        status_path.write_text(f"downloading:{request.format_id}")
+        return downloaded
 
-                time.sleep(2**attempt)  # Exponential backoff
+    def _validate_download(self, audio_path: Path, expected_size: int) -> None:
+        actual_size = audio_path.stat().st_size
+        if actual_size < expected_size:
+            raise OSError(
+                errno.EIO,
+                f"Incomplete download: got {actual_size} bytes, expected {expected_size}",
+            )
+        if not self._validate_file_format(audio_path):
+            raise OSError(errno.EIO, "Invalid file format")
 
-        return False
+    def _mark_complete(
+        self, request: DownloadRequest, status_path: Path, downloaded: int
+    ) -> None:
+        status_path.write_text(f"complete:{request.format_id}")
+        with self.lock:
+            self.active_downloads[request.video_id]["status"] = DownloadStatus.COMPLETE
+        self.logger.info(
+            "Download completed for %s (%s bytes)", request.video_id, downloaded
+        )
+
+    def _mark_failed(self, request: DownloadRequest, status_path: Path) -> None:
+        with self.lock:
+            self.active_downloads[request.video_id]["status"] = DownloadStatus.FAILED
+        status_path.write_text(f"failed:{request.format_id}")
+
+    def _stop_requested(self, video_id: str) -> bool:
+        with self.lock:
+            active = self.active_downloads.get(video_id)
+            return bool(active and active.get("stop_requested"))
 
     @staticmethod
     def _cached_status_format(status_path: Path) -> str | None:
