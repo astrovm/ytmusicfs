@@ -7,17 +7,15 @@ from collections import deque
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import requests
 
 from ytmusicfs.dependencies import DownloaderDependencies, FileHandlerDependencies
 from ytmusicfs.downloader import Downloader
 from ytmusicfs.http_utils import ensure_headers_and_cookies
+from ytmusicfs.models import FileHandleState
 from ytmusicfs.yt_dlp_utils import PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT
-
-if TYPE_CHECKING:
-    from ytmusicfs.models import FileHandleState
 
 
 class FileHandler:
@@ -228,205 +226,190 @@ class FileHandler:
         raise OSError(errno.EIO, "Failed to stream content after all retries")
 
     def read(self, path: str, size: int, offset: int, fh: int) -> bytes:
-        """Read data from a file, fetching stream URL on-demand if needed.
-
-        Args:
-            path: The file path
-            size: Number of bytes to read
-            offset: Offset to start reading from
-            fh: File handle
-
-        Returns:
-            The requested bytes
-        """
-        if fh not in self.open_files:
-            raise OSError(errno.EBADF, "Bad file descriptor")
-
-        file_info = self.open_files[fh]
-        cache_path = Path(file_info["cache_path"])
-        video_id = file_info["video_id"]
+        """Read from local caches before opening a remote stream."""
+        file_info = self._get_file_info(fh)
         self._record_read_request(file_info, size, offset)
+        self._raise_stored_error(file_info)
 
-        # If there was an error, raise it
-        if file_info["status"] == "error":
-            error_msg = file_info.get("error", "Unknown error")
-            raise OSError(self._stream_error_errno(error_msg), error_msg)
+        cached_data = self._read_local_audio(file_info, offset, size)
+        if cached_data is not None:
+            return cached_data
 
-        # First try to read from the cache - fully downloaded files
-        if cache_path.exists():
-            if self._check_cached_audio(video_id):
-                with self.file_handle_lock:
-                    file_info["stream_url"] = "cached"
-                with cache_path.open("rb") as f:
-                    f.seek(offset)
-                    return f.read(size)
-
-            cached_data = self._read_available_audio_cache(
-                cache_path, video_id, file_info.get("format_id"), offset, size
-            )
-            if cached_data is not None:
-                self._record_stat("progressive_cache_hits")
-                return cached_data
-
-            progress = self.downloader.get_progress(video_id)
-            if isinstance(progress, dict) and progress.get("status") == "complete":
-                # Fully downloaded file
-                with cache_path.open("rb") as f:
-                    f.seek(offset)
-                    return f.read(size)
-            elif (
-                isinstance(progress, dict)
-                and progress.get("status") == "downloading"
-                and progress.get("progress", 0) >= offset + size
-            ):
-                # Partially downloaded file with enough data
-                with cache_path.open("rb") as f:
-                    f.seek(offset)
-                    return f.read(size)
         range_data = self._read_cached_range(path, file_info, offset, size)
         if range_data is not None:
             self._record_stat("range_cache_hits")
             return range_data
 
-        # If we still lack a stream URL (and it's not cached), fetch it on-demand
-        if not file_info["stream_url"] or file_info["stream_url"] == "cached":
-            if file_info["stream_url"] == "cached":
-                # If marked as cached, we can read directly from the file
-                with cache_path.open("rb") as f:
-                    f.seek(offset)
-                    return f.read(size)
-
+        if not file_info.get("stream_url") or file_info["stream_url"] == "cached":
             if self._is_uncached_probe_read(path, offset):
                 self._record_stat("probe_eof_skips")
                 self.logger.debug(
-                    "Skipping high-offset probe for %s at offset %s", video_id, offset
+                    "Skipping high-offset probe for %s at offset %s",
+                    file_info["video_id"],
+                    offset,
                 )
                 return b""
+            self._ensure_stream_ready(path, file_info)
 
-            unavailable = self.cache.get_unavailable_track(video_id)
-            if unavailable:
-                self._record_stat("unavailable_cache_hits")
-                reason = unavailable.get("reason", "Track unavailable")
-                raise OSError(errno.ENOENT, reason)
+        return self._read_remote(path, file_info, offset, size)
 
-            # Otherwise, proceed with fetching the stream URL
-            if self._use_cached_stream_info(file_info):
-                self._record_stat("stream_info_cache_hits")
-            else:
-                self.logger.debug(f"Fetching stream URL on-demand for {video_id}")
+    def _get_file_info(self, fh: int) -> FileHandleState:
+        try:
+            return self.open_files[fh]
+        except KeyError as exc:
+            raise OSError(errno.EBADF, "Bad file descriptor") from exc
 
-                # Use ThreadPoolExecutor-based async extraction
-                try:
-                    result = self._get_stream_info(video_id)
-                    file_info["stream_extracted"] = True
-                    if result["status"] == "error":
-                        error_msg = result["error"]
-                        with self.file_handle_lock:
-                            file_info["status"] = "error"
-                            file_info["error"] = error_msg
-                        raise OSError(self._stream_error_errno(error_msg), error_msg)
+    def _raise_stored_error(self, file_info: FileHandleState) -> None:
+        if file_info.get("status") != "error":
+            return
+        error_msg = file_info.get("error") or "Unknown error"
+        raise OSError(self._stream_error_errno(error_msg), error_msg)
 
-                    self._apply_stream_info(file_info, result)
-                    self._cache_stream_info(video_id, file_info)
+    @staticmethod
+    def _read_file(cache_path: Path, offset: int, size: int) -> bytes:
+        with cache_path.open("rb") as audio_file:
+            audio_file.seek(offset)
+            return audio_file.read(size)
 
-                    # Extract and cache duration if available in the result
-                    if "duration" in result and self.cache:
-                        duration = result["duration"]
-                        self.logger.debug(f"Got duration for {video_id}: {duration}s")
-                        self.cache.set_durations_batch({video_id: duration})
+    def _read_local_audio(
+        self, file_info: FileHandleState, offset: int, size: int
+    ) -> bytes | None:
+        cache_path = Path(file_info["cache_path"])
+        video_id = file_info["video_id"]
+        if not cache_path.exists():
+            return None
 
-                except Exception as e:
-                    error_msg = self._error_message(e)
-                    error_code: int | None
-                    if isinstance(e, OSError):
-                        error_code = e.errno or self._stream_error_errno(error_msg)
-                        log_message = f"Stream unavailable for {video_id}: {error_msg}"
-                    else:
-                        error_code = self._stream_error_errno(error_msg)
-                        log_message = (
-                            f"Error getting stream URL for {video_id}: {error_msg}"
-                        )
+        if self._check_cached_audio(video_id):
+            with self.file_handle_lock:
+                file_info["stream_url"] = "cached"
+            return self._read_file(cache_path, offset, size)
 
-                    if error_code == errno.ENOENT:
-                        self._mark_unavailable_if_needed(video_id, path, error_msg)
-                        self.logger.warning(log_message)
+        cached_data = self._read_available_audio_cache(
+            cache_path, video_id, file_info.get("format_id"), offset, size
+        )
+        if cached_data is not None:
+            self._record_stat("progressive_cache_hits")
+            return cached_data
 
-                        # Attempt transparent auto-repair for liked_songs
-                        if self.on_stream_unavailable:
-                            new_video_id = self.on_stream_unavailable(video_id, path)
-                            if new_video_id and new_video_id != video_id:
-                                self.logger.info(
-                                    "Auto-repair retrying %s with new video_id %s",
-                                    path,
-                                    new_video_id,
-                                )
-                                with self.file_handle_lock:
-                                    file_info["video_id"] = new_video_id
-                                    file_info["cache_path"] = str(
-                                        self.cache_dir / "audio" / f"{new_video_id}.m4a"
-                                    )
-                                    file_info["stream_url"] = None
-                                    file_info["status"] = "ready"
-                                    file_info["error"] = None
-                                if video_id in self.futures:
-                                    del self.futures[video_id]
-                                # Retry stream extraction with new ID
-                                try:
-                                    result = self._get_stream_info(new_video_id)
-                                    if result["status"] == "error":
-                                        raise OSError(
-                                            self._stream_error_errno(result["error"]),
-                                            result["error"],
-                                        )
-                                    self._apply_stream_info(file_info, result)
-                                    self._cache_stream_info(new_video_id, file_info)
-                                    if "duration" in result and self.cache:
-                                        self.cache.set_durations_batch(
-                                            {new_video_id: result["duration"]}
-                                        )
-                                    # Continue to streaming below
-                                    error_code = None
-                                except Exception as retry_exc:
-                                    error_msg = self._error_message(retry_exc)
-                                    error_code = self._stream_error_errno(error_msg)
-                                    self.logger.warning(
-                                        "Auto-repair retry failed for %s: %s",
-                                        path,
-                                        error_msg,
-                                    )
-                        if error_code is not None:
-                            with self.file_handle_lock:
-                                file_info["status"] = "error"
-                                file_info["error"] = error_msg
+        progress = self.downloader.get_progress(video_id)
+        if not progress:
+            return None
+        if progress.get("status") == "complete":
+            return self._read_file(cache_path, offset, size)
+        if (
+            progress.get("status") == "downloading"
+            and progress.get("progress", 0) >= offset + size
+        ):
+            return self._read_file(cache_path, offset, size)
+        return None
 
-                            if (
-                                not isinstance(e, FutureTimeoutError)
-                                and video_id in self.futures
-                            ):
-                                del self.futures[video_id]
+    def _ensure_stream_ready(self, path: str, file_info: FileHandleState) -> None:
+        video_id = file_info["video_id"]
+        unavailable = self.cache.get_unavailable_track(video_id)
+        if unavailable:
+            self._record_stat("unavailable_cache_hits")
+            raise OSError(errno.ENOENT, unavailable.get("reason", "Track unavailable"))
 
-                            raise OSError(error_code, error_msg) from e
-                    else:
-                        self.logger.error(log_message)
+        if self._use_cached_stream_info(file_info):
+            self._record_stat("stream_info_cache_hits")
+            return
 
-                        with self.file_handle_lock:
-                            file_info["status"] = "error"
-                            file_info["error"] = error_msg
+        self.logger.debug("Fetching stream URL on-demand for %s", video_id)
+        try:
+            self._extract_and_apply_stream(video_id, file_info)
+        except Exception as error:
+            self._recover_stream_failure(path, file_info, video_id, error)
 
-                        if (
-                            not isinstance(e, FutureTimeoutError)
-                            and video_id in self.futures
-                        ):
-                            del self.futures[video_id]
+    def _extract_and_apply_stream(
+        self, video_id: str, file_info: FileHandleState
+    ) -> None:
+        result = self._get_stream_info(video_id)
+        file_info["stream_extracted"] = True
+        if result.get("status") == "error":
+            error_msg = result.get("error", "Stream extraction failed")
+            raise OSError(self._stream_error_errno(error_msg), error_msg)
 
-                        raise OSError(error_code, error_msg) from e
+        self._apply_stream_info(file_info, result)
+        self._cache_stream_info(video_id, file_info)
+        duration = result.get("duration")
+        if isinstance(duration, int):
+            self.logger.debug("Got duration for %s: %ss", video_id, duration)
+            self.cache.set_durations_batch({video_id: duration})
 
-        # If we are here, we need to stream directly from URL because:
-        # 1. No cache file exists yet, or
-        # 2. Download is in progress but hasn't reached the requested offset yet
-        self.logger.debug(f"Streaming from URL for {video_id} at offset {offset}")
+    def _recover_stream_failure(
+        self,
+        path: str,
+        file_info: FileHandleState,
+        video_id: str,
+        error: Exception,
+    ) -> None:
+        error_msg = self._error_message(error)
+        error_code = (
+            error.errno
+            if isinstance(error, OSError) and error.errno
+            else self._stream_error_errno(error_msg)
+        )
+
+        if error_code == errno.ENOENT:
+            self._mark_unavailable_if_needed(video_id, path, error_msg)
+            self.logger.warning("Stream unavailable for %s: %s", video_id, error_msg)
+            try:
+                if self._attempt_auto_repair(path, file_info, video_id):
+                    return
+            except Exception as retry_error:
+                error = retry_error
+                error_msg = self._error_message(retry_error)
+                error_code = self._stream_error_errno(error_msg)
+                self.logger.warning(
+                    "Auto-repair retry failed for %s: %s", path, error_msg
+                )
+        else:
+            self.logger.error(
+                "Error getting stream URL for %s: %s", video_id, error_msg
+            )
+
+        with self.file_handle_lock:
+            file_info["status"] = "error"
+            file_info["error"] = error_msg
+        if not isinstance(error, FutureTimeoutError):
+            self.futures.pop(video_id, None)
+        raise OSError(error_code, error_msg) from error
+
+    def _attempt_auto_repair(
+        self, path: str, file_info: FileHandleState, old_video_id: str
+    ) -> bool:
+        if not self.on_stream_unavailable:
+            return False
+        new_video_id = self.on_stream_unavailable(old_video_id, path)
+        if not new_video_id or new_video_id == old_video_id:
+            return False
+
+        self.logger.info(
+            "Auto-repair retrying %s with new video_id %s", path, new_video_id
+        )
+        with self.file_handle_lock:
+            file_info["video_id"] = new_video_id
+            file_info["cache_path"] = str(
+                self.cache_dir / "audio" / f"{new_video_id}.m4a"
+            )
+            file_info["stream_url"] = None
+            file_info["status"] = "ready"
+            file_info["error"] = None
+        self.futures.pop(old_video_id, None)
+        self._extract_and_apply_stream(new_video_id, file_info)
+        return True
+
+    def _read_remote(
+        self, path: str, file_info: FileHandleState, offset: int, size: int
+    ) -> bytes:
+        video_id = file_info["video_id"]
+        stream_url = file_info.get("stream_url")
+        if not stream_url or stream_url == "cached":
+            raise OSError(errno.EIO, "Stream URL unavailable")
+
+        self.logger.debug("Streaming from URL for %s at offset %s", video_id, offset)
         data = self._stream_content(
-            file_info["stream_url"],
+            stream_url,
             offset,
             size,
             path=path,
