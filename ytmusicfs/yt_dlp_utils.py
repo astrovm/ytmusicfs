@@ -204,64 +204,103 @@ class YTDLPUtils:
     def extract_playlist_content(
         self, playlist_id: str, limit: int, browser: str
     ) -> list[dict[str, Any]]:
-        """
-        Fetch playlist or album content using yt-dlp, handling YouTube Music's redirects.
-
-        Args:
-            playlist_id (str): Playlist ID (e.g., 'PL123', 'LM') or Album ID (e.g., 'MPREb_123').
-            limit (int): Maximum number of tracks to fetch (default: 10000).
-            browser (str): Browser name for cookie extraction.
-
-        Returns:
-            list: List of track entries from yt-dlp.
-        """
-        # Determine if this is an album ID
+        """Fetch a playlist, keeping the largest result when retries are partial."""
         is_album = playlist_id.startswith("MPREb_")
-        url = None
+        url = self._playlist_url(playlist_id, browser)
+        ydl_opts = self._playlist_options(limit, browser)
 
-        if is_album:
-            # For albums, start with browse URL
-            url = f"https://music.youtube.com/browse/{playlist_id}"
-            self.logger.debug(f"Handling album ID: {playlist_id}")
-
-            # Try to follow any redirects to get OLAK5uy playlist ID
+        best_tracks: list[dict[str, Any]] = []
+        best_playlist_count: int | None = None
+        for attempt in RetryPolicy(PARTIAL_PLAYLIST_RETRY_ATTEMPTS, base_delay=0):
             try:
-                redirect_opts = {
-                    "quiet": True,
-                    "skip_download": True,
-                    "extract_flat": True,
-                    "ignoreerrors": True,
-                }
-                self._add_cookie_options(redirect_opts, browser)
+                result = self._extract_playlist_result(url, ydl_opts, browser)
+            except Exception as error:
+                self.logger.warning("Error extracting content: %s", error)
+                return best_tracks
 
-                with YoutubeDL(redirect_opts) as ydl:
-                    info = ydl.extract_info(url, download=False, process=False)
-                    self._cache_browser_cookies(browser, ydl)
+            if not result or "entries" not in result:
+                self.logger.warning(
+                    "No tracks found for %s ID: %s",
+                    "album" if is_album else "playlist",
+                    playlist_id,
+                )
+                return best_tracks
 
-                    # Check if we got a redirect
-                    if info and info.get("_type") == "url" and "url" in info:
-                        redirect_url = info["url"]
-                        self.logger.debug(f"Album redirect detected: {redirect_url}")
+            entries = result.get("entries")
+            tracks = (
+                [entry for entry in entries if isinstance(entry, dict)][:limit]
+                if isinstance(entries, list)
+                else []
+            )
+            raw_playlist_count = result.get("playlist_count")
+            playlist_count = (
+                raw_playlist_count if isinstance(raw_playlist_count, int) else None
+            )
+            if playlist_count is not None:
+                self._playlist_total_counts[playlist_id] = playlist_count
+            if len(tracks) > len(best_tracks):
+                best_tracks = tracks
+                best_playlist_count = playlist_count
 
-                        # Extract OLAK5uy ID from redirect URL
-                        match = re.search(
-                            r"list=(OLAK5uy_[a-zA-Z0-9_-]+)", redirect_url
-                        )
-                        if match:
-                            olak5_id = match.group(1)
-                            url = f"https://music.youtube.com/playlist?list={olak5_id}"
-                            self.logger.debug(
-                                f"Using playlist URL with OLAK5uy ID: {olak5_id}"
-                            )
-            except Exception as e:
-                self.logger.warning(f"Error detecting album redirect: {e}")
+            if not self._is_partial_playlist(tracks, playlist_count):
+                self.logger.debug(
+                    "Found %d tracks from %s",
+                    len(tracks),
+                    "album" if is_album else "playlist",
+                )
+                return tracks
 
-        # If URL wasn't set by album logic or there was an error, use default playlist URL
-        if not url:
-            url = f"https://music.youtube.com/playlist?list={playlist_id}"
+            self.logger.warning(
+                "Playlist %s returned %d of %s tracks on attempt %d. "
+                "YouTube rate limiting may have reduced the result.",
+                playlist_id,
+                len(tracks),
+                playlist_count,
+                attempt.number,
+            )
 
-        # Common extraction options
-        ydl_opts = {
+        if best_playlist_count:
+            self._playlist_total_counts[playlist_id] = best_playlist_count
+        return best_tracks
+
+    def _playlist_url(self, playlist_id: str, browser: str) -> str:
+        default_url = f"https://music.youtube.com/playlist?list={playlist_id}"
+        if not playlist_id.startswith("MPREb_"):
+            return default_url
+
+        browse_url = f"https://music.youtube.com/browse/{playlist_id}"
+        self.logger.debug("Resolving album ID: %s", playlist_id)
+        try:
+            redirect_url = self._extract_album_redirect(browse_url, browser)
+        except Exception as error:
+            self.logger.warning("Error detecting album redirect: %s", error)
+            return browse_url
+
+        match = re.search(r"list=(OLAK5uy_[a-zA-Z0-9_-]+)", redirect_url or "")
+        if not match:
+            return browse_url
+        playlist_url = f"https://music.youtube.com/playlist?list={match.group(1)}"
+        self.logger.debug("Resolved album playlist URL: %s", playlist_url)
+        return playlist_url
+
+    def _extract_album_redirect(self, url: str, browser: str) -> str | None:
+        options = {
+            "quiet": True,
+            "skip_download": True,
+            "extract_flat": True,
+            "ignoreerrors": True,
+        }
+        self._add_cookie_options(options, browser)
+        with YoutubeDL(options) as ydl:
+            info = ydl.extract_info(url, download=False, process=False)
+            self._cache_browser_cookies(browser, ydl)
+        if info and info.get("_type") == "url":
+            redirect_url = info.get("url")
+            return redirect_url if isinstance(redirect_url, str) else None
+        return None
+
+    def _playlist_options(self, limit: int, browser: str) -> dict[str, Any]:
+        options = {
             "extract_flat": True,
             "quiet": True,
             "no_warnings": True,
@@ -269,47 +308,16 @@ class YTDLPUtils:
             "playlist_items": f"1-{limit}",
             "extractor_args": {"youtubetab": {"skip": ["authcheck"]}},
         }
-        self._add_cookie_options(ydl_opts, browser)
+        self._add_cookie_options(options, browser)
+        return options
 
-        best_tracks: list[dict[str, Any]] = []
-        best_playlist_count = None
-        for attempt in RetryPolicy(PARTIAL_PLAYLIST_RETRY_ATTEMPTS, base_delay=0):
-            try:
-                with YoutubeDL(ydl_opts) as ydl:
-                    result = ydl.extract_info(url, download=False)
-                    self._cache_browser_cookies(browser, ydl)
-            except Exception as e:
-                self.logger.warning(f"Error extracting content: {e}")
-                return best_tracks
-
-            if not result or "entries" not in result:
-                self.logger.warning(
-                    f"No tracks found for {'album' if is_album else 'playlist'} ID: {playlist_id}"
-                )
-                return best_tracks
-
-            tracks = result.get("entries", [])[:limit]
-            playlist_count = result.get("playlist_count")
-            self._playlist_total_counts[playlist_id] = playlist_count
-            if len(tracks) > len(best_tracks):
-                best_tracks = tracks
-                best_playlist_count = playlist_count
-
-            if not self._is_partial_playlist(tracks, playlist_count):
-                self.logger.debug(
-                    f"Found {len(tracks)} tracks from {'album' if is_album else 'playlist'}"
-                )
-                return tracks
-
-            self.logger.warning(
-                f"Playlist {playlist_id} returned {len(tracks)} of "
-                f"{playlist_count} tracks on attempt {attempt.number}. "
-                "YouTube rate limiting may have reduced the result."
-            )
-
-        if best_playlist_count:
-            self._playlist_total_counts[playlist_id] = best_playlist_count
-        return best_tracks
+    def _extract_playlist_result(
+        self, url: str, options: dict[str, Any], browser: str
+    ) -> dict[str, Any] | None:
+        with YoutubeDL(options) as ydl:
+            result = ydl.extract_info(url, download=False)
+            self._cache_browser_cookies(browser, ydl)
+        return result if isinstance(result, dict) else None
 
     def _is_partial_playlist(
         self, tracks: list[dict[str, Any]], playlist_count: int | None

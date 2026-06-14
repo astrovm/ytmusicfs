@@ -3,11 +3,22 @@
 import time
 import traceback
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, cast
 
 from ytmusicfs.dependencies import ContentFetcherDependencies
-from ytmusicfs.models import RegistryEntry
+from ytmusicfs.models import RefreshStatus, RegistryEntry
 from ytmusicfs.yt_dlp_utils import PARTIAL_PLAYLIST_COMPLETE_RATIO
+
+
+@dataclass(frozen=True)
+class RefreshRequest:
+    cache_key: str
+    fetch_tracks: Callable[[int], list[dict[str, Any]]]
+    path: str
+    limit: int = 10000
+    force: bool = False
+    expected_total: Callable[[], int | None] | None = None
 
 
 class ContentFetcher:
@@ -310,12 +321,14 @@ class ContentFetcher:
             return self._get_expected_total_count(playlist_id)
 
         tracks = self.refresh_content(
-            cache_key,
-            fetch_tracks,
-            path,
-            limit,
-            force_refresh,
-            expected_total_func=get_expected_total,
+            RefreshRequest(
+                cache_key=cache_key,
+                fetch_tracks=fetch_tracks,
+                path=path,
+                limit=limit,
+                force=force_refresh,
+                expected_total=get_expected_total,
+            )
         )
 
         # Return just the filenames
@@ -332,11 +345,15 @@ class ContentFetcher:
 
         self.logger.info("Refreshing liked songs in background")
         self.refresh_content(
-            f"{entry['path']}_processed",
-            lambda lim: self._fetch_playlist_tracks(entry["id"], lim),
-            entry["path"],
-            force_refresh=True,
-            expected_total_func=lambda: self._get_expected_total_count(entry["id"]),
+            RefreshRequest(
+                cache_key=f"{entry['path']}_processed",
+                fetch_tracks=lambda limit: self._fetch_playlist_tracks(
+                    entry["id"], limit
+                ),
+                path=entry["path"],
+                force=True,
+                expected_total=lambda: self._get_expected_total_count(entry["id"]),
+            )
         )
         self._repair_unavailable_liked_songs_locally()
 
@@ -510,156 +527,149 @@ class ContentFetcher:
                 "No callback set for caching directory listings with attributes"
             )
 
-    def refresh_content(
-        self,
-        cache_key: str,
-        fetch_func: Callable[[int], list[dict[str, Any]]],
-        path: str,
-        limit: int = 10000,
-        force_refresh: bool = False,
-        expected_total_func: Callable[[], int | None] | None = None,
-    ) -> list[dict[str, Any]]:
-        """Refresh content for a given cache key if needed, returning processed tracks.
+    def refresh_content(self, request: RefreshRequest) -> list[dict[str, Any]]:
+        """Return cached tracks or refresh and persist a complete usable listing."""
+        existing_tracks = self._cached_tracks(request.cache_key)
+        if existing_tracks and not request.force:
+            return self._serve_cached_tracks(request, existing_tracks)
 
-        Args:
-            cache_key: The cache key to store the content under
-            fetch_func: Callable function that retrieves the content
-            path: The path for which we're refreshing content
-            limit: Maximum number of items to fetch
-            force_refresh: Whether to force a refresh even if not needed
-
-        Returns:
-            List of processed tracks with metadata
-        """
-        # Get existing cached tracks
-        existing_tracks = self.cache.get(cache_key)
-        if not isinstance(existing_tracks, list):
-            existing_tracks = []
-
-        # Directory reads must stay local once content exists. Media players can
-        # readdir repeatedly while scanning thousands of entries; blocking that
-        # path on a stale YouTube refresh makes cached libraries unusable.
-        if existing_tracks and not force_refresh:
-            last_refresh, _ = self.cache.get_refresh_metadata(cache_key)
-            last_refresh_age = (
-                "unknown"
-                if not last_refresh
-                else f"{int(time.time() - last_refresh)}s ago"
-            )
-            self.logger.debug(
-                f"Using {len(existing_tracks)} cached tracks for {path} (last refresh: {last_refresh_age})"
-            )
-            for track in existing_tracks:
-                track["is_directory"] = False
-            self._cache_directory_listing_with_attrs(path, existing_tracks)
+        self.logger.info("Refreshing content for %s", request.path)
+        self._set_refresh_status(request.cache_key, RefreshStatus.PENDING)
+        try:
+            return self._refresh_tracks(request, existing_tracks)
+        except Exception as error:
+            self.logger.error("Refresh failed for %s: %s", request.path, error)
+            self.logger.error(traceback.format_exc())
+            self._set_refresh_status(request.cache_key, RefreshStatus.STALE)
             return existing_tracks
 
-        # Set status to pending while we're refreshing
-        self.logger.info(f"Refreshing content for {path}")
-        self.cache.set_refresh_metadata(cache_key, time.time(), "pending")
+    def _cached_tracks(self, cache_key: str) -> list[dict[str, Any]]:
+        tracks = self.cache.get(cache_key)
+        return tracks if isinstance(tracks, list) else []
 
-        try:
-            # Fetch new content
-            tracks = fetch_func(limit)
-            self.logger.info(f"Fetched {len(tracks)} items for {path}")
-            expected_total = expected_total_func() if expected_total_func else None
-            is_partial_fetch = bool(
-                expected_total
-                and len(tracks) < expected_total * PARTIAL_PLAYLIST_COMPLETE_RATIO
+    def _serve_cached_tracks(
+        self, request: RefreshRequest, tracks: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        last_refresh, _ = self.cache.get_refresh_metadata(request.cache_key)
+        age = (
+            "unknown" if not last_refresh else f"{int(time.time() - last_refresh)}s ago"
+        )
+        self.logger.debug(
+            "Using %d cached tracks for %s (last refresh: %s)",
+            len(tracks),
+            request.path,
+            age,
+        )
+        for track in tracks:
+            track["is_directory"] = False
+        self._cache_directory_listing_with_attrs(request.path, tracks)
+        return tracks
+
+    def _refresh_tracks(
+        self, request: RefreshRequest, existing_tracks: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        fetched_tracks = request.fetch_tracks(request.limit)
+        expected_total = request.expected_total() if request.expected_total else None
+        is_partial = self._is_partial_fetch(fetched_tracks, expected_total)
+        self.logger.info("Fetched %d items for %s", len(fetched_tracks), request.path)
+
+        if is_partial:
+            self.logger.warning(
+                "Partial fetch returned %d of %d tracks for %s",
+                len(fetched_tracks),
+                expected_total,
+                request.path,
             )
-            if is_partial_fetch:
-                self.logger.warning(
-                    f"Partial fetch returned {len(tracks)} of {expected_total} "
-                    f"tracks for {path}"
-                )
+        if not fetched_tracks and existing_tracks:
+            return self._keep_cached_tracks(request, existing_tracks, "No content")
 
-            # If no tracks were returned and we have existing tracks, return them
-            if not tracks and existing_tracks:
-                self.logger.warning(
-                    f"No content returned for {path}, using cached data"
-                )
-                self.cache.set_refresh_metadata(cache_key, time.time(), "stale")
-                return existing_tracks
-
-            # Process the fetched tracks
-            new_tracks = []
-            durations_batch = {}
-            for entry in tracks:
-                if not entry:
-                    continue
-
-                video_id = entry.get("videoId") or entry.get("id")
-
-                # Process duration for batch update
-                duration = entry.get("duration")
-                duration_seconds = int(duration) if isinstance(duration, int) else None
-                if video_id and duration_seconds is not None:
-                    durations_batch[video_id] = duration_seconds
-
-                processed_track = self._process_track_entry(entry)
-                if processed_track:
-                    new_tracks.append(processed_track)
-
-            # If the new fetch is much smaller than our existing cache,
-            # YouTube rate limiting likely truncated the result. Keep
-            # the existing data and mark stale so we retry next hour.
-            if (
-                not force_refresh
-                and existing_tracks
-                and len(new_tracks) < len(existing_tracks) * 0.8
-            ):
-                self.logger.warning(
-                    f"Partial fetch returned {len(new_tracks)} tracks "
-                    f"vs {len(existing_tracks)} cached. Keeping cached data."
-                )
-                self.cache.set_refresh_metadata(cache_key, time.time(), "stale")
-                return existing_tracks
-
-            if (
-                is_partial_fetch
-                and existing_tracks
-                and len(new_tracks) < len(existing_tracks)
-            ):
-                self.logger.warning(
-                    f"Partial fetch returned {len(new_tracks)} tracks "
-                    f"vs {len(existing_tracks)} cached. Keeping cached data."
-                )
-                self.cache.set_refresh_metadata(cache_key, time.time(), "stale")
-                return existing_tracks
-
-            # Update durations cache
-            if durations_batch:
-                self.cache.set_durations_batch(durations_batch)
-
-            # Update the cache
-            if existing_tracks and is_partial_fetch:
-                result_tracks = self._merge_tracks(new_tracks, existing_tracks)
-                self.logger.info(
-                    f"Merged {len(new_tracks)} fetched tracks with "
-                    f"{len(existing_tracks)} cached tracks for {path}"
-                )
-            else:
-                # Just use the new tracks
-                result_tracks = new_tracks
-
-            # Cache the tracks and update directory listing
-            self.cache.set(cache_key, result_tracks)
-            self._cache_directory_listing_with_attrs(path, result_tracks)
-
-            # Update refresh metadata
-            self.cache.set_refresh_metadata(
-                cache_key, time.time(), "stale" if is_partial_fetch else "fresh"
+        new_tracks, durations = self._process_track_entries(fetched_tracks)
+        if self._should_keep_cached(existing_tracks, new_tracks, is_partial):
+            return self._keep_cached_tracks(
+                request, existing_tracks, f"Partial fetch returned {len(new_tracks)}"
             )
 
-            return result_tracks
+        if durations:
+            self.cache.set_durations_batch(durations)
+        result_tracks = (
+            self._merge_tracks(new_tracks, existing_tracks)
+            if existing_tracks and is_partial
+            else new_tracks
+        )
+        if existing_tracks and is_partial:
+            self.logger.info(
+                "Merged %d fetched tracks with %d cached tracks for %s",
+                len(new_tracks),
+                len(existing_tracks),
+                request.path,
+            )
+        self._store_refreshed_tracks(request, result_tracks, is_partial)
+        return result_tracks
 
-        except Exception as e:
-            self.logger.error(f"Refresh failed for {path}: {e!s}")
-            self.logger.error(traceback.format_exc())
-            # Mark as stale since refresh failed
-            self.cache.set_refresh_metadata(cache_key, time.time(), "stale")
-            # Return cached data if available
-            return existing_tracks if existing_tracks else []
+    @staticmethod
+    def _is_partial_fetch(
+        tracks: list[dict[str, Any]], expected_total: int | None
+    ) -> bool:
+        return bool(
+            expected_total
+            and len(tracks) < expected_total * PARTIAL_PLAYLIST_COMPLETE_RATIO
+        )
+
+    def _process_track_entries(
+        self, entries: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        tracks = []
+        durations = {}
+        for entry in entries:
+            if not entry:
+                continue
+            video_id = entry.get("videoId") or entry.get("id")
+            duration = entry.get("duration")
+            if video_id and isinstance(duration, int):
+                durations[video_id] = duration
+            processed = self._process_track_entry(entry)
+            if processed:
+                tracks.append(processed)
+        return tracks, durations
+
+    @staticmethod
+    def _should_keep_cached(
+        existing_tracks: list[dict[str, Any]],
+        new_tracks: list[dict[str, Any]],
+        is_partial: bool,
+    ) -> bool:
+        return bool(
+            existing_tracks and is_partial and len(new_tracks) < len(existing_tracks)
+        )
+
+    def _keep_cached_tracks(
+        self,
+        request: RefreshRequest,
+        existing_tracks: list[dict[str, Any]],
+        reason: str,
+    ) -> list[dict[str, Any]]:
+        self.logger.warning(
+            "%s for %s; keeping %d cached tracks",
+            reason,
+            request.path,
+            len(existing_tracks),
+        )
+        self._set_refresh_status(request.cache_key, RefreshStatus.STALE)
+        return existing_tracks
+
+    def _store_refreshed_tracks(
+        self,
+        request: RefreshRequest,
+        tracks: list[dict[str, Any]],
+        is_partial: bool,
+    ) -> None:
+        self.cache.set(request.cache_key, tracks)
+        self._cache_directory_listing_with_attrs(request.path, tracks)
+        status = RefreshStatus.STALE if is_partial else RefreshStatus.FRESH
+        self._set_refresh_status(request.cache_key, status)
+
+    def _set_refresh_status(self, cache_key: str, status: RefreshStatus) -> None:
+        self.cache.set_refresh_metadata(cache_key, time.time(), status.value)
 
     def _merge_tracks(
         self, new_tracks: list[dict[str, Any]], existing_tracks: list[dict[str, Any]]
