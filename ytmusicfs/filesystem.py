@@ -11,7 +11,7 @@ import traceback
 from collections import deque
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, ClassVar, NoReturn
 
 from fuse import FUSE, FuseOSError, Operations
 
@@ -49,60 +49,53 @@ class YouTubeMusicFS(Operations):
     PRECACHE_IDLE_SECONDS = 2.0
     PLAYLIST_PREFETCH_IDLE_SECONDS = 8.0
     PLAYLIST_PREFETCH_BACKOFF_SECONDS = 5
+    LIBRARY_ROOTS: ClassVar[dict[str, str]] = {
+        "/playlists": "playlist",
+        "/albums": "album",
+        "/liked_songs": "liked_songs",
+    }
+    EMPTY_DIRECTORY: ClassVar[tuple[str, str]] = (".", "..")
 
     def __init__(
         self,
         cache_dir: str | None = None,
         browser: str = "",
     ) -> None:
-        """Initialize the FUSE filesystem with YouTube Music API.
-
-        Args:
-            cache_dir: Directory for persistent cache (optional)
-            browser: Browser to use for cookies (e.g., 'chrome', 'firefox', 'brave')
-        """
-        # Get or create the logger
+        """Build the filesystem components in dependency order."""
         self.logger = logging.getLogger("YTMusicFS")
+        self.browser = browser
+        self._initialize_components(cache_dir)
+        self._initialize_runtime_state()
+        self._initialize_file_handler()
+        self._register_routes()
+        self._prime_static_paths()
+        self.logger.info("YTMusicFS initialized successfully")
+        self.logger.debug(
+            "Using browser: %s, cache_dir: %s", browser, self.cache.cache_dir
+        )
 
-        # Initialize the ThreadManager first
+    def _initialize_components(self, cache_dir: str | None) -> None:
         self.thread_manager = ThreadManager(logger=self.logger)
-        self.logger.info("ThreadManager initialized")
-
-        # Initialize YTDLPUtils with the ThreadManager
         self.yt_dlp_utils = YTDLPUtils(
             thread_manager=self.thread_manager, logger=self.logger
         )
-        self.logger.debug("YTDLPUtils initialized with ThreadManager")
-
-        # Initialize the authentication adapter first
         auth_adapter = YTMusicAuthAdapter(
-            browser=browser,
+            browser=self.browser,
             yt_dlp_utils=self.yt_dlp_utils,
             logger=self.logger,
         )
-
-        # Initialize the client component with the authentication adapter
         self.client = YouTubeMusicClient(
             auth_adapter=auth_adapter,
             logger=self.logger,
         )
-
-        # Store the adapter reference for downstream consumers/tests
         self.auth_adapter = auth_adapter
-        # Backwards compatibility with older attribute name used in tests
         self.oauth_adapter = auth_adapter
-
-        # Initialize the cache component
         self.cache = CacheManager(
             thread_manager=self.thread_manager,
             cache_dir=cache_dir,
             logger=self.logger,
         )
-
-        # Initialize the track processor component with cache access
         self.processor = TrackProcessor(logger=self.logger, cache_manager=self.cache)
-
-        # Initialize the content fetcher component
         self.fetcher = ContentFetcher(
             ContentFetcherDependencies(
                 client=self.client,
@@ -110,23 +103,13 @@ class YouTubeMusicFS(Operations):
                 cache=self.cache,
                 logger=self.logger,
                 yt_dlp=self.yt_dlp_utils,
-                browser=browser,
+                browser=self.browser,
             )
         )
-
-        # Set the callback for caching directory listings with attributes
         self.fetcher.cache_directory_callback = self._cache_directory_listing_with_attrs
-
-        # Initialize the path router
         self.router = PathRouter()
-
-        # Set the content fetcher in the router
         self.router.set_fetcher(self.fetcher)
-
-        # Also explicitly set the cache manager
         self.router.set_cache(self.cache)
-
-        # Initialize the metadata manager
         self.metadata_manager = MetadataManager(
             cache=self.cache,
             logger=self.logger,
@@ -134,6 +117,7 @@ class YouTubeMusicFS(Operations):
             content_fetcher=self.fetcher,
         )
 
+    def _initialize_runtime_state(self) -> None:
         self.request_cooldown = 1.0
         self.last_access_time: dict[str, float] = {}
         self.last_access_lock = self.thread_manager.create_lock()
@@ -195,10 +179,7 @@ class YouTubeMusicFS(Operations):
             },
         }
 
-        # Store the browser parameter
-        self.browser = browser
-
-        # Initialize the file handler component
+    def _initialize_file_handler(self) -> None:
         self.file_handler = FileHandler(
             FileHandlerDependencies(
                 thread_manager=self.thread_manager,
@@ -214,7 +195,7 @@ class YouTubeMusicFS(Operations):
             )
         )
 
-        # Register exact path handlers
+    def _register_routes(self) -> None:
         self.router.register(
             "/",
             lambda: [
@@ -225,8 +206,6 @@ class YouTubeMusicFS(Operations):
                 "albums",
             ],
         )
-
-        # Use the unified playlist handling for all playlist types
         self.router.register(
             "/playlists",
             lambda: self.fetcher.readdir_playlist_by_type("playlist", "/playlists"),
@@ -241,9 +220,6 @@ class YouTubeMusicFS(Operations):
             "/albums",
             lambda: self.fetcher.readdir_playlist_by_type("album", "/albums"),
         )
-
-        # Register dynamic handlers with wildcard capture
-        # Use a unified approach for content fetching since all are just different playlist types
         self.router.register_dynamic(
             "/playlists/*",
             lambda path, playlist_name: [
@@ -267,17 +243,10 @@ class YouTubeMusicFS(Operations):
             ],
         )
 
-        # Initialize path validation with common static paths
-        self.cache.mark_valid("/", is_directory=True)
-        self.cache.mark_valid("/playlists", is_directory=True)
-        self.cache.mark_valid("/liked_songs", is_directory=True)
-        self.cache.mark_valid("/albums", is_directory=True)
+    def _prime_static_paths(self) -> None:
+        for path in ("/", *self.LIBRARY_ROOTS):
+            self.cache.mark_valid(path, is_directory=True)
         self._prime_hot_metadata_from_cache()
-
-        self.logger.info("YTMusicFS initialized successfully")
-        self.logger.debug(
-            f"Using browser: {browser}, cache_dir: {self.cache.cache_dir}"
-        )
 
     def _cache_directory_listing_with_attrs(
         self, dir_path: str, processed_tracks: list[dict[str, Any]]
@@ -490,157 +459,108 @@ class YouTubeMusicFS(Operations):
                 self._update_hot_metadata(dir_path, listing)
 
     def readdir(self, path: str, fh: int | None = None) -> list[str]:
-        """Read directory contents with optimized caching.
-
-        Args:
-            path: Directory path
-            fh: File handle (unused)
-
-        Returns:
-            List of directory entries
-        """
+        """Return a directory listing from the cheapest available source."""
         self._record_stat("readdir")
         start_time = time.time()
-        self.logger.debug(f"readdir: {path}")
+        self.logger.debug("readdir: %s", path)
 
-        # Priority 1: Check fixed paths directly
+        listing = self._static_directory_listing(path)
+        if listing is None:
+            listing = self._cached_readdir(path, start_time)
+        if listing is not None:
+            return listing
+
+        operation_key = f"readdir:{path}"
+        recent = self._get_recent_result(operation_key)
+        if isinstance(recent, list):
+            return recent
+
+        entry_type = self.cache.get_entry_type(path)
+        self.logger.debug("Entry type for %s: %s", path, entry_type)
+        if entry_type == "file" or self._is_hidden_path(path):
+            return self._store_readdir_result(operation_key, list(self.EMPTY_DIRECTORY))
+
+        return self._routed_readdir(path, operation_key)
+
+    def _static_directory_listing(self, path: str) -> list[str] | None:
         if path == "/":
             return [".", "..", "playlists", "liked_songs", "albums", ".ytmusicfs"]
-
         if path == self.METADATA_DIR:
             return [".", "..", "status.json"]
+        return None
 
+    def _cached_readdir(self, path: str, start_time: float) -> list[str] | None:
         hot_listing = self._get_hot_readdir(path)
         if hot_listing is not None:
             self._record_stat("readdir_hot_hits")
-            self._record_elapsed("readdir_total_ms", start_time)
-            self._schedule_precache_for_entries(path, hot_listing)
-            return hot_listing
-
-        if path in ["/playlists", "/albums", "/liked_songs"]:
-            # Make a direct call to the appropriate content function
-            if path == "/playlists":
-                result = self.fetcher.readdir_playlist_by_type("playlist", "/playlists")
-                self._schedule_precache_for_entries(path, result)
-                return result
-            if path == "/albums":
-                result = self.fetcher.readdir_playlist_by_type("album", "/albums")
-                self._schedule_precache_for_entries(path, result)
-                return result
-            if path == "/liked_songs":
-                result = self.fetcher.readdir_playlist_by_type(
-                    "liked_songs", "/liked_songs"
-                )
-                self._schedule_precache_for_entries(path, result)
-                return result
-
-        # Priority 2: Check if we have a cached directory listing
-        cache_key = f"{path}_listing_with_attrs"
-        directory_listing = self.cache.get(cache_key)
-        if directory_listing:
+            result = hot_listing
+        elif path in self.LIBRARY_ROOTS:
+            result = self.fetcher.readdir_playlist_by_type(
+                self.LIBRARY_ROOTS[path], path
+            )
+        else:
+            directory_listing = self.cache.get(f"{path}_listing_with_attrs")
+            if not isinstance(directory_listing, dict):
+                return None
             self._record_stat("readdir_fallbacks")
             self._update_hot_metadata(path, directory_listing)
-            self._record_elapsed("readdir_total_ms", start_time)
-            result = [".", "..", *self._filter_unavailable_listing(directory_listing)]
-            self._schedule_precache_for_entries(path, result)
-            return result
+            result = [
+                ".",
+                "..",
+                *self._filter_unavailable_listing(directory_listing),
+            ]
 
-        # Priority 3: Check operation cooldown cache for very recent requests
-        operation_key = f"readdir:{path}"
+        self._record_elapsed("readdir_total_ms", start_time)
+        self._schedule_precache_for_entries(path, result)
+        return result
+
+    def _get_recent_result(self, operation_key: str) -> Any | None:
         current_time = time.time()
-
         with self.last_access_lock:
             last_time = self.last_access_time.get(operation_key, 0)
-            if (
-                current_time - last_time < self.request_cooldown
-                and operation_key in self.last_access_results
-            ):
-                self.logger.debug(
-                    f"Using cached result for {operation_key} (within cooldown: {current_time - last_time:.3f}s)"
-                )
-                return self.last_access_results[operation_key]
-
-            # Update the last access time for this operation
+            if current_time - last_time < self.request_cooldown:
+                result = self.last_access_results.get(operation_key)
+                if result is not None:
+                    self.logger.debug("Using cooldown result for %s", operation_key)
+                    return result
             self.last_access_time[operation_key] = current_time
+        return None
 
-        # Priority 4: Check entry type and validity
-        entry_type = self.cache.get_entry_type(path)
-        self.logger.debug(f"Entry type for {path}: {entry_type}")
+    def _store_readdir_result(self, operation_key: str, result: list[str]) -> list[str]:
+        with self.last_access_lock:
+            self.last_access_results[operation_key] = result
+        return result
 
-        # If it's a file, return empty dir
-        if entry_type == "file":
-            self.logger.debug(f"Path is a file, not a directory: {path}")
-            result = [".", ".."]
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = result
-            return result
+    @staticmethod
+    def _is_hidden_path(path: str) -> bool:
+        return any(part.startswith(".") for part in path.split("/") if part)
 
-        # Ignore hidden paths
-        if any(part.startswith(".") for part in path.split("/") if part):
-            self.logger.debug(f"Ignoring hidden path: {path}")
-            result = [".", ".."]
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = result
-            return result
+    def _cache_routed_listing(self, path: str, result: list[str]) -> None:
+        if path == "/" or len(result) <= len(self.EMPTY_DIRECTORY):
+            return
+        self.cache.mark_valid(path, is_directory=True)
+        filenames = [entry for entry in result if entry not in self.EMPTY_DIRECTORY]
+        self.cache.set(f"valid_files:{path}", filenames)
+        path_entries = {f"path_valid:{path}/{filename}": True for filename in filenames}
+        if path_entries:
+            self.thread_manager.submit_task("io", self.cache.set_batch, path_entries)
 
-        # Priority 5: Use the router
+    def _routed_readdir(self, path: str, operation_key: str) -> list[str]:
         try:
-            # VALIDATION: Use router's validation logic to reject invalid paths
             if not self.router.validate_path(path):
-                self.logger.debug(f"Rejecting invalid path in readdir: {path}")
-                result = [".", ".."]
-                with self.last_access_lock:
-                    self.last_access_results[operation_key] = result
-                return result
-
-            # Delegate directory listing to the router
-            self.logger.debug(f"Routing path: {path}")
-            try:
+                self.logger.debug("Rejecting invalid path in readdir: %s", path)
+                result = list(self.EMPTY_DIRECTORY)
+            else:
                 result = self.router.route(path)
-                self.logger.debug(f"Router returned {len(result)} entries for {path}")
-            except Exception as router_error:
-                self.logger.error(f"Router error for {path}: {router_error}")
-                self.logger.error(traceback.format_exc())
-                result = [".", ".."]
-                with self.last_access_lock:
-                    self.last_access_results[operation_key] = result
-                return result
-
-            # Mark this as a valid directory and cache all files for future validation
-            if path != "/" and len(result) > 2:  # More than just "." and ".."
-                # Mark the directory as valid in the cache
-                self.cache.mark_valid(path, is_directory=True)
-
-                # Cache valid filenames for simpler lookups
-                filenames = [entry for entry in result if entry not in [".", ".."]]
-                self.cache.set(f"valid_files:{path}", filenames)
-
-                # Use batch caching for better performance
-                batch_entries = {}
-                for filename in filenames:
-                    file_path = f"{path}/{filename}"
-                    batch_entries[f"path_valid:{file_path}"] = True
-
-                # Submit batch update in one operation if there are entries
-                if batch_entries:
-                    # Store batch of path validations at once
-                    self.thread_manager.submit_task(
-                        "io", self.cache.set_batch, batch_entries
-                    )
-
-            # Cache this result for the cooldown period
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = result
-
-            self._schedule_precache_for_entries(path, result)
-            return result
-        except Exception as e:
-            self.logger.error(f"Error in readdir for {path}: {e}")
-            self.logger.error(traceback.format_exc())
-            result = [".", ".."]
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = result
-            return result
+                self.logger.debug(
+                    "Router returned %s entries for %s", len(result), path
+                )
+                self._cache_routed_listing(path, result)
+                self._schedule_precache_for_entries(path, result)
+        except Exception:
+            self.logger.exception("Error in readdir for %s", path)
+            result = list(self.EMPTY_DIRECTORY)
+        return self._store_readdir_result(operation_key, result)
 
     def _get_video_id(self, path: str) -> str:
         """Get the video ID for a file using MetadataManager.
@@ -657,236 +577,161 @@ class YouTubeMusicFS(Operations):
         return self._resolve_video_id(path)
 
     def getattr(self, path: str, fh: int | None = None) -> dict[str, Any]:
-        """Get file attributes with optimized caching.
-
-        Args:
-            path: File path
-            fh: File handle (unused)
-
-        Returns:
-            File attributes
-        """
+        """Resolve attributes from static, hot, persistent, then routed data."""
         if path != self.STATUS_FILE:
             self._record_stat("getattr")
-        # Start timing for performance analysis
         start_time = time.time()
         operation_key = f"getattr:{path}"
+        audio_video_id = self._available_audio_video_id(path)
 
-        # Add default values
-        attrs = {
+        recent = self._get_recent_result(operation_key)
+        if isinstance(recent, dict):
+            return recent
+
+        static_attrs = self._static_attrs(path)
+        if static_attrs is not None:
+            if path == "/" or path in self.LIBRARY_ROOTS:
+                self.cache.mark_valid(path, is_directory=True)
+            return self._store_getattr_result(operation_key, static_attrs)
+
+        cached_attrs = self._cached_getattr(path, start_time)
+        if cached_attrs is not None:
+            return self._store_getattr_result(operation_key, cached_attrs)
+
+        if self._is_library_item_directory(path):
+            if not self.router.validate_path(path):
+                self.logger.debug("Rejecting invalid level 2 path: %s", path)
+                raise FuseOSError(errno.ENOENT)
+            return self._store_getattr_result(operation_key, self._directory_attrs())
+
+        return self._routed_getattr(path, operation_key, start_time, audio_video_id)
+
+    def _available_audio_video_id(self, path: str) -> str | None:
+        if not path.endswith(".m4a"):
+            return None
+        if self.cache.is_path_unavailable(path):
+            raise FuseOSError(errno.ENOENT)
+        video_id = None
+        with suppress(OSError):
+            video_id = self._resolve_video_id(path)
+        if video_id and self.cache.is_track_unavailable(video_id):
+            raise FuseOSError(errno.ENOENT)
+        return video_id
+
+    @staticmethod
+    def _base_attrs() -> dict[str, Any]:
+        now = time.time()
+        return {
             "st_uid": os.getuid(),
             "st_gid": os.getgid(),
-            "st_atime": time.time(),
-            "st_mtime": time.time(),
-            "st_ctime": time.time(),
+            "st_atime": now,
+            "st_mtime": now,
+            "st_ctime": now,
         }
 
-        audio_video_id = None
-        if path.endswith(".m4a"):
-            if self.cache.is_path_unavailable(path):
-                raise FuseOSError(errno.ENOENT)
-            with suppress(OSError):
-                audio_video_id = self._resolve_video_id(path)
-            if audio_video_id and self.cache.is_track_unavailable(audio_video_id):
-                raise FuseOSError(errno.ENOENT)
+    @classmethod
+    def _directory_attrs(cls) -> dict[str, Any]:
+        return {
+            **cls._base_attrs(),
+            "st_mode": stat.S_IFDIR | 0o555,
+            "st_nlink": 2,
+            "st_size": 4096,
+        }
 
-        # CHECK COOLDOWN CACHE FIRST for frequent requests
-        current_time = time.time()
-        with self.last_access_lock:
-            last_time = self.last_access_time.get(operation_key, 0)
-            if (
-                current_time - last_time < self.request_cooldown
-                and operation_key in self.last_access_results
-            ):
-                self.logger.debug(
-                    f"Using cached result for {operation_key} (within cooldown: {current_time - last_time:.3f}s)"
-                )
-                return self.last_access_results[operation_key]
+    @classmethod
+    def _file_attrs(cls, size: int) -> dict[str, Any]:
+        return {
+            **cls._base_attrs(),
+            "st_mode": stat.S_IFREG | 0o444,
+            "st_nlink": 1,
+            "st_size": size,
+        }
 
-            # Update the last access time for this operation
-            self.last_access_time[operation_key] = current_time
-
-        # CASE 1: Root directory
-        if path == "/":
-            attrs.update(
-                {
-                    "st_mode": stat.S_IFDIR | 0o555,
-                    "st_nlink": 2,
-                    "st_size": 4096,
-                }
-            )
-            self.cache.mark_valid(path, is_directory=True)
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = attrs
-            return attrs
-
-        if path == self.METADATA_DIR:
-            attrs.update(
-                {
-                    "st_mode": stat.S_IFDIR | 0o555,
-                    "st_nlink": 2,
-                    "st_size": 4096,
-                }
-            )
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = attrs
-            return attrs
-
+    def _static_attrs(self, path: str) -> dict[str, Any] | None:
         if path == self.STATUS_FILE:
-            status = self._get_status_json()
-            attrs.update(
-                {
-                    "st_mode": stat.S_IFREG | 0o444,
-                    "st_nlink": 1,
-                    "st_size": len(status),
-                }
-            )
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = attrs
-            return attrs
+            return self._file_attrs(len(self._get_status_json()))
+        if path == "/" or path == self.METADATA_DIR or path in self.LIBRARY_ROOTS:
+            return self._directory_attrs()
+        return None
 
-        # CASE 2: Top-level directories
-        if path in ["/playlists", "/albums", "/liked_songs"]:
-            attrs.update(
-                {
-                    "st_mode": stat.S_IFDIR | 0o555,
-                    "st_nlink": 2,
-                    "st_size": 4096,
-                }
-            )
-            self.cache.mark_valid(path, is_directory=True)
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = attrs
-            return attrs
+    def _cached_getattr(self, path: str, start_time: float) -> dict[str, Any] | None:
+        attrs = self._get_hot_attrs(path)
+        stat_name = "getattr_hot_hits"
+        source = "hot cache"
+        if not attrs:
+            attrs = self.cache.get_file_attrs_from_parent_dir(path)
+            stat_name = "getattr_fallbacks"
+            source = "cache"
+        if not attrs:
+            return None
 
-        # CASE 3: Check cache directly - fastest path
-        hot_attrs = self._get_hot_attrs(path)
-        if hot_attrs:
-            self._apply_real_audio_size(path, hot_attrs)
-            self._record_stat("getattr_hot_hits")
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = hot_attrs
-            self._record_elapsed("getattr_total_ms", start_time)
-            return hot_attrs
+        self._apply_real_audio_size(path, attrs)
+        self._record_stat(stat_name)
+        self._record_elapsed("getattr_total_ms", start_time)
+        self._log_slow_getattr(path, start_time, source)
+        return attrs
 
-        cached_attrs = self.cache.get_file_attrs_from_parent_dir(path)
-        if cached_attrs:
-            self._apply_real_audio_size(path, cached_attrs)
-            self._record_stat("getattr_fallbacks")
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = cached_attrs
-            processing_time = time.time() - start_time
-            if processing_time > 0.1:
-                self.logger.info(
-                    f"getattr for {path} took {processing_time:.3f}s (from cache)"
-                )
-            self._record_elapsed("getattr_total_ms", start_time)
-            return cached_attrs
+    @staticmethod
+    def _is_library_item_directory(path: str) -> bool:
+        parts = path.split("/")
+        return len(parts) == 3 and parts[1] in {"playlists", "albums"}
 
-        # CASE 4: File in a playlist - try to get from playlist registry
-        if path.count("/") == 2:  # /category/item format
-            parts = path.split("/")
-            category = parts[1]
+    def _store_getattr_result(
+        self, operation_key: str, attrs: dict[str, Any]
+    ) -> dict[str, Any]:
+        with self.last_access_lock:
+            self.last_access_results[operation_key] = attrs
+        return attrs
 
-            # VALIDATION: First check if this is a valid path
-            if not self.router.validate_path(path):
-                self.logger.debug(f"Rejecting invalid level 2 path in getattr: {path}")
-                raise FuseOSError(errno.ENOENT)
+    def _log_slow_getattr(self, path: str, start_time: float, source: str) -> None:
+        elapsed = time.time() - start_time
+        if elapsed > 0.1:
+            self.logger.info("getattr for %s took %.3fs (%s)", path, elapsed, source)
 
-            if category in ["playlists", "albums"]:
-                attrs.update(
-                    {
-                        "st_mode": stat.S_IFDIR | 0o555,
-                        "st_nlink": 2,
-                        "st_size": 4096,
-                    }
-                )
-
-                with self.last_access_lock:
-                    self.last_access_results[operation_key] = attrs
-                processing_time = time.time() - start_time
-                if processing_time > 0.1:
-                    self.logger.info(
-                        f"getattr for {path} took {processing_time:.3f}s (playlist/album dir)"
-                    )
-                return attrs
-
-        # CASE 5: Use the router to validate - fallback approach
+    def _routed_getattr(
+        self,
+        path: str,
+        operation_key: str,
+        start_time: float,
+        audio_video_id: str | None,
+    ) -> dict[str, Any]:
         try:
             if not self.router.validate_path(path):
-                self.logger.debug(f"Path not valid: {path}")
+                self.logger.debug("Path not valid: %s", path)
                 raise FuseOSError(errno.ENOENT)
 
-            # For normal files, we need to set appropriate metadata
             if path.endswith(".m4a"):
-                # Audio files
                 video_id = audio_video_id or self._get_video_id(path)
-                duration = self.cache.get_duration(video_id) if video_id else None
-                size = self._audio_size_for_path(path, duration, video_id)
-
-                # Set file mode and type
-                mode = stat.S_IFREG | 0o444  # Regular file, read-only
-
-                attrs.update(
-                    {
-                        "st_mode": mode,
-                        "st_nlink": 1,
-                        "st_size": size,
-                    }
+                duration = self.cache.get_duration(video_id)
+                attrs = self._file_attrs(
+                    self._audio_size_for_path(path, duration, video_id)
                 )
-
-                # Mark this as a valid file path
                 self.cache.mark_valid(path, is_directory=False)
             else:
-                # Assume directory as default for non-media files
-                attrs.update(
-                    {
-                        "st_mode": stat.S_IFDIR | 0o555,
-                        "st_nlink": 2,
-                        "st_size": 4096,
-                    }
-                )
+                attrs = self._directory_attrs()
                 self.cache.mark_valid(path, is_directory=True)
 
-            # Cache the result for future access
             self.cache.update_file_attrs_in_parent_dir(path, attrs)
-
-            with self.last_access_lock:
-                self.last_access_results[operation_key] = attrs
-
-            # Log slow getattr operations
-            processing_time = time.time() - start_time
-            if processing_time > 0.1:
-                self.logger.info(
-                    f"getattr for {path} took {processing_time:.3f}s (from router)"
-                )
-
-            return attrs
-        except Exception as e:
-            if isinstance(e, FuseOSError) and getattr(e, "errno", None) == errno.ENOENT:
-                self.logger.debug(f"getattr miss for {path}: {e}")
+            self._log_slow_getattr(path, start_time, "router")
+            return self._store_getattr_result(operation_key, attrs)
+        except Exception as error:
+            if (
+                isinstance(error, FuseOSError)
+                and getattr(error, "errno", None) == errno.ENOENT
+            ):
+                self.logger.debug("getattr miss for %s: %s", path, error)
                 raise
-            self.logger.error(f"Error in getattr for {path}: {e}")
-            self.logger.error(traceback.format_exc())
-            raise FuseOSError(errno.ENOENT) from e
+            self.logger.exception("Error in getattr for %s", path)
+            raise FuseOSError(errno.ENOENT) from error
 
     def open(self, path: str, flags: int) -> int:
-        """Open file and return file handle.
-
-        Args:
-            path: File path
-            flags: Open flags
-
-        Returns:
-            File handle
-        """
+        """Validate a media path and allocate its streaming handle."""
         try:
-            self.logger.debug(f"open: {path} (flags={flags})")
+            self.logger.debug("open: %s (flags=%s)", path, flags)
 
             if path == self.STATUS_FILE:
                 return 0
             self._record_stat("open")
-
             if path.endswith(".m4a") and self.cache.is_path_unavailable(path):
                 raise FuseOSError(errno.ENOENT)
 
@@ -897,41 +742,34 @@ class YouTubeMusicFS(Operations):
                     raise FuseOSError(errno.ENOENT)
                 return self.file_handler.open(path, hot_video_id)
 
-            # Check entry type from cache
-            entry_type = self.cache.get_entry_type(path)
-
-            # If it's a directory, raise error
-            if entry_type == "directory":
-                self.logger.debug(f"Cannot open directory as file: {path}")
-                raise FuseOSError(errno.EISDIR)
-
-            # If the path is not valid, raise error
-            if entry_type is None and not self.router.validate_path(path):
-                self.logger.debug(f"Invalid path in open: {path}")
-                raise FuseOSError(errno.ENOENT)
-
-            # Mark this path as valid in the cache
+            self._validate_open_path(path)
             self.cache.mark_valid(path, is_directory=False)
-
-            # Extract the video ID from the path
-            try:
-                video_id = self._get_video_id(path)
-                if not video_id:
-                    self.logger.error(f"Could not extract video ID from path: {path}")
-                    raise FuseOSError(errno.ENOENT)
-            except Exception as e:
-                self.logger.error(f"Error extracting video ID for {path}: {e}")
-                raise FuseOSError(errno.ENOENT) from e
-
-            # Delegate to file handler
-            return self.file_handler.open(path, video_id)
-
-        except Exception as e:
-            if isinstance(e, FuseOSError):
+            return self.file_handler.open(path, self._video_id_for_open(path))
+        except Exception as error:
+            if isinstance(error, FuseOSError):
                 raise
-            self.logger.error(f"Error in open for {path}: {e}")
-            self.logger.error(traceback.format_exc())
-            raise FuseOSError(errno.ENOENT) from e
+            self.logger.exception("Error in open for %s", path)
+            raise FuseOSError(errno.ENOENT) from error
+
+    def _validate_open_path(self, path: str) -> None:
+        entry_type = self.cache.get_entry_type(path)
+        if entry_type == "directory":
+            self.logger.debug("Cannot open directory as file: %s", path)
+            raise FuseOSError(errno.EISDIR)
+        if entry_type is None and not self.router.validate_path(path):
+            self.logger.debug("Invalid path in open: %s", path)
+            raise FuseOSError(errno.ENOENT)
+
+    def _video_id_for_open(self, path: str) -> str:
+        try:
+            video_id = self._get_video_id(path)
+        except Exception as error:
+            self.logger.error("Error extracting video ID for %s: %s", path, error)
+            raise FuseOSError(errno.ENOENT) from error
+        if not video_id:
+            self.logger.error("Could not extract video ID from path: %s", path)
+            raise FuseOSError(errno.ENOENT)
+        return video_id
 
     def read(self, path: str, size: int, offset: int, fh: int) -> bytes:
         """Read data from file.
