@@ -5,8 +5,8 @@ import time
 import unittest
 from unittest.mock import ANY, Mock, patch
 
-# Import the class to test
 from ytmusicfs.content_fetcher import ContentFetcher
+from ytmusicfs.dependencies import ContentFetcherDependencies
 
 
 class TestContentFetcher(unittest.TestCase):
@@ -44,14 +44,15 @@ class TestContentFetcher(unittest.TestCase):
         self.cache.get_unavailable_video_ids.return_value = set()
         self.cache.get_unavailable_tracks.return_value = []
 
-        # Create the instance to test
         self.fetcher = ContentFetcher(
-            client=self.client,
-            processor=self.processor,
-            cache=self.cache,
-            logger=self.logger,
-            yt_dlp_utils=self.yt_dlp_utils,
-            browser="brave",
+            ContentFetcherDependencies(
+                client=self.client,
+                processor=self.processor,
+                cache=self.cache,
+                logger=self.logger,
+                yt_dlp=self.yt_dlp_utils,
+                browser="brave",
+            )
         )
 
         # Reset mocks for clean state in each test

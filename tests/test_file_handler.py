@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, Mock, call, patch
 
 import requests
 
-# Import the class to test
+from ytmusicfs.dependencies import FileHandlerDependencies
 from ytmusicfs.file_handler import FileHandler
 
 
@@ -37,15 +37,16 @@ class TestFileHandler(unittest.TestCase):
         self.update_file_size_callback = Mock()
         self.yt_dlp_utils = Mock()
 
-        # Create the instance to test
         self.file_handler = FileHandler(
-            thread_manager=self.thread_manager,
-            cache_dir=self.cache_dir,
-            cache=self.cache,
-            logger=self.logger,
-            update_file_size_callback=self.update_file_size_callback,
-            yt_dlp_utils=self.yt_dlp_utils,
-            browser="brave",
+            FileHandlerDependencies(
+                thread_manager=self.thread_manager,
+                cache_dir=self.cache_dir,
+                cache=self.cache,
+                logger=self.logger,
+                update_file_size=self.update_file_size_callback,
+                yt_dlp=self.yt_dlp_utils,
+                browser="brave",
+            )
         )
 
         # Initialize class attributes

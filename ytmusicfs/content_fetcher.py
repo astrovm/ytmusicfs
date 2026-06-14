@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 
-import logging
 import time
 import traceback
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
-from ytmusicfs.cache import CacheManager
-from ytmusicfs.processor import TrackProcessor
-from ytmusicfs.yt_dlp_utils import PARTIAL_PLAYLIST_COMPLETE_RATIO, YTDLPUtils
+from ytmusicfs.dependencies import ContentFetcherDependencies
+from ytmusicfs.models import RegistryEntry
+from ytmusicfs.yt_dlp_utils import PARTIAL_PLAYLIST_COMPLETE_RATIO
 
 
 class ContentFetcher:
@@ -17,25 +16,17 @@ class ContentFetcher:
     PLAYLIST_REGISTRY_CACHE_KEY = "playlist_registry_entries"
     MIN_REGISTRY_RETAIN_RATIO = 0.8
 
-    def __init__(
-        self,
-        client: Any,  # YouTubeMusicClient
-        processor: TrackProcessor,
-        cache: CacheManager,
-        logger: logging.Logger,
-        yt_dlp_utils: YTDLPUtils,
-        browser: str,
-    ) -> None:
-        self.client = client
-        self.processor = processor
-        self.cache = cache
-        self.logger = logger
-        self.browser = browser
-        self.yt_dlp_utils = yt_dlp_utils
-        self.PLAYLIST_REGISTRY: list[dict[str, Any]] = []
-        self._registry_by_path: dict[str, dict[str, Any]] = {}
-        self._registry_by_name: dict[str, dict[str, Any]] = {}
-        self._registry_by_name_type: dict[tuple[str, str], dict[str, Any]] = {}
+    def __init__(self, dependencies: ContentFetcherDependencies) -> None:
+        self.client = dependencies.client
+        self.processor = dependencies.processor
+        self.cache = dependencies.cache
+        self.logger = dependencies.logger
+        self.browser = dependencies.browser
+        self.yt_dlp_utils = dependencies.yt_dlp
+        self.PLAYLIST_REGISTRY: list[RegistryEntry] = []
+        self._registry_by_path: dict[str, RegistryEntry] = {}
+        self._registry_by_name: dict[str, RegistryEntry] = {}
+        self._registry_by_name_type: dict[tuple[str, str], RegistryEntry] = {}
         self._indexed_registry = self.PLAYLIST_REGISTRY
         self.cache_directory_callback: (
             Callable[[str, list[dict[str, Any]]], None] | None
@@ -56,7 +47,7 @@ class ContentFetcher:
         entry_id = entry.get("id") if entry else None
         return entry_id if isinstance(entry_id, str) else None
 
-    def get_playlist_entry_from_path(self, path: str) -> dict[str, Any] | None:
+    def get_playlist_entry_from_path(self, path: str) -> RegistryEntry | None:
         """Return a registry entry by its mounted path."""
         self._ensure_registry_indexes()
         return self._registry_by_path.get(path)
@@ -65,7 +56,7 @@ class ContentFetcher:
         if self.PLAYLIST_REGISTRY is not self._indexed_registry:
             self._set_playlist_registry(self.PLAYLIST_REGISTRY)
 
-    def _set_playlist_registry(self, registry: list[dict[str, Any]]) -> None:
+    def _set_playlist_registry(self, registry: list[RegistryEntry]) -> None:
         """Replace the registry and rebuild its read-optimized indexes."""
         self.PLAYLIST_REGISTRY = registry
         self._registry_by_path = {
@@ -76,10 +67,8 @@ class ContentFetcher:
         self._registry_by_name = {}
         self._registry_by_name_type = {}
         for entry in registry:
-            name = entry.get("name")
-            entry_type = entry.get("type")
-            if not isinstance(name, str) or not isinstance(entry_type, str):
-                continue
+            name = entry["name"]
+            entry_type = entry["type"]
             self._registry_by_name.setdefault(name, entry)
             self._registry_by_name_type[(name, entry_type)] = entry
         self._indexed_registry = registry
@@ -106,11 +95,22 @@ class ContentFetcher:
             )
             return
 
-        cached_registry = self.cache.get(self.PLAYLIST_REGISTRY_CACHE_KEY)
-        if not isinstance(cached_registry, list):
-            cached_registry = self._registry_from_cached_root_listings()
+        cached_data = self.cache.get(self.PLAYLIST_REGISTRY_CACHE_KEY)
+        cached_registry = (
+            [
+                cast("RegistryEntry", entry)
+                for entry in cached_data
+                if isinstance(entry, dict)
+                and all(
+                    isinstance(entry.get(key), str)
+                    for key in ("name", "id", "type", "path")
+                )
+            ]
+            if isinstance(cached_data, list)
+            else self._registry_from_cached_root_listings()
+        )
 
-        registry = [
+        registry: list[RegistryEntry] = [
             {
                 "name": "liked_songs",
                 "id": "LM",  # YouTube Music's liked songs playlist ID
@@ -183,7 +183,7 @@ class ContentFetcher:
         self.cache.set_refresh_metadata(cache_key, time.time(), "fresh")
 
     def _is_suspiciously_partial_registry(
-        self, registry: list[dict[str, Any]], cached_registry: list[Any]
+        self, registry: list[RegistryEntry], cached_registry: list[Any]
     ) -> bool:
         cached_entries = [entry for entry in cached_registry if isinstance(entry, dict)]
         if not cached_entries:
@@ -206,8 +206,8 @@ class ContentFetcher:
         missing_ratio = len(cached_paths - current_paths) / len(cached_paths)
         return missing_ratio > (1 - self.MIN_REGISTRY_RETAIN_RATIO)
 
-    def _registry_from_cached_root_listings(self) -> list[dict[str, Any]]:
-        registry = [
+    def _registry_from_cached_root_listings(self) -> list[RegistryEntry]:
+        registry: list[RegistryEntry] = [
             {
                 "name": "liked_songs",
                 "id": "LM",

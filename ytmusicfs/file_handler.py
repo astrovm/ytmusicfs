@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 
 import errno
-import logging
 import threading
 import time
 from collections import deque
-from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
 
+from ytmusicfs.dependencies import DownloaderDependencies, FileHandlerDependencies
 from ytmusicfs.downloader import Downloader
 from ytmusicfs.http_utils import ensure_headers_and_cookies
-from ytmusicfs.yt_dlp_utils import PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT, YTDLPUtils
+from ytmusicfs.yt_dlp_utils import PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT
+
+if TYPE_CHECKING:
+    from ytmusicfs.models import FileHandleState
 
 
 class FileHandler:
@@ -31,46 +33,22 @@ class FileHandler:
         "This video is not available",
     )
 
-    def __init__(
-        self,
-        thread_manager: Any,  # ThreadManager
-        cache_dir: Path,
-        cache: Any,  # CacheManager
-        logger: logging.Logger,
-        update_file_size_callback: Callable[[str, int], None],
-        yt_dlp_utils: YTDLPUtils,
-        browser: str,
-        record_stat_callback: Callable[[str], None] | None = None,
-        get_file_size_callback: Callable[[str], int | None] | None = None,
-        on_stream_unavailable: Callable[[str, str], str | None] | None = None,
-    ) -> None:
-        """Initialize the FileHandler.
+    def __init__(self, dependencies: FileHandlerDependencies) -> None:
+        self.cache_dir = dependencies.cache_dir
+        self.browser = dependencies.browser
+        self.cache = dependencies.cache
+        self.logger = dependencies.logger
+        self.update_file_size_callback = dependencies.update_file_size
+        self.record_stat_callback = dependencies.record_stat
+        self.get_file_size_callback = dependencies.get_file_size
+        self.thread_manager = dependencies.thread_manager
+        self.yt_dlp_utils = dependencies.yt_dlp
+        self.on_stream_unavailable = dependencies.on_stream_unavailable
 
-        Args:
-            thread_manager: ThreadManager instance for thread synchronization
-            cache_dir: Directory for persistent cache
-            cache: CacheManager instance for caching
-            logger: Logger instance to use
-            update_file_size_callback: Callback to update file size in filesystem cache
-            yt_dlp_utils: YTDLPUtils instance for YouTube interaction
-            browser: Browser to use for cookies (e.g., 'chrome', 'firefox')
-            on_stream_unavailable: Callback(video_id, path) -> new_video_id or None
-        """
-        self.cache_dir = cache_dir
-        self.browser = browser
-        self.cache = cache
-        self.logger = logger
-        self.update_file_size_callback = update_file_size_callback
-        self.record_stat_callback = record_stat_callback
-        self.get_file_size_callback = get_file_size_callback
-        self.thread_manager = thread_manager
-        self.yt_dlp_utils = yt_dlp_utils
-        self.on_stream_unavailable = on_stream_unavailable
-
-        self.open_files: dict[int, dict[str, Any]] = {}
+        self.open_files: dict[int, FileHandleState] = {}
         self.next_fh = 1
         self.path_to_fh: dict[str, int] = {}
-        self.file_handle_lock = thread_manager.create_lock()
+        self.file_handle_lock = dependencies.thread_manager.create_lock()
         self.logger.debug("Using ThreadManager for lock creation in FileHandler")
         self.futures: dict[str, Future[Any]] = {}
         self.stream_info_cache: dict[str, dict[str, Any]] = {}
@@ -78,7 +56,12 @@ class FileHandler:
 
         # Initialize Downloader
         self.downloader = Downloader(
-            thread_manager, cache_dir, logger, update_file_size_callback
+            DownloaderDependencies(
+                thread_manager=dependencies.thread_manager,
+                cache_dir=dependencies.cache_dir,
+                logger=dependencies.logger,
+                update_file_size=dependencies.update_file_size,
+            )
         )
 
     @staticmethod

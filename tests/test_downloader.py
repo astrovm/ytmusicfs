@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
+from ytmusicfs.dependencies import DownloaderDependencies
 from ytmusicfs.downloader import Downloader
 
 
@@ -21,10 +22,12 @@ class TestDownloaderCookieMerging(unittest.TestCase):
         self.logger = logging.getLogger("test")
         self.update_callback = Mock()
         self.downloader = Downloader(
-            thread_manager=self.thread_manager,
-            cache_dir=self.cache_dir,
-            logger=self.logger,
-            update_file_size_callback=self.update_callback,
+            DownloaderDependencies(
+                thread_manager=self.thread_manager,
+                cache_dir=self.cache_dir,
+                logger=self.logger,
+                update_file_size=self.update_callback,
+            )
         )
         (self.cache_dir / "audio").mkdir(parents=True, exist_ok=True)
 

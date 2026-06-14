@@ -20,6 +20,7 @@ from ytmusicfs.auth_adapter import YTMusicAuthAdapter
 from ytmusicfs.cache import CacheManager
 from ytmusicfs.client import YouTubeMusicClient
 from ytmusicfs.content_fetcher import ContentFetcher
+from ytmusicfs.dependencies import ContentFetcherDependencies, FileHandlerDependencies
 from ytmusicfs.file_handler import FileHandler
 from ytmusicfs.metadata import MetadataManager
 from ytmusicfs.path_router import PathRouter
@@ -103,12 +104,14 @@ class YouTubeMusicFS(Operations):
 
         # Initialize the content fetcher component
         self.fetcher = ContentFetcher(
-            client=self.client,
-            processor=self.processor,
-            cache=self.cache,
-            logger=self.logger,
-            yt_dlp_utils=self.yt_dlp_utils,
-            browser=browser,
+            ContentFetcherDependencies(
+                client=self.client,
+                processor=self.processor,
+                cache=self.cache,
+                logger=self.logger,
+                yt_dlp=self.yt_dlp_utils,
+                browser=browser,
+            )
         )
 
         # Set the callback for caching directory listings with attributes
@@ -197,16 +200,18 @@ class YouTubeMusicFS(Operations):
 
         # Initialize the file handler component
         self.file_handler = FileHandler(
-            thread_manager=self.thread_manager,
-            cache_dir=self.cache.cache_dir,
-            cache=self.cache,
-            logger=self.logger,
-            update_file_size_callback=self._update_file_size,
-            yt_dlp_utils=self.yt_dlp_utils,
-            browser=self.browser,
-            record_stat_callback=self._record_stat,
-            get_file_size_callback=self._get_advertised_file_size,
-            on_stream_unavailable=self._auto_repair_on_stream_unavailable,
+            FileHandlerDependencies(
+                thread_manager=self.thread_manager,
+                cache_dir=self.cache.cache_dir,
+                cache=self.cache,
+                logger=self.logger,
+                update_file_size=self._update_file_size,
+                yt_dlp=self.yt_dlp_utils,
+                browser=self.browser,
+                record_stat=self._record_stat,
+                get_file_size=self._get_advertised_file_size,
+                on_stream_unavailable=self._auto_repair_on_stream_unavailable,
+            )
         )
 
         # Register exact path handlers
@@ -1236,9 +1241,6 @@ class YouTubeMusicFS(Operations):
             path = entry.get("path")
             playlist_id = entry.get("id")
             name = entry.get("name")
-            if not isinstance(path, str) or not isinstance(playlist_id, str):
-                self._increment_playlist_prefetch_state("skipped")
-                continue
             if self.cache.get(f"{path}_processed"):
                 self._increment_playlist_prefetch_state("skipped")
                 continue

@@ -1,43 +1,26 @@
 #!/usr/bin/env python3
 
-import logging
 import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import requests
 
+from ytmusicfs.dependencies import DownloaderDependencies
 from ytmusicfs.http_utils import ensure_headers_and_cookies
+from ytmusicfs.models import DownloadProgress
 
 
 class Downloader:
     """Manages downloading of audio files with resumability and progress tracking."""
 
-    def __init__(
-        self,
-        thread_manager: Any,  # ThreadManager (required)
-        cache_dir: Path,
-        logger: logging.Logger,
-        update_file_size_callback: Callable[[str, int], None],
-    ) -> None:
-        """Initialize the Downloader.
-
-        Args:
-            thread_manager: ThreadManager instance for thread synchronization.
-            cache_dir: Directory to store downloaded files.
-            logger: Logger instance for logging.
-            update_file_size_callback: Function to update file size in filesystem cache.
-        """
-        self.cache_dir = cache_dir
-        self.logger = logger
-        self.update_file_size_callback = update_file_size_callback
-        self.thread_manager = thread_manager
-
-        self.active_downloads: dict[str, dict[str, Any]] = {}
-
-        # Use ThreadManager for lock creation
-        self.lock = thread_manager.create_lock()
+    def __init__(self, dependencies: DownloaderDependencies) -> None:
+        self.cache_dir = dependencies.cache_dir
+        self.logger = dependencies.logger
+        self.update_file_size_callback = dependencies.update_file_size
+        self.thread_manager = dependencies.thread_manager
+        self.active_downloads: dict[str, DownloadProgress] = {}
+        self.lock = dependencies.thread_manager.create_lock()
         self.logger.debug("Using ThreadManager for lock creation in Downloader")
 
     def download_file(
@@ -422,7 +405,7 @@ class Downloader:
             self.logger.warning(f"File validation error: {e}")
             return False
 
-    def get_progress(self, video_id: str) -> dict[str, Any] | None:
+    def get_progress(self, video_id: str) -> DownloadProgress | None:
         """Get download progress for a video.
 
         Args:
