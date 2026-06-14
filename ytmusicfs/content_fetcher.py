@@ -265,7 +265,7 @@ class ContentFetcher:
 
     def fetch_playlist_content(
         self,
-        playlist_id: str,
+        playlist_id: str | None,
         path: str,
         limit: int = 10000,
         force_refresh: bool = False,
@@ -366,7 +366,7 @@ class ContentFetcher:
                 "playlist": "/playlists",
                 "album": "/albums",
                 "liked_songs": "/liked_songs",
-            }.get(playlist_type, "")
+            }.get(playlist_type or "", "")
             if not directory_path:
                 self.logger.error(f"Invalid playlist type: {playlist_type}")
                 return [".", ".."]

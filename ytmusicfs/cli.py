@@ -88,7 +88,7 @@ def setup_logging(args: argparse.Namespace) -> logging.Logger:
     log_level = logging.DEBUG if args.debug else logging.INFO
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
-    handlers = [logging.StreamHandler(sys.stdout)]
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
     foreground = getattr(args, "foreground", False)
     if not foreground and not getattr(args, "skip_log_file", False):
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -435,7 +435,7 @@ class CacheCommandHandler:
             print(f"Cache {action}: trigger sent to mount at {active_mount}")
             return 0
 
-        removed = self._remove_local_cache_entries(action, include_audio)
+        removed = self._remove_local_cache_entries(include_audio)
         print(f"Cache {action}: removed {removed} files from {self.config.cache_dir}")
         return 0
 
@@ -455,7 +455,7 @@ class CacheCommandHandler:
             cache.close()
             thread_manager.shutdown(wait=True, timeout=5.0)
 
-    def _remove_local_cache_entries(self, action: str, include_audio: bool) -> int:
+    def _remove_local_cache_entries(self, include_audio: bool) -> int:
         removed = 0
         for trigger in (".clear_trigger", ".refresh_trigger"):
             path = self.config.cache_dir / trigger
@@ -862,7 +862,11 @@ def main() -> int:
     """Parse arguments and dispatch one command."""
     parser = build_parser()
     args = parser.parse_args()
-    return args.func(args)
+    handler = getattr(args, "func", None)
+    if not callable(handler):
+        parser.error("No command handler configured")
+    result = handler(args)
+    return result if isinstance(result, int) else 1
 
 
 if __name__ == "__main__":

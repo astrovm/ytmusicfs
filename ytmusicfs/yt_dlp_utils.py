@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
+
 import logging
 import re
 import shutil
 import tempfile
 import threading
 import time
-from concurrent.futures import Future
 from contextlib import suppress
 from http.cookiejar import MozillaCookieJar
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from yt_dlp import YoutubeDL
 
 from ytmusicfs.retry import RetryPolicy
+
+if TYPE_CHECKING:
+    from concurrent.futures import Future
+
+    from ytmusicfs.protocols import ThreadManagerProtocol
 
 YOUTUBE_MUSIC_AUDIO_FORMAT = "141/140/bestaudio[ext=m4a]"
 PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT = "141"
@@ -55,7 +61,11 @@ class YTDLPUtils:
     ThreadManager is a required dependency for asynchronous operations.
     """
 
-    def __init__(self, thread_manager=None, logger=None) -> None:
+    def __init__(
+        self,
+        thread_manager: ThreadManagerProtocol | None = None,
+        logger: logging.Logger | None = None,
+    ) -> None:
         """
         Initialize the YTDLPUtils.
 
@@ -71,7 +81,7 @@ class YTDLPUtils:
         self._playlist_total_counts: dict[str, int] = {}
         self.logger.debug("YTDLPUtils initialized")
 
-    def _add_cookie_options(self, ydl_opts, browser) -> None:
+    def _add_cookie_options(self, ydl_opts: dict[str, object], browser: str) -> None:
         if not browser:
             raise ValueError("Browser auth is required")
 
@@ -158,7 +168,7 @@ class YTDLPUtils:
         self._add_cookie_options(ydl_opts, browser)
         return ydl_opts
 
-    def _cache_browser_cookies(self, browser, ydl) -> bool:
+    def _cache_browser_cookies(self, _browser: str, _ydl: object) -> bool:
         """No-op: do not overwrite the browser cookie file with post-extraction cookies.
 
         yt-dlp's cookiejar after extraction may be missing critical auth cookies
@@ -284,7 +294,7 @@ class YTDLPUtils:
         return playlist_url
 
     def _extract_album_redirect(self, url: str, browser: str) -> str | None:
-        options = {
+        options: dict[str, object] = {
             "quiet": True,
             "skip_download": True,
             "extract_flat": True,
@@ -386,7 +396,9 @@ class YTDLPUtils:
         )
         return result
 
-    def _should_retry_with_cookiefile(self, result, browser: str) -> bool:
+    def _should_retry_with_cookiefile(
+        self, result: dict[str, Any], browser: str
+    ) -> bool:
         if result.get("format_id") == PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT:
             return False
         with self._cookie_lock:
@@ -473,7 +485,7 @@ class YTDLPUtils:
 
         return result
 
-    def extract_stream_url_async(self, video_id, browser: str) -> Future[object]:
+    def extract_stream_url_async(self, video_id: str, browser: str) -> Future[object]:
         """
         Extract stream URL asynchronously using ThreadManager.
 
@@ -490,8 +502,11 @@ class YTDLPUtils:
         if not self.thread_manager:
             raise RuntimeError("ThreadManager not set in YTDLPUtils")
 
-        return self.thread_manager.submit_task(
-            "extraction", self._extract_stream_url_worker, video_id, browser
+        return cast(
+            "Future[object]",
+            self.thread_manager.submit_task(
+                "extraction", self._extract_stream_url_worker, video_id, browser
+            ),
         )
 
     def _extract_stream_url_worker(self, video_id: str, browser: str) -> dict[str, Any]:

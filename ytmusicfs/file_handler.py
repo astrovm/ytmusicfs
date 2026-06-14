@@ -7,14 +7,19 @@ from collections import deque
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import requests
 
 from ytmusicfs.dependencies import DownloaderDependencies, FileHandlerDependencies
 from ytmusicfs.downloader import Downloader
 from ytmusicfs.http_utils import ensure_headers_and_cookies
-from ytmusicfs.models import DownloadRequest, FileHandleState, StreamRequest
+from ytmusicfs.models import (
+    DownloadProgress,
+    DownloadRequest,
+    FileHandleState,
+    StreamRequest,
+)
 from ytmusicfs.retry import RetryPolicy
 from ytmusicfs.yt_dlp_utils import PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT
 
@@ -277,7 +282,7 @@ class FileHandler:
 
     @staticmethod
     def _download_has_range(
-        progress: dict[str, Any] | None, offset: int, size: int
+        progress: DownloadProgress | None, offset: int, size: int
     ) -> bool:
         if not progress:
             return False
@@ -407,7 +412,7 @@ class FileHandler:
         return data
 
     def _maybe_start_cache_download(
-        self, path: str, file_info: dict[str, Any], bytes_read: int
+        self, path: str, file_info: FileHandleState, bytes_read: int
     ) -> None:
         if bytes_read <= 0 or file_info.get("stream_url") == "cached":
             return
@@ -420,12 +425,17 @@ class FileHandler:
 
         video_id = file_info["video_id"]
         format_id = file_info.get("format_id")
-        if not isinstance(format_id, str) or not format_id:
+        stream_url = file_info.get("stream_url")
+        if (
+            not isinstance(format_id, str)
+            or not format_id
+            or not isinstance(stream_url, str)
+        ):
             return
         self.downloader.download_file(
             DownloadRequest(
                 video_id=video_id,
-                stream_url=file_info["stream_url"],
+                stream_url=stream_url,
                 path=path,
                 format_id=format_id,
                 headers=file_info.get("headers"),
@@ -442,7 +452,7 @@ class FileHandler:
         if self.cache.is_track_unavailable(video_id):
             return False
 
-        file_info: dict[str, Any] = {
+        file_info: FileHandleState = {
             "video_id": video_id,
             "stream_url": None,
             "headers": None,
@@ -486,10 +496,12 @@ class FileHandler:
         result = future.result(timeout=30)
         if video_id in self.futures:
             del self.futures[video_id]
-        return result
+        if not isinstance(result, dict):
+            raise OSError(errno.EIO, "Invalid stream extraction result")
+        return cast("dict[str, Any]", result)
 
     def _apply_stream_info(
-        self, file_info: dict[str, Any], result: dict[str, Any]
+        self, file_info: FileHandleState, result: dict[str, Any]
     ) -> None:
         video_id = file_info["video_id"]
         format_id = result.get("format_id")
@@ -559,7 +571,7 @@ class FileHandler:
                     candidate[str(name)] = str(value)
         return candidate or None
 
-    def _cache_stream_info(self, video_id: str, file_info: dict[str, Any]) -> None:
+    def _cache_stream_info(self, video_id: str, file_info: FileHandleState) -> None:
         self.stream_info_cache[video_id] = {
             "time": time.time(),
             "stream_url": file_info["stream_url"],
@@ -568,7 +580,7 @@ class FileHandler:
             "format_id": file_info.get("format_id"),
         }
 
-    def _use_cached_stream_info(self, file_info: dict[str, Any]) -> bool:
+    def _use_cached_stream_info(self, file_info: FileHandleState) -> bool:
         video_id = file_info["video_id"]
         cached = self.stream_info_cache.get(video_id)
         if not cached:
@@ -611,7 +623,7 @@ class FileHandler:
         return self.cache_dir / self.RANGE_CACHE_DIR / format_id / video_id
 
     def _read_cached_range(
-        self, fuse_path: str, file_info: dict[str, Any], offset: int, size: int
+        self, fuse_path: str, file_info: FileHandleState, offset: int, size: int
     ) -> bytes | None:
         if size <= 0:
             return b""
@@ -685,7 +697,7 @@ class FileHandler:
         )
 
     def _write_progressive_audio_cache(
-        self, file_info: dict[str, Any], offset: int, data: bytes
+        self, file_info: FileHandleState, offset: int, data: bytes
     ) -> None:
         if not data:
             return
@@ -714,7 +726,9 @@ class FileHandler:
                 "Progressive cache write failed for %s: %s", cache_path, exc
             )
 
-    def _cache_range(self, file_info: dict[str, Any], offset: int, data: bytes) -> None:
+    def _cache_range(
+        self, file_info: FileHandleState, offset: int, data: bytes
+    ) -> None:
         format_id = file_info.get("format_id")
         if not data or not isinstance(format_id, str) or not format_id:
             return
@@ -729,7 +743,9 @@ class FileHandler:
         self._record_stat("range_cache_writes")
 
     @staticmethod
-    def _record_read_request(file_info: dict[str, Any], size: int, offset: int) -> None:
+    def _record_read_request(
+        file_info: FileHandleState, size: int, offset: int
+    ) -> None:
         file_info["read_calls"] = file_info.get("read_calls", 0) + 1
         file_info["requested_bytes"] = file_info.get("requested_bytes", 0) + size
         ranges = file_info.setdefault("read_ranges", [])

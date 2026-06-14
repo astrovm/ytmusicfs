@@ -176,16 +176,17 @@ class YouTubeMusicClient:
             ignore_spelling=ignore_spelling,
         )
         self.logger.debug(f"Search returned {len(results)} results")
-        return results
+        return results if isinstance(results, list) else []
 
     def rate_song(self, video_id: str, rating: str) -> dict[Any, Any] | None:
         """Set a YouTube Music song rating."""
-        return self._call_with_json_retry(
+        result = self._call_with_json_retry(
             f"rate song {video_id} as {rating}",
             self.ytmusic.rate_song,
             video_id,
             rating,
         )
+        return result if isinstance(result, dict) else None
 
     def _call_with_json_retry(
         self, operation: str, func: Callable[..., T], *args: Any, **kwargs: Any

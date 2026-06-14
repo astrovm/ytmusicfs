@@ -23,7 +23,7 @@ class FileCacheProtocol(Protocol):
     def is_track_unavailable(self, video_id: str) -> bool: ...
 
     def mark_unavailable_track(
-        self, video_id: str, path: str | None = None, reason: str = ""
+        self, video_id: str, path: str | None, reason: str
     ) -> None: ...
 
     def set_durations_batch(self, durations: dict[str, int]) -> None: ...
@@ -70,7 +70,7 @@ class MusicClientProtocol(Protocol):
 
     def get_album(self, browse_id: str) -> dict[Any, Any]: ...
 
-    def rate_song(self, video_id: str, rating: str) -> bool: ...
+    def rate_song(self, video_id: str, rating: str) -> dict[Any, Any] | None: ...
 
     def search(
         self,
@@ -79,7 +79,7 @@ class MusicClientProtocol(Protocol):
         scope: str | None = None,
         limit: int = 100,
         ignore_spelling: bool = False,
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[dict[Any, Any]]: ...
 
 
 class TrackProcessorProtocol(Protocol):

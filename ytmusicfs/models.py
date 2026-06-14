@@ -86,7 +86,7 @@ class FileHandleState(TypedDict, total=False):
     stream_extracted: bool
     read_calls: int
     requested_bytes: int
-    read_ranges: list[dict[str, int]]
+    read_ranges: list[list[int]]
     opened_at: float
     initialized_event: threading.Event
 

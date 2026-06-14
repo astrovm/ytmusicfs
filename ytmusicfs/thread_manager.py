@@ -27,15 +27,12 @@ class ThreadManager:
         self.logger = logger or logging.getLogger("ThreadManager")
         self.logger.info("Initializing ThreadManager")
 
-        # Thread pools for different operation types
         self._pools: dict[str, ThreadPoolExecutor] = {}
-
-        # Default pool configurations
-        self._default_configs = {
-            "io": {"max_workers": 8, "thread_name_prefix": "io_pool"},
-            "api": {"max_workers": 4, "thread_name_prefix": "api_pool"},
-            "extraction": {"max_workers": 4, "thread_name_prefix": "extract_pool"},
-            "processing": {"max_workers": 2, "thread_name_prefix": "process_pool"},
+        self._default_configs: dict[str, tuple[int, str]] = {
+            "io": (8, "io_pool"),
+            "api": (4, "api_pool"),
+            "extraction": (4, "extract_pool"),
+            "processing": (2, "process_pool"),
         }
 
         # Lock for thread pool access
@@ -49,12 +46,22 @@ class ThreadManager:
         self._active_tasks_lock = threading.RLock()
 
         # Create default pools
-        for pool_name, config in self._default_configs.items():
-            self.get_pool(pool_name, **config)
+        for pool_name, (max_workers, prefix) in self._default_configs.items():
+            self.get_pool(
+                pool_name,
+                max_workers=max_workers,
+                thread_name_prefix=prefix,
+            )
 
         self.logger.debug("ThreadManager initialized with default pools")
 
-    def get_pool(self, pool_name: str, **kwargs) -> ThreadPoolExecutor:
+    def get_pool(
+        self,
+        pool_name: str,
+        *,
+        max_workers: int | None = None,
+        thread_name_prefix: str | None = None,
+    ) -> ThreadPoolExecutor:
         """
         Get or create a thread pool with the specified name.
 
@@ -69,18 +76,18 @@ class ThreadManager:
             if pool_name in self._pools and not self._pools[pool_name]._shutdown:
                 return self._pools[pool_name]
 
-            # Create new pool with provided kwargs or defaults
-            config = self._default_configs.get(pool_name, {}).copy()
-            config.update(kwargs)
-
-            max_workers = config.pop("max_workers", 4)
-            thread_name_prefix = config.pop("thread_name_prefix", f"{pool_name}_pool")
+            default_workers, default_prefix = self._default_configs.get(
+                pool_name, (4, f"{pool_name}_pool")
+            )
+            worker_count = max_workers or default_workers
+            prefix = thread_name_prefix or default_prefix
 
             self.logger.debug(
-                f"Creating thread pool '{pool_name}' with {max_workers} workers"
+                "Creating thread pool '%s' with %d workers", pool_name, worker_count
             )
             pool = ThreadPoolExecutor(
-                max_workers=max_workers, thread_name_prefix=thread_name_prefix, **config
+                max_workers=worker_count,
+                thread_name_prefix=prefix,
             )
             self._pools[pool_name] = pool
             return pool

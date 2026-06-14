@@ -12,7 +12,7 @@ import time
 import traceback
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from cachetools import LRUCache
 
@@ -318,7 +318,8 @@ class CacheManager:
 
     @staticmethod
     def _attrs_are_directory(attrs: dict[str, Any]) -> bool:
-        return attrs.get("st_mode", 0) & stat.S_IFDIR == stat.S_IFDIR
+        mode = attrs.get("st_mode", 0)
+        return isinstance(mode, int) and mode & stat.S_IFDIR == stat.S_IFDIR
 
     def _remember_valid_path(
         self, path: str, is_directory: bool | None, stat_key: str
@@ -637,7 +638,7 @@ class CacheManager:
                     (hashed_key,),
                 )
                 row = cursor.fetchone()
-                if row:
+                if row and isinstance(row[0], str):
                     return row[0]
                 return None
         except sqlite3.Error as e:
@@ -799,7 +800,7 @@ class CacheManager:
             if current_time - cached["time"] < self.cache_timeout:
                 self.logger.debug(f"In-memory cache hit for directory listing: {path}")
                 self.stats["hits"] += 1
-                return cached["data"]
+                return self._as_directory_listing(cached.get("data"))
 
         # Dedicated cache key for directory listings
         cache_key = f"{path}_listing_with_attrs"
@@ -815,7 +816,7 @@ class CacheManager:
                 "data": hot_cached["data"],
                 "time": hot_cached["time"],
             }
-            return hot_cached["data"]
+            return self._as_directory_listing(hot_cached.get("data"))
 
         # Try database as last resort
         db_key = self.path_to_key(cache_key)
@@ -831,7 +832,10 @@ class CacheManager:
                         cache_data = json.loads(row[0])
                         if time.time() - cache_data["time"] < self.cache_timeout:
                             # Valid cache entry, update memory caches for future lookups
-                            listing = cache_data["data"]
+                            listing = self._as_directory_listing(cache_data.get("data"))
+                            if listing is None:
+                                self.stats["db_misses"] += 1
+                                return None
 
                             # Update in-memory and hot caches
                             self.directory_listings_cache[path] = {
@@ -856,6 +860,14 @@ class CacheManager:
             )
             self.stats["db_misses"] += 1
             return None
+
+    @staticmethod
+    def _as_directory_listing(
+        value: object,
+    ) -> dict[str, dict[str, Any]] | None:
+        if not isinstance(value, dict):
+            return None
+        return cast("dict[str, dict[str, Any]]", value)
 
     def set_directory_listing_with_attrs(
         self, path: str, listing_with_attrs: dict[str, dict[str, Any]]

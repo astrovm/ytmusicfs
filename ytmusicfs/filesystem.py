@@ -38,7 +38,7 @@ FUSE_ENTRY_TIMEOUT = 5
 FUSE_NEGATIVE_TIMEOUT = 1
 
 
-class YouTubeMusicFS(Operations):
+class YouTubeMusicFS(Operations):  # type: ignore[misc]
     """YouTube Music FUSE filesystem implementation."""
 
     METADATA_DIR = "/.ytmusicfs"
@@ -167,7 +167,7 @@ class YouTubeMusicFS(Operations):
         }
         self.last_fs_activity = time.time()
         self.refresh_state_lock = self.thread_manager.create_lock()
-        self.refresh_state = {
+        self.refresh_state: dict[str, object] = {
             "running": False,
             "phase": "idle",
             "last_started": None,
@@ -880,15 +880,18 @@ class YouTubeMusicFS(Operations):
             "range_416_eof": stats.get("range_416_eof", 0),
             "precache_queue_depth": precache_queue_depth,
             "precache_active": precache_active,
-            "slowest_operation": max(timings, key=timings.get),
+            "slowest_operation": max(timings, key=lambda name: timings[name]),
         }
 
     @staticmethod
     def _average_ms(stats: dict[str, Any], total_key: str, count_key: str) -> float:
         count = stats.get(count_key, 0)
-        if not count:
+        total = stats.get(total_key, 0.0)
+        if not isinstance(count, (int, float)) or not count:
             return 0.0
-        return round(stats.get(total_key, 0.0) / count, 3)
+        if not isinstance(total, (int, float)):
+            return 0.0
+        return round(total / count, 3)
 
     @staticmethod
     def _rate(numerator: Any, denominator: Any) -> float:
@@ -1002,7 +1005,8 @@ class YouTubeMusicFS(Operations):
 
         future = self.thread_manager.submit_task("api", _find_replacement)
         try:
-            return future.result(timeout=10.0)
+            result = future.result(timeout=10.0)
+            return result if isinstance(result, str) else None
         except TimeoutError:
             self.logger.warning("Auto-repair timed out for %s", path)
             return None
@@ -1111,15 +1115,20 @@ class YouTubeMusicFS(Operations):
 
     def _set_playlist_prefetch_state(self, **updates: object) -> None:
         with self.refresh_state_lock:
-            state = dict(self.refresh_state.get("playlist_prefetch", {}))
+            state = self._playlist_prefetch_state()
             state.update(updates)
             self.refresh_state["playlist_prefetch"] = state
 
     def _increment_playlist_prefetch_state(self, key: str) -> None:
         with self.refresh_state_lock:
-            state = dict(self.refresh_state.get("playlist_prefetch", {}))
-            state[key] = int(state.get(key, 0)) + 1
+            state = self._playlist_prefetch_state()
+            current = state.get(key, 0)
+            state[key] = (current if isinstance(current, int) else 0) + 1
             self.refresh_state["playlist_prefetch"] = state
+
+    def _playlist_prefetch_state(self) -> dict[str, object]:
+        state = self.refresh_state.get("playlist_prefetch")
+        return dict(state) if isinstance(state, dict) else {}
 
     def _set_refresh_state(self, **updates: object) -> None:
         with self.refresh_state_lock:
@@ -1127,7 +1136,10 @@ class YouTubeMusicFS(Operations):
 
     def _record_refresh_backoff(self) -> None:
         with self.refresh_state_lock:
-            self.refresh_state["backoffs"] = int(self.refresh_state["backoffs"]) + 1
+            backoffs = self.refresh_state.get("backoffs", 0)
+            self.refresh_state["backoffs"] = (
+                backoffs if isinstance(backoffs, int) else 0
+            ) + 1
             self.refresh_state["last_result"] = "backing off for filesystem activity"
 
     def _sleep_refresh_delay(self, seconds: int) -> bool:
@@ -1253,7 +1265,7 @@ class YouTubeMusicFS(Operations):
         with self.last_access_lock:
             self.last_access_results.pop(f"getattr:{path}", None)
 
-    def mkdir(self, path, mode) -> NoReturn:
+    def mkdir(self, path: str, mode: int) -> NoReturn:
         """Create a directory.
 
         Args:
@@ -1268,7 +1280,7 @@ class YouTubeMusicFS(Operations):
         self.logger.warning(f"mkdir not supported: {path}")
         raise OSError(errno.EPERM, "Directory creation not supported")
 
-    def rmdir(self, path) -> NoReturn:
+    def rmdir(self, path: str) -> NoReturn:
         """Remove a directory.
 
         Args:
