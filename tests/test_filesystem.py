@@ -95,6 +95,45 @@ class TestYouTubeMusicFS(unittest.TestCase):
         self.assertIn("albums", result)
         self.assertIn(".ytmusicfs", result)
 
+    def test_hot_readdir_does_not_route_or_call_external_clients(self):
+        path = "/playlists/Mix"
+        self.fs.hot_dir_entries[path] = ["song.m4a"]
+        self.fs.hot_attrs_by_path[f"{path}/song.m4a"] = {"videoId": "abc123"}
+        self.mock_cache.get_unavailable_video_ids.return_value = set()
+        self.mock_router.reset_mock()
+        self.mock_fetcher.reset_mock()
+        self.mock_client.reset_mock()
+        self.mock_yt_dlp_utils.reset_mock()
+
+        result = self.fs.readdir(path, None)
+
+        self.assertEqual(result, [".", "..", "song.m4a"])
+        self.mock_router.route.assert_not_called()
+        self.mock_fetcher.fetch_playlist_content.assert_not_called()
+        self.assertEqual(self.mock_client.method_calls, [])
+        self.assertEqual(self.mock_yt_dlp_utils.method_calls, [])
+
+    def test_hot_getattr_does_not_route_or_call_external_clients(self):
+        path = "/playlists/Mix"
+        self.fs.hot_attrs_by_path[path] = {
+            "st_mode": stat.S_IFDIR | 0o555,
+            "st_nlink": 2,
+            "st_size": 4096,
+        }
+        self.mock_router.reset_mock()
+        self.mock_fetcher.reset_mock()
+        self.mock_client.reset_mock()
+        self.mock_yt_dlp_utils.reset_mock()
+
+        attrs = self.fs.getattr(path, None)
+
+        self.assertEqual(attrs["st_size"], 4096)
+        self.mock_router.validate_path.assert_not_called()
+        self.mock_router.route.assert_not_called()
+        self.assertEqual(self.mock_fetcher.method_calls, [])
+        self.assertEqual(self.mock_client.method_calls, [])
+        self.assertEqual(self.mock_yt_dlp_utils.method_calls, [])
+
     def test_metadata_status_file(self):
         """Test reading the virtual status file."""
         result = self.fs.readdir("/.ytmusicfs", None)
