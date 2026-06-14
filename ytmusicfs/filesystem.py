@@ -11,7 +11,7 @@ import traceback
 from collections import deque
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from fuse import FUSE, FuseOSError, Operations
 
@@ -53,7 +53,7 @@ class YouTubeMusicFS(Operations):
         self,
         cache_dir: str | None = None,
         browser: str = "",
-    ):
+    ) -> None:
         """Initialize the FUSE filesystem with YouTube Music API.
 
         Args:
@@ -131,14 +131,11 @@ class YouTubeMusicFS(Operations):
             content_fetcher=self.fetcher,
         )
 
-        # Store parameters for future reference
-        self.request_cooldown = 1.0  # Default to 1 second cooldown
-
-        # Debounce mechanism for repeated requests - use ThreadManager for locks
-        self.last_access_time = {}  # {operation_path: last_access_time}
+        self.request_cooldown = 1.0
+        self.last_access_time: dict[str, float] = {}
         self.last_access_lock = self.thread_manager.create_lock()
-        self.last_access_results = {}  # {operation_path: cached_result}
-        self.read_error_log_times = {}
+        self.last_access_results: dict[str, Any] = {}
+        self.read_error_log_times: dict[str, float] = {}
         self.read_error_log_cooldown = 60.0
         self.hot_metadata_lock = self.thread_manager.create_lock()
         self.hot_attrs_by_path: dict[str, dict[str, Any]] = {}
@@ -149,7 +146,7 @@ class YouTubeMusicFS(Operations):
         self.precache_queued_paths: set[str] = set()
         self.precache_worker_running = False
         self.stats_lock = self.thread_manager.create_lock()
-        self.stats = {
+        self.stats: dict[str, Any] = {
             "open": 0,
             "read": 0,
             "getattr": 0,
@@ -1411,7 +1408,7 @@ class YouTubeMusicFS(Operations):
         with self.last_access_lock:
             self.last_access_results.pop(f"getattr:{path}", None)
 
-    def mkdir(self, path, mode):
+    def mkdir(self, path, mode) -> NoReturn:
         """Create a directory.
 
         Args:
@@ -1426,7 +1423,7 @@ class YouTubeMusicFS(Operations):
         self.logger.warning(f"mkdir not supported: {path}")
         raise OSError(errno.EPERM, "Directory creation not supported")
 
-    def rmdir(self, path):
+    def rmdir(self, path) -> NoReturn:
         """Remove a directory.
 
         Args:

@@ -28,7 +28,7 @@ class CacheManager:
         cache_timeout: int = 2592000,
         maxsize: int = 1000,
         logger: logging.Logger | None = None,
-    ):
+    ) -> None:
         """
         Initialize the CacheManager.
 
@@ -59,7 +59,10 @@ class CacheManager:
 
         # Initialize SQLite database
         self.db_path = self.cache_dir / "cache.db"
-        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self.conn: sqlite3.Connection = sqlite3.connect(
+            str(self.db_path), check_same_thread=False
+        )
+        self._closed = False
         self.conn.execute("PRAGMA journal_mode=WAL;")
 
         with self.lock:
@@ -95,21 +98,16 @@ class CacheManager:
 
         # Enhanced in-memory cache for high-frequency lookups with larger size
         self.maxsize = maxsize * 2  # Double the size for more aggressive caching
-        self.hotcache = LRUCache(maxsize=self.maxsize)
+        self.hotcache: LRUCache[str, Any] = LRUCache(maxsize=self.maxsize)
         self.cache_timeout = cache_timeout
 
-        # Add dedicated caches for most frequently accessed items
-        self.directory_listings_cache = LRUCache(
-            maxsize=50
-        )  # Most important directories
-        self.path_validation_cache = LRUCache(maxsize=1000)  # Path validation results
-        self.attrs_cache = LRUCache(maxsize=500)  # File attributes
-
-        # Path validation cache - keep this for fast validation
-        self.valid_paths = set()
-        self.path_types = {}
-        self.unavailable_video_ids = set()
-        self.unavailable_paths = set()
+        self.directory_listings_cache: LRUCache[str, Any] = LRUCache(maxsize=50)
+        self.path_validation_cache: LRUCache[str, Any] = LRUCache(maxsize=1000)
+        self.attrs_cache: LRUCache[str, Any] = LRUCache(maxsize=500)
+        self.valid_paths: set[str] = set()
+        self.path_types: dict[str, str] = {}
+        self.unavailable_video_ids: set[str] = set()
+        self.unavailable_paths: set[str] = set()
         self._load_valid_paths()
         self._load_unavailable_tracks()
 
@@ -119,7 +117,7 @@ class CacheManager:
         # Add static commonly accessed paths to avoid repeated lookups
         self._preload_common_paths()
 
-    def _preload_common_paths(self):
+    def _preload_common_paths(self) -> None:
         """Preload common paths into the cache for faster access."""
         # Add root path and standard directories
         common_paths = ["/", "/playlists", "/albums", "/liked_songs"]
@@ -1396,18 +1394,19 @@ class CacheManager:
 
     def close(self) -> None:
         """Close the cache and release resources."""
+        if self._closed:
+            return
         try:
             with self.lock:
-                if self.conn:
-                    self.conn.commit()
-                    self.conn.close()
-                    self.conn = None
+                self.conn.commit()
+                self.conn.close()
+                self._closed = True
             self.logger.debug("Cache database connection closed")
         except Exception as e:
             self.logger.error(f"Error closing cache: {e}")
             self.logger.error(traceback.format_exc())
 
-    def __del__(self):
+    def __del__(self) -> None:
         """Attempt to close database connection during garbage collection."""
         with suppress(Exception):
             self.close()
@@ -1444,19 +1443,19 @@ class CacheManager:
             return False
         return True
 
-    def get_cache_stats(self) -> dict[str, int]:
+    def get_cache_stats(self) -> dict[str, int | float]:
         """Get cache statistics.
 
         Returns:
             Dictionary with cache statistics.
         """
-        hit_rate = 0
+        hit_rate = 0.0
         if (self.stats["hits"] + self.stats["misses"]) > 0:
             hit_rate = (
                 self.stats["hits"] / (self.stats["hits"] + self.stats["misses"]) * 100
             )
 
-        db_hit_rate = 0
+        db_hit_rate = 0.0
         if (self.stats["db_hits"] + self.stats["db_misses"]) > 0:
             db_hit_rate = (
                 self.stats["db_hits"]

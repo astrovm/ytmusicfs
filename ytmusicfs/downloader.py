@@ -20,7 +20,7 @@ class Downloader:
         cache_dir: Path,
         logger: logging.Logger,
         update_file_size_callback: Callable[[str, int], None],
-    ):
+    ) -> None:
         """Initialize the Downloader.
 
         Args:
@@ -34,9 +34,7 @@ class Downloader:
         self.update_file_size_callback = update_file_size_callback
         self.thread_manager = thread_manager
 
-        self.active_downloads = (
-            {}
-        )  # video_id: {'progress': int, 'total': int, 'status': str}
+        self.active_downloads: dict[str, dict[str, Any]] = {}
 
         # Use ThreadManager for lock creation
         self.lock = thread_manager.create_lock()

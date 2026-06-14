@@ -2,13 +2,15 @@
 
 import logging
 import time
+from collections.abc import Callable
 from json import JSONDecodeError
-from typing import Any
+from typing import Any, TypeVar
 
 from ytmusicfs.auth_adapter import YTMusicAuthAdapter
 
 _API_ATTEMPTS = 3
 _API_RETRY_DELAY_SECONDS = 1.0
+T = TypeVar("T")
 
 
 class YouTubeMusicClient:
@@ -22,7 +24,7 @@ class YouTubeMusicClient:
         self,
         auth_adapter: YTMusicAuthAdapter,
         logger: logging.Logger | None = None,
-    ):
+    ) -> None:
         """Initialize the YouTube Music API client.
 
         Args:
@@ -184,7 +186,9 @@ class YouTubeMusicClient:
             rating,
         )
 
-    def _call_with_json_retry(self, operation: str, func, *args, **kwargs):
+    def _call_with_json_retry(
+        self, operation: str, func: Callable[..., T], *args: Any, **kwargs: Any
+    ) -> T:
         for attempt in range(1, _API_ATTEMPTS + 1):
             try:
                 return func(*args, **kwargs)

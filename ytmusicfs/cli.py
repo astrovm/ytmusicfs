@@ -118,7 +118,7 @@ def mount_filesystem(
 class MountCommandHandler:
     """Handles the 'mount' command logic."""
 
-    def __init__(self, args: argparse.Namespace, logger: logging.Logger):
+    def __init__(self, args: argparse.Namespace, logger: logging.Logger) -> None:
         """Initialize the mount command handler.
 
         Args:
@@ -213,7 +213,7 @@ class MountCommandHandler:
 class UnmountCommandHandler:
     """Handles the 'unmount' command logic."""
 
-    def __init__(self, args: argparse.Namespace, logger: logging.Logger):
+    def __init__(self, args: argparse.Namespace, logger: logging.Logger) -> None:
         """Initialize the unmount command handler."""
         self.args = args
         self.logger = logger
@@ -310,7 +310,7 @@ class MountInspector:
 class StatusCommandHandler:
     """Show saved settings and active mount state."""
 
-    def __init__(self, args: argparse.Namespace, logger: logging.Logger):
+    def __init__(self, args: argparse.Namespace, logger: logging.Logger) -> None:
         self.args = args
         self.logger = logger
         self.config = ConfigManager(cache_dir=args.cache_dir, logger=logger)
@@ -346,7 +346,7 @@ class ConfigCommandHandler:
         "mount-point": "last_mount_point",
     }
 
-    def __init__(self, args: argparse.Namespace, logger: logging.Logger):
+    def __init__(self, args: argparse.Namespace, logger: logging.Logger) -> None:
         self.args = args
         self.logger = logger
         self.config = ConfigManager(cache_dir=args.cache_dir, logger=logger)
@@ -379,7 +379,7 @@ class ConfigCommandHandler:
 class DoctorCommandHandler:
     """Run local environment checks."""
 
-    def __init__(self, args: argparse.Namespace, logger: logging.Logger):
+    def __init__(self, args: argparse.Namespace, logger: logging.Logger) -> None:
         self.args = args
         self.logger = logger
         self.config = ConfigManager(cache_dir=args.cache_dir, logger=logger)
@@ -409,7 +409,7 @@ class CacheCommandHandler:
     CACHE_FILES = ("cache.db", "cache.db-wal", "cache.db-shm")
     CACHE_DIRS = ("audio", "ranges")
 
-    def __init__(self, args: argparse.Namespace, logger: logging.Logger):
+    def __init__(self, args: argparse.Namespace, logger: logging.Logger) -> None:
         self.args = args
         self.logger = logger
         self.config = ConfigManager(cache_dir=args.cache_dir, logger=logger)
@@ -518,7 +518,7 @@ class CacheCommandHandler:
 class RepairCommandHandler:
     """Repair unavailable liked-song video IDs in the user's account."""
 
-    def __init__(self, args: argparse.Namespace, logger: logging.Logger):
+    def __init__(self, args: argparse.Namespace, logger: logging.Logger) -> None:
         self.args = args
         self.logger = logger
         self.config = ConfigManager(cache_dir=args.cache_dir, logger=logger)
@@ -607,7 +607,7 @@ class RepairCommandHandler:
 class LogsCommandHandler:
     """Print the ytmusicfs log path or tail."""
 
-    def __init__(self, args: argparse.Namespace, logger: logging.Logger):
+    def __init__(self, args: argparse.Namespace, logger: logging.Logger) -> None:
         self.args = args
         self.logger = logger
 
@@ -629,7 +629,7 @@ class LogsCommandHandler:
 class ServiceCommandHandler:
     """Manage a simple systemd user service."""
 
-    def __init__(self, args: argparse.Namespace, logger: logging.Logger):
+    def __init__(self, args: argparse.Namespace, logger: logging.Logger) -> None:
         self.args = args
         self.logger = logger
         self.config = ConfigManager(logger=logger)

@@ -20,7 +20,7 @@ class ConfigManager:
         cache_dir: str | None = None,
         config_dir: str | None = None,
         logger: logging.Logger | None = None,
-    ):
+    ) -> None:
         """Initialize with optional overrides for defaults."""
         self.logger = logger or logging.getLogger(__name__)
         self.cache_dir = Path(cache_dir) if cache_dir else self.DEFAULT_CACHE_DIR

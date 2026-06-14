@@ -4,7 +4,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
 from typing import Any
 
@@ -17,7 +17,7 @@ class ThreadManager:
     ensures proper shutdown of all thread resources.
     """
 
-    def __init__(self, logger: logging.Logger | None = None):
+    def __init__(self, logger: logging.Logger | None = None) -> None:
         """
         Initialize the ThreadManager.
 
@@ -87,7 +87,7 @@ class ThreadManager:
 
     def submit_task(
         self, pool_name: str, fn: Callable[..., Any], *args: Any, **kwargs: Any
-    ):
+    ) -> Future[Any]:
         """
         Submit a task to the specified thread pool and track it.
 
@@ -112,7 +112,7 @@ class ThreadManager:
 
         return future
 
-    def _task_done_callback(self, future):
+    def _task_done_callback(self, future: Future[Any]) -> None:
         """
         Callback for when a task is completed.
 
@@ -194,7 +194,7 @@ class ThreadManager:
         with self._active_tasks_lock:
             return self._active_tasks
 
-    def __del__(self):
+    def __del__(self) -> None:
         """
         Ensure thread pools are shut down when the manager is deleted.
         """

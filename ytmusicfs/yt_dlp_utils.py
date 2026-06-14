@@ -53,7 +53,7 @@ class YTDLPUtils:
     ThreadManager is a required dependency for asynchronous operations.
     """
 
-    def __init__(self, thread_manager=None, logger=None):
+    def __init__(self, thread_manager=None, logger=None) -> None:
         """
         Initialize the YTDLPUtils.
 
@@ -63,13 +63,13 @@ class YTDLPUtils:
         """
         self.thread_manager = thread_manager
         self.logger = logger or logging.getLogger("YTDLPUtils")
-        self._browser_cookie_files = {}
-        self._browser_cookie_file_times = {}
+        self._browser_cookie_files: dict[str, str] = {}
+        self._browser_cookie_file_times: dict[str, float] = {}
         self._cookie_lock = threading.Lock()
-        self._playlist_total_counts = {}
+        self._playlist_total_counts: dict[str, int] = {}
         self.logger.debug("YTDLPUtils initialized")
 
-    def _add_cookie_options(self, ydl_opts, browser):
+    def _add_cookie_options(self, ydl_opts, browser) -> None:
         if not browser:
             raise ValueError("Browser auth is required")
 
@@ -156,7 +156,7 @@ class YTDLPUtils:
         self._add_cookie_options(ydl_opts, browser)
         return ydl_opts
 
-    def _cache_browser_cookies(self, browser, ydl):
+    def _cache_browser_cookies(self, browser, ydl) -> bool:
         """No-op: do not overwrite the browser cookie file with post-extraction cookies.
 
         yt-dlp's cookiejar after extraction may be missing critical auth cookies
@@ -166,7 +166,7 @@ class YTDLPUtils:
         """
         return False
 
-    def extract_browser_cookies(self, browser):
+    def extract_browser_cookies(self, browser: str) -> dict[str, str]:
         """Return YouTube cookies from a local browser profile."""
         if not browser:
             raise ValueError("Browser auth is required")
@@ -187,7 +187,7 @@ class YTDLPUtils:
             cookies[str(cookie.name)] = str(value)
         return cookies
 
-    def cleanup(self):
+    def cleanup(self) -> None:
         with self._cookie_lock:
             cookie_files = list(self._browser_cookie_files.values())
             self._browser_cookie_files.clear()
@@ -199,7 +199,9 @@ class YTDLPUtils:
             except OSError as exc:
                 self.logger.debug("Failed to remove temporary cookie file: %s", exc)
 
-    def extract_playlist_content(self, playlist_id, limit: int, browser: str):
+    def extract_playlist_content(
+        self, playlist_id: str, limit: int, browser: str
+    ) -> list[dict[str, Any]]:
         """
         Fetch playlist or album content using yt-dlp, handling YouTube Music's redirects.
 
@@ -267,7 +269,7 @@ class YTDLPUtils:
         }
         self._add_cookie_options(ydl_opts, browser)
 
-        best_tracks = []
+        best_tracks: list[dict[str, Any]] = []
         best_playlist_count = None
         for attempt in range(1, PARTIAL_PLAYLIST_RETRY_ATTEMPTS + 1):
             try:
@@ -319,7 +321,7 @@ class YTDLPUtils:
         total_count = self._playlist_total_counts.get(playlist_id)
         return total_count if isinstance(total_count, int) else None
 
-    def extract_stream_url(self, video_id, browser: str):
+    def extract_stream_url(self, video_id: str, browser: str) -> dict[str, Any]:
         """
         Extract stream URL and duration for a video using yt-dlp.
 
@@ -387,7 +389,9 @@ class YTDLPUtils:
             return False
         return any(transient in error for transient in TRANSIENT_STREAM_ERRORS)
 
-    def _retry_stream_url_with_cached_cookies(self, video_id, browser: str):
+    def _retry_stream_url_with_cached_cookies(
+        self, video_id: str, browser: str
+    ) -> dict[str, Any] | None:
         with self._cookie_lock:
             cookie_file = self._browser_cookie_files.get(browser)
         if not cookie_file or not Path(cookie_file).exists():
@@ -423,7 +427,7 @@ class YTDLPUtils:
         )
         return None
 
-    def _stream_result_from_info(self, info):
+    def _stream_result_from_info(self, info: dict[str, Any]) -> dict[str, Any]:
         http_headers = info.get("http_headers") or {}
         http_headers = dict(http_headers)
         result = {"stream_url": info["url"], "http_headers": http_headers}
@@ -480,7 +484,7 @@ class YTDLPUtils:
             "extraction", self._extract_stream_url_worker, video_id, browser
         )
 
-    def _extract_stream_url_worker(self, video_id, browser: str):
+    def _extract_stream_url_worker(self, video_id: str, browser: str) -> dict[str, Any]:
         """
         Worker function to extract stream URL for a thread pool task.
 

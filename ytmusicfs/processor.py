@@ -8,7 +8,9 @@ from typing import Any
 class TrackProcessor:
     """Processor for handling track metadata."""
 
-    def __init__(self, logger: logging.Logger | None = None, cache_manager=None):
+    def __init__(
+        self, logger: logging.Logger | None = None, cache_manager: Any = None
+    ) -> None:
         """Initialize the track processor.
 
         Args:
@@ -27,11 +29,8 @@ class TrackProcessor:
         Returns:
             A sanitized filename with problematic characters replaced or preserved safely.
         """
-        # Preserve dots and some special characters, replace only truly invalid ones
-        invalid_chars = ["/", "\\", ":", "*", "?", "<", ">", "|"]
-        # Replace invalid chars with hyphen, trim leading/trailing spaces and dots
+        invalid_chars = {"/", "\\", ":", "*", "?", "<", ">", "|"}
         sanitized = "".join("-" if c in invalid_chars else c for c in name.strip())
-        # Remove leading/trailing dots or multiple consecutive hyphens
         sanitized = re.sub(r"^\.+|\.+$", "", sanitized)
         return re.sub(r"-+", "-", sanitized)
 
@@ -253,10 +252,9 @@ class TrackProcessor:
         Returns:
             List of processed track dictionaries with metadata and filenames.
         """
-        processed = []
-        # Collect durations for batch processing
-        durations_batch = {}
-        filename_counts = {}
+        processed: list[dict[str, Any]] = []
+        durations_batch: dict[str, int] = {}
+        filename_counts: dict[str, int] = {}
 
         for track in tracks:
             # Extract track info
@@ -286,7 +284,7 @@ class TrackProcessor:
                 processed_track["filename"] = filename
                 processed.append(processed_track)
 
-        duplicate_indexes = {}
+        duplicate_indexes: dict[str, int] = {}
         for track in processed:
             filename = track["filename"]
             if filename_counts[filename] < 2:

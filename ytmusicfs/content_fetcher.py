@@ -25,60 +25,64 @@ class ContentFetcher:
         logger: logging.Logger,
         yt_dlp_utils: YTDLPUtils,
         browser: str,
-    ):
-        """Initialize the ContentFetcher.
-
-        Args:
-            client: YouTube Music API client
-            processor: Track processor for handling track data
-            cache: Cache manager for storing fetched data
-            logger: Logger instance
-            yt_dlp_utils: YTDLPUtils instance for YouTube interaction
-            browser: Browser to use for cookies
-        """
+    ) -> None:
         self.client = client
         self.processor = processor
         self.cache = cache
         self.logger = logger
         self.browser = browser
         self.yt_dlp_utils = yt_dlp_utils
-        self.PLAYLIST_REGISTRY = []
-        # Preload playlist registry at startup
+        self.PLAYLIST_REGISTRY: list[dict[str, Any]] = []
+        self._registry_by_path: dict[str, dict[str, Any]] = {}
+        self._registry_by_name: dict[str, dict[str, Any]] = {}
+        self._registry_by_name_type: dict[tuple[str, str], dict[str, Any]] = {}
+        self._indexed_registry = self.PLAYLIST_REGISTRY
+        self.cache_directory_callback: (
+            Callable[[str, list[dict[str, Any]]], None] | None
+        ) = None
         self._initialize_playlist_registry()
         self.logger.info("Preloaded playlist registry at initialization")
 
     def get_playlist_id_from_name(
         self, name: str, type_filter: str | None = None
     ) -> str | None:
-        """Get playlist ID from its name using the PLAYLIST_REGISTRY.
-
-        Args:
-            name: The sanitized name of the playlist/album
-            type_filter: Optional type to filter by ('playlist', 'album', 'liked_songs')
-
-        Returns:
-            The playlist ID if found, None otherwise
-        """
-        for entry in self.PLAYLIST_REGISTRY:
-            if entry["name"] == name and (
-                type_filter is None or entry["type"] == type_filter
-            ):
-                return entry["id"]
-        return None
+        """Return a registry ID using the prebuilt lookup indexes."""
+        self._ensure_registry_indexes()
+        entry = (
+            self._registry_by_name.get(name)
+            if type_filter is None
+            else self._registry_by_name_type.get((name, type_filter))
+        )
+        entry_id = entry.get("id") if entry else None
+        return entry_id if isinstance(entry_id, str) else None
 
     def get_playlist_entry_from_path(self, path: str) -> dict[str, Any] | None:
-        """Get playlist entry from its path using the PLAYLIST_REGISTRY.
+        """Return a registry entry by its mounted path."""
+        self._ensure_registry_indexes()
+        return self._registry_by_path.get(path)
 
-        Args:
-            path: The filesystem path of the playlist
+    def _ensure_registry_indexes(self) -> None:
+        if self.PLAYLIST_REGISTRY is not self._indexed_registry:
+            self._set_playlist_registry(self.PLAYLIST_REGISTRY)
 
-        Returns:
-            The playlist entry dictionary if found, None otherwise
-        """
-        for entry in self.PLAYLIST_REGISTRY:
-            if entry["path"] == path:
-                return entry
-        return None
+    def _set_playlist_registry(self, registry: list[dict[str, Any]]) -> None:
+        """Replace the registry and rebuild its read-optimized indexes."""
+        self.PLAYLIST_REGISTRY = registry
+        self._registry_by_path = {
+            entry["path"]: entry
+            for entry in registry
+            if isinstance(entry.get("path"), str)
+        }
+        self._registry_by_name = {}
+        self._registry_by_name_type = {}
+        for entry in registry:
+            name = entry.get("name")
+            entry_type = entry.get("type")
+            if not isinstance(name, str) or not isinstance(entry_type, str):
+                continue
+            self._registry_by_name.setdefault(name, entry)
+            self._registry_by_name_type[(name, entry_type)] = entry
+        self._indexed_registry = registry
 
     def _initialize_playlist_registry(self, force_refresh: bool = False) -> None:
         """Initialize or refresh the playlist registry with all playlist types.
@@ -172,7 +176,7 @@ class ContentFetcher:
         else:
             self.cache.set(self.PLAYLIST_REGISTRY_CACHE_KEY, registry)
 
-        self.PLAYLIST_REGISTRY = registry
+        self._set_playlist_registry(registry)
         self.logger.info("Initialized playlist registry with %d entries", len(registry))
 
         # Record refresh time with status
@@ -499,13 +503,7 @@ class ContentFetcher:
             dir_path: Directory path
             processed_tracks: List of processed track dictionaries
         """
-        # This is a callback to the filesystem class
-        # The actual implementation is in the filesystem class
-        # We'll need to set a callback function from the filesystem
-        if hasattr(self, "cache_directory_callback") and callable(
-            self.cache_directory_callback
-        ):
-            # Pass processed_tracks with explicit is_directory flag unchanged
+        if self.cache_directory_callback:
             self.cache_directory_callback(dir_path, processed_tracks)
         else:
             self.logger.warning(

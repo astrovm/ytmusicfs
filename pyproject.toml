@@ -64,6 +64,9 @@ select = [
   "I",
   "B",
   "A",
+  "ANN201",
+  "ANN202",
+  "ANN204",
   "C4",
   "DTZ",
   "ISC",
@@ -82,7 +85,7 @@ select = [
 ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["ARG001", "ARG002", "ARG005", "B904"]
+"tests/*" = ["ANN201", "ANN202", "ANN204", "ARG001", "ARG002", "ARG005", "B904"]
 
 [tool.mypy]
 python_version = "3.10"
@@ -96,4 +99,4 @@ warn_redundant_casts = true
 warn_unreachable = true
 strict_equality = true
 allow_untyped_globals = true
-disable_error_code = ["arg-type", "assignment", "attr-defined", "call-overload", "var-annotated"]
+disable_error_code = ["arg-type", "call-overload"]

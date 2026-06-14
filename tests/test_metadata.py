@@ -32,6 +32,24 @@ class TestMetadataManager(unittest.TestCase):
 
         self.assertEqual(context.exception.errno, errno.EINVAL)
 
+    def test_get_video_id_scans_processed_tracks_once(self):
+        path = "/playlists/Mix/Artist - Song.m4a"
+        self.cache.get_entry_type.return_value = "file"
+        self.cache.get_file_attrs_from_parent_dir.return_value = None
+        self.cache.get.side_effect = [
+            None,
+            [{"filename": "Artist - Song.m4a", "videoId": "video123"}],
+        ]
+        content_fetcher = Mock()
+        content_fetcher.get_playlist_entry_from_path.return_value = {"id": "mix"}
+        self.metadata.set_content_fetcher(content_fetcher)
+
+        result = self.metadata.get_video_id(path)
+
+        self.assertEqual(result, "video123")
+        self.assertEqual(self.cache.get.call_count, 2)
+        self.cache.set.assert_called_once_with(f"video_id:{path}", "video123")
+
 
 if __name__ == "__main__":
     unittest.main()

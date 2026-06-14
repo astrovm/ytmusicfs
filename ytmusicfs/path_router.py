@@ -6,113 +6,66 @@ from collections.abc import Callable
 from typing import Any
 
 RouteHandler = Callable[..., list[str]]
+PatternHandler = tuple[re.Pattern[str], RouteHandler]
+EMPTY_DIRECTORY = [".", ".."]
+STATIC_LIBRARY_DIRS = {"albums", "liked_songs", "playlists"}
 
 
 class PathRouter:
     """Router for handling FUSE filesystem paths."""
 
-    def __init__(self):
-        """Initialize the path router with empty handler collections."""
+    def __init__(self) -> None:
         self.handlers: dict[str, RouteHandler] = {}
         self.subpath_handlers: list[tuple[str, RouteHandler]] = []
-        self.pattern_handlers: list[tuple[str, RouteHandler]] = []
+        self.pattern_handlers: list[PatternHandler] = []
+        self.fetcher: Any = None
+        self.cache: Any = None
+        self.logger = logging.getLogger("YTMusicFS")
 
-        # Content fetcher will be set later by the filesystem
-        self.fetcher = None
-
-        # Cache manager will be set later by the filesystem
-        self.cache = None
-
-    def set_fetcher(self, fetcher):
-        """Set the content fetcher instance used by handlers.
-
-        Args:
-            fetcher: ContentFetcher instance
-        """
+    def set_fetcher(self, fetcher: Any) -> None:
+        """Use the fetcher's cache for route validation."""
         self.fetcher = fetcher
-        # Also get a reference to the cache manager from the fetcher
         if hasattr(fetcher, "cache"):
             self.cache = fetcher.cache
 
-    def set_cache(self, cache):
-        """Set the cache manager instance directly.
-
-        Args:
-            cache: CacheManager instance
-        """
+    def set_cache(self, cache: Any) -> None:
         self.cache = cache
 
     def register(self, path: str, handler: RouteHandler) -> None:
-        """Register a handler for an exact path match.
-
-        Args:
-            path: The exact path to match
-            handler: The handler function to call
-        """
+        """Register an exact directory route."""
         self.handlers[path] = handler
-
-        # Pre-validate this path as a directory in the cache if available
         if self.cache:
             self.cache.mark_valid(path, is_directory=True)
 
     def register_subpath(self, prefix: str, handler: RouteHandler) -> None:
-        """Register a handler for a path prefix match.
-
-        Args:
-            prefix: The path prefix to match
-            handler: The handler function to call with the full path
-        """
+        """Register a route that receives the full matching path."""
         self.subpath_handlers.append((prefix, handler))
-
-        # Pre-validate this path as a directory in the cache if available
         if self.cache:
             self.cache.mark_valid(prefix, is_directory=True)
 
     def register_dynamic(self, pattern: str, handler: RouteHandler) -> None:
-        """Register a handler for a path pattern with wildcards.
+        """Register a wildcard route and compile it once."""
+        self.pattern_handlers.append((self._compile_pattern(pattern), handler))
 
-        Wildcards:
-        - * matches any sequence of characters within a path segment
-        - ** matches any sequence of characters across multiple path segments
-
-        Args:
-            pattern: The path pattern to match (e.g., "/playlists/*")
-            handler: The handler function to call with the full path
-        """
-        self.pattern_handlers.append((pattern, handler))
-
-        # If the pattern has a fixed prefix before any wildcard, pre-validate that
         if self.cache:
-            prefix = pattern.split("*")[0].rstrip("/")
+            prefix = pattern.split("*", 1)[0].rstrip("/")
             if prefix:
                 self.cache.mark_valid(prefix, is_directory=True)
 
+    @staticmethod
+    def _compile_pattern(pattern: str) -> re.Pattern[str]:
+        escaped = re.escape(pattern)
+        regex = escaped.replace(r"\*\*", "(.+)").replace(r"\*", "([^/]+)")
+        return re.compile(f"^{regex}$")
+
     def _match_wildcard_pattern(
-        self, pattern: str, path: str
-    ) -> tuple[bool, list[Any]]:
-        """Check if a path matches a wildcard pattern and extract wildcard values.
-
-        Args:
-            pattern: The pattern with wildcards to match against
-            path: The path to check
-
-        Returns:
-            Tuple of (match_success, captured_values)
-        """
-        # Escape special regex characters except * which we'll handle specially
-        regex_pattern = (
-            re.escape(pattern).replace("\\*\\*", "(.+)").replace("\\*", "([^/]+)")
+        self, pattern: str | re.Pattern[str], path: str
+    ) -> tuple[bool, list[str]]:
+        compiled = (
+            self._compile_pattern(pattern) if isinstance(pattern, str) else pattern
         )
-
-        # Add start and end anchors
-        regex_pattern = f"^{regex_pattern}$"
-
-        # Match the path against the pattern
-        match = re.match(regex_pattern, path)
-        if match:
-            # Return captured values
-            return True, list(match.groups())
-        return False, []
+        match = compiled.fullmatch(path)
+        return (True, list(match.groups())) if match else (False, [])
 
     def validate_path(self, path: str) -> bool:
         """Check if a path is potentially valid based on registered handlers.
@@ -123,28 +76,23 @@ class PathRouter:
         Returns:
             Boolean indicating if the path might be valid
         """
-        # First, check level 2 paths for validity
         if not self.validate_level2_path(path):
             return False
 
-        # Check if path is registered directly
         if path in self.handlers:
             return True
 
-        # Check prefix matches
         for prefix, _ in self.subpath_handlers:
             if path.startswith(prefix):
                 return True
 
-        # Check pattern matches
         for pattern, _ in self.pattern_handlers:
             match_success, _ = self._match_wildcard_pattern(pattern, path)
             if match_success:
                 return True
 
-        # Use the cache if available
         if self.cache:
-            return self.cache.is_valid_path(path)
+            return bool(self.cache.is_valid_path(path))
 
         return False
 
@@ -161,136 +109,76 @@ class PathRouter:
         Returns:
             True if the path is valid, False otherwise
         """
-        logger = (
-            logging.getLogger("YTMusicFS")
-            if not hasattr(self, "logger")
-            else self.logger
-        )
-
-        # Only process level 2 paths
         parts = path.split("/")
         if len(parts) != 3:
-            return True  # Not a level 2 path, so don't reject it here
+            return True
 
-        # Only check specific directories
-        if parts[1] not in ["albums", "playlists", "liked_songs"]:
-            return True  # Not an album/playlist path, so don't reject it here
+        if parts[1] not in STATIC_LIBRARY_DIRS:
+            return True
 
-        # Check if this is in the parent directory listing
         if self.cache:
             parent_dir = f"/{parts[1]}"
             dir_listing = self.cache.get_directory_listing_with_attrs(parent_dir)
             if dir_listing and parts[2] not in dir_listing:
-                # This path doesn't exist in our data
-                logger.debug(f"Invalid level 2 path, not in directory listing: {path}")
+                self.logger.debug(
+                    "Invalid level 2 path, not in directory listing: %s", path
+                )
                 return False
 
         return True
 
+    def _resolve_handler(
+        self, path: str
+    ) -> tuple[RouteHandler, tuple[Any, ...]] | None:
+        exact_handler = self.handlers.get(path)
+        if exact_handler:
+            return exact_handler, ()
+
+        for prefix, handler in self.subpath_handlers:
+            if path.startswith(prefix):
+                return handler, (path,)
+
+        for pattern, handler in self.pattern_handlers:
+            matched, values = self._match_wildcard_pattern(pattern, path)
+            if matched:
+                return handler, (path, *values)
+
+        return None
+
+    def _cache_result(self, path: str, result: list[str]) -> None:
+        """Remember successful listings so later FUSE lookups stay local."""
+        if not self.cache or path == "/" or len(result) <= len(EMPTY_DIRECTORY):
+            return
+
+        self.cache.mark_valid(path, is_directory=True)
+        for entry in result:
+            if entry in EMPTY_DIRECTORY:
+                continue
+            self.cache.mark_valid(
+                f"{path}/{entry}",
+                is_directory=False if entry.endswith(".m4a") else None,
+            )
+
     def route(self, path: str) -> list[str]:
-        """Route a path to the appropriate handler.
-
-        Args:
-            path: The path to route
-
-        Returns:
-            List of directory entries from the handler
-        """
-        result = None
-        logger = (
-            logging.getLogger("YTMusicFS")
-            if not hasattr(self, "logger")
-            else self.logger
-        )
-
-        # Early validation - if this is an invalid level 2 path, return empty dir
+        """Return the listing produced by the first matching route."""
         if not self.validate_level2_path(path):
-            logger.debug(f"Path {path} failed level 2 validation, returning empty dir")
-            return [".", ".."]
+            self.logger.debug("Path %s failed level 2 validation", path)
+            return EMPTY_DIRECTORY.copy()
 
-        # First try exact matches
-        if path in self.handlers:
-            try:
-                logger.debug(f"Found exact handler for {path}")
-                result = self.handlers[path]()
-                # Mark this path as valid in the cache
-                if (
-                    self.cache and path != "/" and len(result) > 2
-                ):  # More than just "." and ".."
-                    self.cache.mark_valid(path, is_directory=True)
-            except Exception as e:
-                logger.error(f"Error calling handler for {path}: {e}")
-                import traceback
+        resolved = self._resolve_handler(path)
+        if not resolved:
+            self.logger.debug("No handler found for %s", path)
+            return EMPTY_DIRECTORY.copy()
 
-                logger.error(traceback.format_exc())
-                return [".", ".."]
+        handler, args = resolved
+        try:
+            result = handler(*args)
+        except Exception:
+            self.logger.exception("Route handler failed for %s", path)
+            return EMPTY_DIRECTORY.copy()
 
-        # Then try prefix matches
-        elif not result:
-            for prefix, handler in self.subpath_handlers:
-                if path.startswith(prefix):
-                    try:
-                        logger.debug(
-                            f"Found prefix handler for {path} with prefix {prefix}"
-                        )
-                        result = handler(path)
-                        # Mark this path as valid in the cache
-                        if (
-                            self.cache and path != "/" and len(result) > 2
-                        ):  # More than just "." and ".."
-                            self.cache.mark_valid(path, is_directory=True)
-                        break
-                    except Exception as e:
-                        logger.error(f"Error calling prefix handler for {path}: {e}")
-                        import traceback
-
-                        logger.error(traceback.format_exc())
-                        return [".", ".."]
-
-        # Finally try pattern matches
         if not result:
-            for pattern, handler in self.pattern_handlers:
-                try:
-                    match_success, captured_values = self._match_wildcard_pattern(
-                        pattern, path
-                    )
-                    if match_success:
-                        logger.debug(
-                            f"Found pattern handler for {path} with pattern {pattern}"
-                        )
-                        # Mark this path as valid in the cache
-                        if self.cache and not path.endswith(".m4a"):
-                            self.cache.mark_valid(path, is_directory=True)
+            return EMPTY_DIRECTORY.copy()
 
-                        # Pass both the full path and the captured values
-                        if captured_values:
-                            result = handler(path, *captured_values)
-                        else:
-                            result = handler(path)
-                        break
-                except Exception as e:
-                    logger.error(f"Error calling pattern handler for {path}: {e}")
-                    import traceback
-
-                    logger.error(traceback.format_exc())
-                    return [".", ".."]
-
-        # Default to empty dir if no handler matched
-        if not result:
-            logger.debug(f"No handler found for {path}")
-            result = [".", ".."]
-
-        # Process results to mark individual entries as valid
-        if (
-            self.cache and path != "/" and len(result) > 2
-        ):  # More than just "." and ".."
-            # Mark each file as valid in the parent directory
-            for entry in result:
-                if entry not in [".", ".."]:
-                    entry_path = f"{path}/{entry}"
-                    self.cache.mark_valid(
-                        entry_path,
-                        is_directory=False if entry.endswith(".m4a") else None,
-                    )
-
+        self._cache_result(path, result)
         return result

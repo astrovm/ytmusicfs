@@ -6,6 +6,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from pathlib import Path
 from typing import Any
@@ -42,7 +43,7 @@ class FileHandler:
         record_stat_callback: Callable[[str], None] | None = None,
         get_file_size_callback: Callable[[str], int | None] | None = None,
         on_stream_unavailable: Callable[[str, str], str | None] | None = None,
-    ):
+    ) -> None:
         """Initialize the FileHandler.
 
         Args:
@@ -66,14 +67,13 @@ class FileHandler:
         self.yt_dlp_utils = yt_dlp_utils
         self.on_stream_unavailable = on_stream_unavailable
 
-        # File handling state
-        self.open_files = {}  # {fh: {'stream_url': str, 'video_id': str, ...}}
-        self.next_fh = 1  # Next file handle to assign
-        self.path_to_fh = {}  # Store path to file handle mapping
+        self.open_files: dict[int, dict[str, Any]] = {}
+        self.next_fh = 1
+        self.path_to_fh: dict[str, int] = {}
         self.file_handle_lock = thread_manager.create_lock()
         self.logger.debug("Using ThreadManager for lock creation in FileHandler")
-        self.futures = {}  # Store futures for async operations by video_id
-        self.stream_info_cache = {}
+        self.futures: dict[str, Future[Any]] = {}
+        self.stream_info_cache: dict[str, dict[str, Any]] = {}
         self.recent_handles: deque[dict[str, Any]] = deque(maxlen=100)
 
         # Initialize Downloader
@@ -354,6 +354,7 @@ class FileHandler:
 
                 except Exception as e:
                     error_msg = self._error_message(e)
+                    error_code: int | None
                     if isinstance(e, OSError):
                         error_code = e.errno or self._stream_error_errno(error_msg)
                         log_message = f"Stream unavailable for {video_id}: {error_msg}"
@@ -856,7 +857,7 @@ class FileHandler:
 
         return 0
 
-    def _check_cached_audio(self, video_id):
+    def _check_cached_audio(self, video_id: str) -> bool:
         return self._cached_audio_format(video_id) is not None
 
     def _cached_audio_format(self, video_id: str) -> str | None:
