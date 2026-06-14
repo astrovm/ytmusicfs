@@ -5,7 +5,6 @@ import hashlib
 import json
 import logging
 import os
-import random
 import shutil
 import sqlite3
 import stat
@@ -20,6 +19,9 @@ from cachetools import LRUCache
 
 class CacheManager:
     """Manager for handling cache operations with simplified locking and caching."""
+
+    WRITE_COMMIT_INTERVAL = 50
+    STATIC_DIRECTORIES = frozenset({"/", "/playlists", "/albums", "/liked_songs"})
 
     def __init__(
         self,
@@ -64,6 +66,7 @@ class CacheManager:
         )
         self._closed = False
         self.conn.execute("PRAGMA journal_mode=WAL;")
+        self._pending_writes = 0
 
         with self.lock:
             cursor = self.conn.cursor()
@@ -193,58 +196,40 @@ class CacheManager:
             )
 
     def mark_valid(self, path: str, is_directory: bool | None = None) -> None:
-        """Mark a path as valid in the cache with optimized storage.
-
-        Args:
-            path: The path to mark as valid
-            is_directory: Flag indicating if this is a directory (None for unknown)
-        """
-        # Skip root as it's always valid
+        """Persist a path and its known type for future lookups."""
         if path == "/":
             return
 
-        # Update in-memory valid_paths set
         self.valid_paths.add(path)
-
-        # Add to path validation cache with 5-minute expiry
         self.path_validation_cache[path] = {
             "valid": True,
             "is_directory": is_directory,
-            "time": time.time() + 300,  # 5-minute cache
+            "time": time.time() + 300,
         }
-
-        # Update path_types if is_directory is specified
         if is_directory is not None:
             self.path_types[path] = "directory" if is_directory else "file"
 
-        # Prepare database entry - construct once, reuse for different keys
         entry = {"data": True, "time": time.time()}
         entry_str = json.dumps(entry)
-
-        # We're storing file type information in the database too
-        entry_type = None
-        if is_directory is not None:
-            entry_type = "directory" if is_directory else "file"
-
-        # Add metadata about the path
-        metadata = {"valid_since": time.time()}
-        metadata_str = json.dumps(metadata)
-
-        # Store in database with appropriate prefix
+        entry_type = (
+            None if is_directory is None else "directory" if is_directory else "file"
+        )
+        metadata_str = json.dumps({"valid_since": time.time()})
+        prefixes = (
+            ["valid_dir:", "exact_path:"]
+            if is_directory is None
+            else ["valid_dir:" if is_directory else "exact_path:"]
+        )
+        values = [
+            (
+                self.path_to_key(f"{prefix}{path}"),
+                entry_str,
+                entry_type,
+                metadata_str,
+            )
+            for prefix in prefixes
+        ]
         try:
-            prefix = "valid_dir:" if is_directory else "exact_path:"
-            if is_directory is None:
-                # Use both for unknown types
-                prefixes = ["valid_dir:", "exact_path:"]
-            else:
-                prefixes = [prefix]
-
-            # Build batch operation
-            values = []
-            for prefix in prefixes:
-                db_key = self.path_to_key(f"{prefix}{path}")
-                values.append((db_key, entry_str, entry_type, metadata_str))
-
             with self.lock:
                 cursor = self.conn.cursor()
                 if is_directory is not None:
@@ -260,231 +245,160 @@ class CacheManager:
                     """,
                     values,
                 )
-                # Commit less frequently for performance
-                if random.random() < 0.1:  # Only commit about 10% of the time
-                    self.conn.commit()
-        except sqlite3.Error as e:
+                self._record_write(len(values))
+        except sqlite3.Error as error:
             self.logger.warning(
-                f"Failed to mark path as valid: {e.__class__.__name__}: {e}"
+                "Failed to mark path as valid: %s: %s",
+                error.__class__.__name__,
+                error,
             )
 
     def is_valid_path(self, path: str) -> bool:
-        """Enhanced path validation with improved caching for better performance.
-
-        Args:
-            path: The path to validate
-
-        Returns:
-            Boolean indicating if the path is valid
-        """
-        # Special static paths are always valid
-        if path == "/" or path in ["/playlists", "/liked_songs", "/albums"]:
+        """Return whether a path exists in a memory or persistent listing."""
+        if path in self.STATIC_DIRECTORIES:
             return True
 
-        # Check fast validation cache first
-        if path in self.path_validation_cache:
-            cached = self.path_validation_cache[path]
-            if time.time() < cached.get("time", 0):  # Check expiry
-                self.stats["hits"] += 1
-                return cached["valid"]
+        cached_result = self._cached_path_validation(path)
+        if cached_result is not None:
+            return cached_result
 
-        # Check the in-memory valid paths set
         if path in self.valid_paths:
-            self.stats["hits"] += 1
-            # Also update the validation cache
-            self.path_validation_cache[path] = {
-                "valid": True,
-                "is_directory": self.is_directory(path),
-                "time": time.time() + 300,  # Cache for 5 minutes
-            }
-            return True
+            return self._remember_valid_path(path, self.is_directory(path), "hits")
 
-        # For short paths, check parent validation for efficiency
         parent_dir = os.path.dirname(path)
         filename = os.path.basename(path)
+        listing_result = self._validate_from_listings(path, parent_dir, filename)
+        if listing_result:
+            return True
 
-        # If parent is valid and in directory cache, check if child exists
-        if parent_dir and parent_dir in self.directory_listings_cache:
-            cached = self.directory_listings_cache[parent_dir]
-            if time.time() - cached["time"] < self.cache_timeout:
-                dir_listing = cached["data"]
-                if filename in dir_listing:
-                    # Mark path as valid for future lookups
-                    is_dir = bool(
-                        dir_listing[filename].get("st_mode", 0) & stat.S_IFDIR
-                    )
-                    self.mark_valid(path, is_directory=is_dir)
+        database_type = self._path_type_from_prefixed_entry(path)
+        if database_type is not None:
+            return self._remember_valid_path(path, database_type, "db_hits")
 
-                    # Update validation cache
-                    self.path_validation_cache[path] = {
-                        "valid": True,
-                        "is_directory": is_dir,
-                        "time": time.time() + 300,  # Cache for 5 minutes
-                    }
-                    self.stats["hits"] += 1
-                    return True
-
-        # Fall back to original validation logic
-        if parent_dir and self.is_valid_path(parent_dir):  # Recursive check for parent
-            # Try to get directory listing with attributes
-            dir_listing = self.get_directory_listing_with_attrs(parent_dir)
-            if dir_listing and filename in dir_listing:
-                # Mark this path as valid for future lookups
-                is_dir = (
-                    dir_listing[filename].get("st_mode", 0) & stat.S_IFDIR
-                    == stat.S_IFDIR
-                )
-                self.mark_valid(path, is_directory=is_dir)
-
-                # Update validation cache
-                self.path_validation_cache[path] = {
-                    "valid": True,
-                    "is_directory": is_dir,
-                    "time": time.time() + 300,  # Cache for 5 minutes
-                }
-                self.stats["db_hits"] += 1
-                return True
-
-            # Also check valid_files key for backward compatibility
-            valid_files = self.get(f"valid_files:{parent_dir}")
-            if valid_files and filename in valid_files:
-                # Mark as valid file (since it's in valid_files)
-                self.mark_valid(path, is_directory=False)
-
-                # Update validation cache
-                self.path_validation_cache[path] = {
-                    "valid": True,
-                    "is_directory": False,
-                    "time": time.time() + 300,  # Cache for 5 minutes
-                }
-                self.stats["db_hits"] += 1
-                return True
-
-        # Check special prefixed keys in database
-        # Prefer explicit file entries over directory hints when both exist.
-        # It's common for callers to mark a path as "unknown" first (which
-        # stores both prefixes without an entry type) and later update it with a
-        # concrete type. Checking the file prefix first avoids incorrectly
-        # treating media files as directories when both records exist.
-        for prefix in ["exact_path:", "valid_dir:"]:
-            db_key = self.path_to_key(f"{prefix}{path}")
-            try:
-                with self.lock:
-                    cursor = self.conn.cursor()
-                    cursor.execute(
-                        "SELECT entry FROM cache_entries WHERE key = ?", (db_key,)
-                    )
-                    row = cursor.fetchone()
-                    if row:
-                        # Entry exists, mark as valid for future lookups
-                        is_dir = prefix == "valid_dir:"
-                        self.mark_valid(path, is_directory=is_dir)
-
-                        # Update validation cache
-                        self.path_validation_cache[path] = {
-                            "valid": True,
-                            "is_directory": is_dir,
-                            "time": time.time() + 300,  # Cache for 5 minutes
-                        }
-                        self.stats["db_hits"] += 1
-                        return True
-            except sqlite3.Error as e:
-                self.logger.warning(
-                    f"Error checking database for {prefix}{path}: {e.__class__.__name__}: {e}"
-                )
-
-        # Path is not valid, cache this result too for a shorter time
         self.path_validation_cache[path] = {
             "valid": False,
-            "time": time.time() + 60,  # Cache negative results for 1 minute
+            "time": time.time() + 60,
         }
         self.stats["misses"] += 1
         return False
 
-    def get_entry_type(self, path: str) -> str | None:
-        """Retrieve the entry type (file or directory) for a path.
+    def _cached_path_validation(self, path: str) -> bool | None:
+        cached = self.path_validation_cache.get(path)
+        if not cached or time.time() >= cached.get("time", 0):
+            return None
+        self.stats["hits"] += 1
+        return bool(cached["valid"])
 
-        Args:
-            path: The path to check
+    def _validate_from_listings(
+        self, path: str, parent_dir: str, filename: str
+    ) -> bool:
+        if not parent_dir:
+            return False
 
-        Returns:
-            'file', 'directory', or None if the path is not in the cache
-        """
-        # Special static paths
-        if path == "/" or path in ["/playlists", "/liked_songs", "/albums"]:
-            return "directory"
+        cached = self.directory_listings_cache.get(parent_dir)
+        if cached and time.time() - cached["time"] < self.cache_timeout:
+            attrs = cached["data"].get(filename)
+            if attrs:
+                return self._remember_valid_path(
+                    path, self._attrs_are_directory(attrs), "hits"
+                )
 
-        # Check in-memory path_types first for speed
-        if path in self.path_types:
-            return self.path_types[path]
+        if not self.is_valid_path(parent_dir):
+            return False
+        listing = self.get_directory_listing_with_attrs(parent_dir)
+        if listing and filename in listing:
+            return self._remember_valid_path(
+                path, self._attrs_are_directory(listing[filename]), "db_hits"
+            )
 
-        # Check database
-        db_key = self.path_to_key(path)
+        valid_files = self.get(f"valid_files:{parent_dir}")
+        if isinstance(valid_files, (list, set, tuple)) and filename in valid_files:
+            return self._remember_valid_path(path, False, "db_hits")
+        return False
+
+    @staticmethod
+    def _attrs_are_directory(attrs: dict[str, Any]) -> bool:
+        return attrs.get("st_mode", 0) & stat.S_IFDIR == stat.S_IFDIR
+
+    def _remember_valid_path(
+        self, path: str, is_directory: bool | None, stat_key: str
+    ) -> bool:
+        self.mark_valid(path, is_directory=is_directory)
+        self.stats[stat_key] += 1
+        return True
+
+    def _path_type_from_prefixed_entry(self, path: str) -> bool | None:
         try:
             with self.lock:
                 cursor = self.conn.cursor()
-                cursor.execute(
-                    "SELECT entry_type FROM cache_entries WHERE key = ?", (db_key,)
-                )
-                row = cursor.fetchone()
-                if row and row[0]:
-                    # Cache in memory for future lookups
-                    self.path_types[path] = row[0]
-                    return row[0]
-
-                # Also check with different prefixes if not found directly
-                for prefix in ["exact_path:", "valid_dir:"]:
-                    prefixed_key = self.path_to_key(f"{prefix}{path}")
+                for prefix, is_directory in (
+                    ("exact_path:", False),
+                    ("valid_dir:", True),
+                ):
                     cursor.execute(
-                        "SELECT entry_type FROM cache_entries WHERE key = ?",
-                        (prefixed_key,),
+                        "SELECT entry FROM cache_entries WHERE key = ?",
+                        (self.path_to_key(f"{prefix}{path}"),),
                     )
-                    entry_type_row = cursor.fetchone()
-                    if entry_type_row and entry_type_row[0]:
-                        # Cache in memory for future lookups
-                        self.path_types[path] = entry_type_row[0]
-                        return entry_type_row[0]
-
-                    # Additional check for keys that exist but don't have explicit type
-                    if prefix in ["valid_dir:", "exact_path:"]:
-                        cursor.execute(
-                            "SELECT entry FROM cache_entries WHERE key = ?",
-                            (prefixed_key,),
-                        )
-                        entry_row = cursor.fetchone()
-                        if entry_row:
-                            # Skip inference if we only stored a placeholder with an
-                            # unknown type. This allows a later explicit record to set
-                            # the correct classification instead of defaulting to the
-                            # prefix assumption.
-                            if entry_type_row and entry_type_row[0] is None:
-                                continue
-
-                            inferred_type = (
-                                "directory" if prefix == "valid_dir:" else "file"
-                            )
-                            # Cache in memory for future lookups
-                            self.path_types[path] = inferred_type
-                            return inferred_type
-
-            # Try to infer from directory listings
-            parent_dir = os.path.dirname(path)
-            filename = os.path.basename(path)
-            dir_listing = self.get_directory_listing_with_attrs(parent_dir)
-            if dir_listing and filename in dir_listing:
-                attr = dir_listing[filename]
-                is_dir = attr.get("st_mode", 0) & stat.S_IFDIR == stat.S_IFDIR
-                entry_type = "directory" if is_dir else "file"
-                # Cache in memory for future lookups
-                self.path_types[path] = entry_type
-                return entry_type
-
-            return None
-        except sqlite3.Error as e:
+                    if cursor.fetchone():
+                        return is_directory
+        except sqlite3.Error as error:
             self.logger.warning(
-                f"Failed to get entry type for {path}: {e.__class__.__name__}: {e}"
+                "Error checking database for %s: %s: %s",
+                path,
+                error.__class__.__name__,
+                error,
+            )
+        return None
+
+    def get_entry_type(self, path: str) -> str | None:
+        """Return a cached path type, preferring explicit file records."""
+        if path in self.STATIC_DIRECTORIES:
+            return "directory"
+
+        cached_type = self.path_types.get(path)
+        if cached_type:
+            return cached_type
+
+        try:
+            entry_type = self._entry_type_from_database(path)
+        except sqlite3.Error as error:
+            self.logger.warning(
+                "Failed to get entry type for %s: %s: %s",
+                path,
+                error.__class__.__name__,
+                error,
             )
             return None
+        if entry_type:
+            return self._remember_entry_type(path, entry_type)
+
+        listing = self.get_directory_listing_with_attrs(os.path.dirname(path))
+        attrs = listing.get(os.path.basename(path)) if listing else None
+        if attrs:
+            inferred_type = "directory" if self._attrs_are_directory(attrs) else "file"
+            return self._remember_entry_type(path, inferred_type)
+        return None
+
+    def _entry_type_from_database(self, path: str) -> str | None:
+        keys = (
+            self.path_to_key(path),
+            self.path_to_key(f"exact_path:{path}"),
+            self.path_to_key(f"valid_dir:{path}"),
+        )
+        with self.lock:
+            cursor = self.conn.cursor()
+            for key in keys:
+                cursor.execute(
+                    "SELECT entry_type FROM cache_entries WHERE key = ?", (key,)
+                )
+                row = cursor.fetchone()
+                if row and row[0] in {"file", "directory"}:
+                    return str(row[0])
+        return None
+
+    def _remember_entry_type(self, path: str, entry_type: str) -> str:
+        self.path_types[path] = entry_type
+        return entry_type
 
     def get(self, path: str) -> Any | None:
         """Get data from cache if it's still valid with improved caching.
@@ -534,22 +448,14 @@ class CacheManager:
             return None
 
     def set(self, key: str, value: Any) -> None:
-        """Set data in cache with improved performance.
-
-        Args:
-            key: The key to cache
-            value: The value to cache
-        """
+        """Store one value and commit on deterministic durability boundaries."""
         try:
-            # Update memory cache
             hotcache_key = f"hotcache:{key}"
             cache_entry = {"data": value, "time": time.time()}
             self.hotcache[hotcache_key] = cache_entry
 
-            # Update database, but avoid frequent commits
             db_key = self.path_to_key(key)
             entry_str = json.dumps(cache_entry)
-
             with self.lock:
                 cursor = self.conn.cursor()
                 cursor.execute(
@@ -559,17 +465,27 @@ class CacheManager:
                     """,
                     (db_key, entry_str),
                 )
-
-                # Only commit every 50 writes or if it's a critical path
-                if (
-                    key.startswith(("valid_", "unavailable:"))
-                    or "_listing_with_attrs" in key
-                    or random.random() < 0.02
-                ):
-                    self.conn.commit()
-        except Exception as e:
-            self.logger.error(f"Failed to write database cache for {key}: {e}")
+                durable = key.startswith(("valid_", "unavailable:")) or (
+                    "_listing_with_attrs" in key
+                )
+                self._record_write(force=durable)
+        except Exception as error:
+            self.logger.error("Failed to write database cache for %s: %s", key, error)
             self.logger.error(traceback.format_exc())
+
+    def _record_write(self, count: int = 1, *, force: bool = False) -> None:
+        """Commit after a fixed write count or at an explicit durability boundary."""
+        self._pending_writes += count
+        if force or self._pending_writes >= self.WRITE_COMMIT_INTERVAL:
+            self.conn.commit()
+            self._pending_writes = 0
+
+    def flush(self) -> None:
+        """Commit pending writes."""
+        with self.lock:
+            if self._pending_writes:
+                self.conn.commit()
+                self._pending_writes = 0
 
     def set_batch(self, entries: dict[str, Any]) -> None:
         """Set multiple cache entries in a single database transaction.
@@ -608,6 +524,7 @@ class CacheManager:
                         values,
                     )
                     self.conn.commit()
+                    self._pending_writes = 0
 
                 self.logger.debug(f"Batch cached {len(values)} entries")
         except Exception as e:
@@ -632,6 +549,7 @@ class CacheManager:
                 cursor = self.conn.cursor()
                 cursor.execute("DELETE FROM cache_entries WHERE key = ?", (db_key,))
                 self.conn.commit()
+                self._pending_writes = 0
         except sqlite3.Error as e:
             self.logger.warning(
                 f"Failed to delete from database cache for {path}: {e.__class__.__name__}: {e}"
@@ -703,6 +621,7 @@ class CacheManager:
                     (hashed_key, original_path),
                 )
                 self.conn.commit()
+                self._pending_writes = 0
         except sqlite3.Error as e:
             self.logger.warning(
                 f"Failed to store hash mapping: {e.__class__.__name__}: {e}"
@@ -1033,6 +952,7 @@ class CacheManager:
                     (db_key, entry_str, entry_type, metadata_str),
                 )
                 self.conn.commit()
+                self._pending_writes = 0
 
             # Use batch update for all related entries
             self.set_batch(batch_entries)
@@ -1046,74 +966,67 @@ class CacheManager:
             )
 
     def get_file_attrs_from_parent_dir(self, path: str) -> dict[str, Any] | None:
-        """Get file attributes from parent directory cache with improved performance.
+        """Return file attributes from the nearest cached directory listing."""
+        cached_attrs = self.attrs_cache.get(path)
+        if cached_attrs:
+            return self._record_attrs_hit(path, cached_attrs)
 
-        Args:
-            path: File path
-
-        Returns:
-            Dictionary of file attributes if found, None otherwise
-        """
-        # First check direct attrs cache for the fastest access
-        if path in self.attrs_cache:
-            self.stats["hits"] += 1
-            self.logger.debug(f"Direct attrs cache hit for {path}")
-            return self.attrs_cache[path]
-
-        # Split path into parent directory and filename
         parent_dir = os.path.dirname(path)
         filename = os.path.basename(path)
-
-        # Early return for root directory
         if not parent_dir or not filename:
-            self.stats["misses"] += 1
+            return self._record_attrs_miss(path)
+
+        attrs = self._attrs_from_listing(parent_dir, filename)
+        if attrs:
+            return self._record_attrs_hit(path, attrs)
+
+        attrs = self._attrs_for_registry_directory(path, parent_dir)
+        if attrs:
+            return self._record_attrs_hit(path, attrs)
+
+        attrs = self._attrs_from_grandparent(path, parent_dir)
+        if attrs:
+            return self._record_attrs_hit(path, attrs)
+        return self._record_attrs_miss(path)
+
+    def _attrs_from_listing(
+        self, parent_dir: str, filename: str
+    ) -> dict[str, Any] | None:
+        listing = self.get_directory_listing_with_attrs(parent_dir)
+        return listing.get(filename) if listing else None
+
+    def _attrs_for_registry_directory(
+        self, path: str, parent_dir: str
+    ) -> dict[str, Any] | None:
+        if parent_dir not in {"/playlists", "/albums"} or len(path.split("/")) != 3:
             return None
+        return self._create_directory_attrs() if self.is_valid_path(path) else None
 
-        # Check if parent directory listing is cached
-        dir_listing = self.get_directory_listing_with_attrs(parent_dir)
-        if dir_listing and filename in dir_listing:
-            attrs = dir_listing[filename]
-            # Update attrs cache for future direct lookups
-            self.attrs_cache[path] = attrs
-            self.stats["hits"] += 1
-            return attrs
+    def _attrs_from_grandparent(
+        self, path: str, parent_dir: str
+    ) -> dict[str, Any] | None:
+        if parent_dir == "/" or len(path.split("/")) <= 3:
+            return None
+        listing = self.get_directory_listing_with_attrs(os.path.dirname(parent_dir))
+        parent_attrs = listing.get(os.path.basename(parent_dir)) if listing else None
+        if not parent_attrs or not self._attrs_are_directory(parent_attrs):
+            return None
+        is_directory = self.is_directory(path)
+        if is_directory is None:
+            return None
+        return (
+            self._create_directory_attrs()
+            if is_directory
+            else self._create_file_attrs()
+        )
 
-        # For special file paths like /playlists/playlist_name, check the appropriate registry
-        if parent_dir in ["/playlists", "/albums"] and len(path.split("/")) == 3:
-            if not self.is_valid_path(path):
-                self.stats["misses"] += 1
-                return None
-            # This might be a playlist/album entry - create minimal attrs for directories
-            attrs = self._create_directory_attrs()
-            # Cache for future lookups
-            self.attrs_cache[path] = attrs
-            self.stats["hits"] += 1
-            return attrs
+    def _record_attrs_hit(self, path: str, attrs: dict[str, Any]) -> dict[str, Any]:
+        self.attrs_cache[path] = attrs
+        self.stats["hits"] += 1
+        return attrs
 
-        # Look in parent's parent for special cases (nested directory listings)
-        if parent_dir != "/" and len(path.split("/")) > 3:
-            parent_parent = os.path.dirname(parent_dir)
-            parent_basename = os.path.basename(parent_dir)
-
-            # Check if grandparent directory has the parent listed
-            grandparent_listing = self.get_directory_listing_with_attrs(parent_parent)
-            if grandparent_listing and parent_basename in grandparent_listing:
-                # If parent is a directory, create default directory attrs for child
-                parent_attrs = grandparent_listing[parent_basename]
-                if parent_attrs.get("st_mode", 0) & stat.S_IFDIR:
-                    # Create basic attributes for a directory or file based on path type
-                    is_dir = self.is_directory(path)
-                    if is_dir is not None:
-                        attrs = (
-                            self._create_directory_attrs()
-                            if is_dir
-                            else self._create_file_attrs()
-                        )
-                        self.attrs_cache[path] = attrs
-                        self.stats["hits"] += 1
-                        return attrs
-
-        self.logger.debug(f"No attributes found for {path}")
+    def _record_attrs_miss(self, path: str) -> dict[str, Any] | None:
+        self.logger.debug("No attributes found for %s", path)
         self.stats["misses"] += 1
         return None
 
@@ -1190,6 +1103,7 @@ class CacheManager:
                     (self.path_to_key(key), timestamp, status),
                 )
                 self.conn.commit()
+                self._pending_writes = 0
             self.logger.debug(
                 f"Set refresh metadata for {key}: {status} at {timestamp}"
             )
@@ -1362,6 +1276,7 @@ class CacheManager:
                 cursor.execute("DELETE FROM hash_mappings")
                 cursor.execute("DELETE FROM refresh_tracker")
                 self.conn.commit()
+                self._pending_writes = 0
 
                 self.hotcache.clear()
                 self.directory_listings_cache.clear()
@@ -1399,6 +1314,7 @@ class CacheManager:
         try:
             with self.lock:
                 self.conn.commit()
+                self._pending_writes = 0
                 self.conn.close()
                 self._closed = True
             self.logger.debug("Cache database connection closed")

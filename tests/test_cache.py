@@ -351,6 +351,50 @@ class TestCacheManager(unittest.TestCase):
         self.assertFalse(real_cache.is_directory(path))
         real_cache.close()
 
+    def test_pending_writes_commit_at_fixed_interval(self):
+        self.cache._pending_writes = 0
+        self.mock_conn.reset_mock()
+
+        for _ in range(self.cache.WRITE_COMMIT_INTERVAL - 1):
+            self.cache._record_write()
+
+        self.mock_conn.commit.assert_not_called()
+        self.cache._record_write()
+
+        self.mock_conn.commit.assert_called_once_with()
+        self.assertEqual(self.cache._pending_writes, 0)
+
+    def test_forced_write_commits_immediately(self):
+        self.cache._pending_writes = 0
+        self.mock_conn.reset_mock()
+
+        self.cache._record_write(force=True)
+
+        self.mock_conn.commit.assert_called_once_with()
+        self.assertEqual(self.cache._pending_writes, 0)
+
+    def test_flush_makes_pending_write_visible_to_new_connection(self):
+        self.patcher.stop()
+        self.load_paths_patcher.stop()
+        self.patchers_active = False
+        first_cache = CacheManager(
+            thread_manager=self.thread_manager,
+            cache_dir=self.temp_dir,
+            logger=self.logger,
+        )
+        first_cache.set("pending-key", {"value": 1})
+
+        first_cache.flush()
+        second_cache = CacheManager(
+            thread_manager=self.thread_manager,
+            cache_dir=self.temp_dir,
+            logger=self.logger,
+        )
+
+        self.assertEqual(second_cache.get("pending-key"), {"value": 1})
+        second_cache.close()
+        first_cache.close()
+
     def test_directory_listing_with_attrs(self):
         """Test storing and retrieving directory listings with attributes."""
         # Path to test
