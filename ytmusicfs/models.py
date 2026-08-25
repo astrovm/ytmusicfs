@@ -1,25 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TypedDict
 
 if TYPE_CHECKING:
     import threading
 
 
-class EntryType(str, Enum):
+class EntryType(StrEnum):
     FILE = "file"
     DIRECTORY = "directory"
 
 
-class RefreshStatus(str, Enum):
+class RefreshStatus(StrEnum):
     FRESH = "fresh"
     PENDING = "pending"
     STALE = "stale"
 
 
-class DownloadStatus(str, Enum):
+class DownloadStatus(StrEnum):
     STARTING = "starting"
     DOWNLOADING = "downloading"
     COMPLETE = "complete"
@@ -27,7 +27,7 @@ class DownloadStatus(str, Enum):
     STOPPED = "stopped"
 
 
-class PlaylistType(str, Enum):
+class PlaylistType(StrEnum):
     PLAYLIST = "playlist"
     ALBUM = "album"
     LIKED_SONGS = "liked_songs"

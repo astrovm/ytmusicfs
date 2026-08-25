@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import builtins
 import hashlib
 import json
 import logging
@@ -12,9 +11,12 @@ import time
 import traceback
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from cachetools import LRUCache
+
+if TYPE_CHECKING:
+    import builtins
 
 
 class CacheManager:

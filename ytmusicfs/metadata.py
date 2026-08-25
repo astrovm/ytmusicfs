@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
 import errno
-import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import logging
 
 
 class MetadataManager:

@@ -2,12 +2,15 @@
 
 import logging
 import time
-from collections.abc import Callable
 from json import JSONDecodeError
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
-from ytmusicfs.auth_adapter import YTMusicAuthAdapter
 from ytmusicfs.retry import RetryPolicy
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from ytmusicfs.auth_adapter import YTMusicAuthAdapter
 
 _API_ATTEMPTS = 3
 _API_RETRY_DELAY_SECONDS = 1.0

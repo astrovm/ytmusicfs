@@ -12,13 +12,14 @@ license = "MIT"
 license-files = ["LICENSE"]
 classifiers = [
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.14",
   "Operating System :: OS Independent",
   "Development Status :: 4 - Beta",
   "Topic :: Multimedia :: Sound/Audio",
   "Topic :: System :: Filesystems",
 ]
 keywords = ["youtube", "music", "fuse", "filesystem", "streaming", "audio"]
-requires-python = ">=3.10"
+requires-python = ">=3.14"
 dependencies = [
   "cachetools==7.1.7",
   "fusepy==3.0.1",
@@ -50,11 +51,11 @@ packages = ["ytmusicfs"]
 
 [tool.black]
 line-length = 88
-target-version = ["py310"]
+target-version = ["py314"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py310"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = [
@@ -98,7 +99,7 @@ ignore = ["E501"]
 max-complexity = 10
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.14"
 strict = true
 warn_unused_ignores = true
 warn_redundant_casts = true

@@ -2,13 +2,15 @@
 
 import time
 import traceback
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from ytmusicfs.dependencies import ContentFetcherDependencies, RepairDependencies
 from ytmusicfs.models import RefreshStatus, RegistryEntry
 from ytmusicfs.yt_dlp_utils import PARTIAL_PLAYLIST_COMPLETE_RATIO
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 @dataclass(frozen=True)

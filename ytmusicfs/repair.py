@@ -5,9 +5,10 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from ytmusicfs.dependencies import RepairDependencies
+if TYPE_CHECKING:
+    from ytmusicfs.dependencies import RepairDependencies
 
 
 @dataclass(frozen=True)
