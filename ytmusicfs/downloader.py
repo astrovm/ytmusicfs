@@ -2,14 +2,18 @@
 
 import errno
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import requests
 
-from ytmusicfs.dependencies import DownloaderDependencies
 from ytmusicfs.http_utils import ensure_headers_and_cookies
 from ytmusicfs.models import DownloadProgress, DownloadRequest, DownloadStatus
 from ytmusicfs.retry import RetryPolicy
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from ytmusicfs.dependencies import DownloaderDependencies
 
 
 class Downloader:

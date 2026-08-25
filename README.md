@@ -17,7 +17,7 @@ YTMusicFS mounts your YouTube Music library as a standard filesystem, allowing y
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.14+
 - FUSE (Filesystem in Userspace)
 - YouTube Music account
 - An authenticated YouTube Music browser session

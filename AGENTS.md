@@ -68,7 +68,7 @@
 
 ## Coding Style & Naming
 
-- Python 3.10+ project; prefer type hints and explicit return types.
+- Python 3.14+ project; prefer type hints and explicit return types.
 - Formatter: Black, line length 88.
 - Imports: Ruff import sorting (`I` rules), formatted with Black.
 - Indentation: 4 spaces.
