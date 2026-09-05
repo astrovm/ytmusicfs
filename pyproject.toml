@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools==84.0.0", "wheel==0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -21,7 +21,7 @@ classifiers = [
 keywords = ["youtube", "music", "fuse", "filesystem", "streaming", "audio"]
 requires-python = ">=3.14"
 dependencies = [
-  "cachetools==7.1.7",
+  "cachetools==7.1.8",
   "fusepy==3.0.1",
   "requests==2.34.2",
   "yt-dlp==2026.8.19",
@@ -38,11 +38,11 @@ ytmusicfs = "ytmusicfs.cli:main"
 
 [project.optional-dependencies]
 dev = [
-  "build==1.5.0",
-  "pytest",
-  "pytest-cov",
+  "build==1.6.0",
+  "pytest==9.1.1",
+  "pytest-cov==7.1.0",
   "black==26.5.1",
-  "ruff==0.16.4",
+  "ruff==0.16.6",
   "mypy==2.3.1",
 ]
 

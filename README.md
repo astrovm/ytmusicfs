@@ -73,6 +73,23 @@ git pull
 pipx install --force .
 ```
 
+### Development
+
+Development and CI use Python 3.14.7, pinned in `.python-version`.
+Create a virtual environment with that interpreter and install the development tools:
+
+```bash
+python3.14 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[dev]'
+black --check .
+ruff check .
+mypy ytmusicfs
+pytest -q
+python -m build
+python -m benchmarks.benchmark_hot_paths
+```
+
 ## Authentication Setup
 
 YTMusicFS reads cookies from your browser when you mount with `--browser`.
