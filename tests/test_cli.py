@@ -28,6 +28,8 @@ from ytmusicfs.config import ConfigManager
 def config_dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(ConfigManager, "DEFAULT_CONFIG_DIR", tmp_path / "config")
     monkeypatch.setattr(ConfigManager, "DEFAULT_CACHE_DIR", tmp_path / "cache-default")
+    monkeypatch.setattr("ytmusicfs.cli.LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr("ytmusicfs.cli.LOG_FILE", tmp_path / "logs" / "ytmusicfs.log")
 
 
 def make_mount_args(tmp_path, mount_point=None, browser=None):
