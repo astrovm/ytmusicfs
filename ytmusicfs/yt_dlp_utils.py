@@ -50,6 +50,9 @@ PARTIAL_PLAYLIST_RETRY_ATTEMPTS = 4
 PARTIAL_PLAYLIST_COMPLETE_RATIO = 0.95
 STREAM_EXTRACTION_ATTEMPTS = 3
 BROWSER_COOKIEFILE_TTL = 20 * 60
+# Accounts without Premium never get format 141, so after this many retries
+# that fail to upgrade (and no 141 seen at all) the retry only adds delay.
+MAX_UNPRODUCTIVE_QUALITY_RETRIES = 3
 
 
 class YTDLPUtils:
@@ -79,6 +82,8 @@ class YTDLPUtils:
         self._browser_cookie_file_times: dict[str, float] = {}
         self._cookie_lock = threading.Lock()
         self._playlist_total_counts: dict[str, int] = {}
+        self._preferred_format_seen = False
+        self._unproductive_quality_retries = 0
         self.logger.debug("YTDLPUtils initialized")
 
     def _add_cookie_options(self, ydl_opts: dict[str, object], browser: str) -> None:
@@ -379,15 +384,19 @@ class YTDLPUtils:
             raise RuntimeError(f"Failed to extract stream URL for {video_id}")
 
         result = self._stream_result_from_info(info)
+        if result.get("format_id") == PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT:
+            self._preferred_format_seen = True
         if self._should_retry_with_cookiefile(result, browser):
             retry_result = self._retry_stream_url_with_cached_cookies(video_id, browser)
             if retry_result:
+                self._preferred_format_seen = True
                 self.logger.info(
                     "Selected stream format %s for %s after quality retry",
                     retry_result.get("format_id", "unknown"),
                     video_id,
                 )
                 return retry_result
+            self._unproductive_quality_retries += 1
 
         self.logger.info(
             "Selected stream format %s for %s",
@@ -400,6 +409,11 @@ class YTDLPUtils:
         self, result: dict[str, Any], browser: str
     ) -> bool:
         if result.get("format_id") == PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT:
+            return False
+        if (
+            not self._preferred_format_seen
+            and self._unproductive_quality_retries >= MAX_UNPRODUCTIVE_QUALITY_RETRIES
+        ):
             return False
         with self._cookie_lock:
             cookie_file = self._browser_cookie_files.get(browser)

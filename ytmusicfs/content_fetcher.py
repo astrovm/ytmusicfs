@@ -44,8 +44,12 @@ class ContentFetcher:
         self.cache_directory_callback: (
             Callable[[str, list[dict[str, Any]]], None] | None
         ) = None
-        self._initialize_playlist_registry()
-        self.logger.info("Preloaded playlist registry at initialization")
+        # A saved registry lets the mount answer right away; the network
+        # refresh then runs in the background through refresh_library_roots.
+        self.registry_loaded_from_cache = self._load_cached_playlist_registry()
+        if not self.registry_loaded_from_cache:
+            self._initialize_playlist_registry()
+            self.logger.info("Preloaded playlist registry at initialization")
 
     def get_playlist_id_from_name(
         self, name: str, type_filter: str | None = None
@@ -107,20 +111,7 @@ class ContentFetcher:
             )
             return
 
-        cached_data = self.cache.get(self.PLAYLIST_REGISTRY_CACHE_KEY)
-        cached_registry = (
-            [
-                cast("RegistryEntry", entry)
-                for entry in cached_data
-                if isinstance(entry, dict)
-                and all(
-                    isinstance(entry.get(key), str)
-                    for key in ("name", "id", "type", "path")
-                )
-            ]
-            if isinstance(cached_data, list)
-            else self._registry_from_cached_root_listings()
-        )
+        cached_registry = self._cached_registry_entries()
 
         registry: list[RegistryEntry] = [
             {
@@ -187,6 +178,45 @@ class ContentFetcher:
         self.logger.info("Initialized playlist registry with %d entries", len(registry))
 
         self.cache.set_refresh_metadata(cache_key, time.time(), "fresh")
+
+    def _cached_registry_entries(self) -> list[RegistryEntry]:
+        cached_data = self.cache.get(self.PLAYLIST_REGISTRY_CACHE_KEY)
+        if not isinstance(cached_data, list):
+            return self._registry_from_cached_root_listings()
+        return [
+            cast("RegistryEntry", entry)
+            for entry in cached_data
+            if isinstance(entry, dict)
+            and all(
+                isinstance(entry.get(key), str)
+                for key in ("name", "id", "type", "path")
+            )
+        ]
+
+    def _load_cached_playlist_registry(self) -> bool:
+        """Use the saved registry when it has more than the built-in liked songs."""
+        try:
+            cached_registry = self._cached_registry_entries()
+        except Exception as error:
+            self.logger.warning("Failed to load saved playlist registry: %s", error)
+            return False
+        if not any(entry["type"] != "liked_songs" for entry in cached_registry):
+            return False
+        self._set_playlist_registry(cached_registry)
+        self.logger.info(
+            "Loaded %d saved playlist registry entries; refreshing in background",
+            len(cached_registry),
+        )
+        return True
+
+    def refresh_library_roots(self) -> None:
+        """Fetch playlists and albums, then republish the root listings."""
+        self._initialize_playlist_registry(force_refresh=True)
+        for playlist_type, directory_path in (
+            ("playlist", "/playlists"),
+            ("album", "/albums"),
+        ):
+            self._cache_registry_listing(playlist_type, directory_path)
 
     def _is_suspiciously_partial_registry(
         self, registry: list[RegistryEntry], cached_registry: list[Any]
@@ -364,7 +394,6 @@ class ContentFetcher:
                 self.logger.error(f"Invalid playlist type: {playlist_type}")
                 return [".", ".."]
 
-        cache_key = f"{directory_path}_listing"
         cached_listing = self.cache.get_directory_listing_with_attrs(directory_path)
         # Liked songs use the shorter content TTL, not the root-listing TTL.
         if cached_listing and playlist_type in ("playlist", "album"):
@@ -384,6 +413,11 @@ class ContentFetcher:
                 if track.get("videoId") not in unavailable_ids
             ]
 
+        return self._cache_registry_listing(playlist_type, directory_path)
+
+    def _cache_registry_listing(
+        self, playlist_type: str | None, directory_path: str
+    ) -> list[str]:
         entries = [p for p in self.PLAYLIST_REGISTRY if p["type"] == playlist_type]
         if not entries:
             self.logger.warning(f"No {playlist_type} entries found")
@@ -402,7 +436,9 @@ class ContentFetcher:
                 processed_entry["browseId"] = entry["id"]
             processed_entries.append(processed_entry)
         self._cache_directory_listing_with_attrs(directory_path, processed_entries)
-        self.cache.set_refresh_metadata(cache_key, time.time(), "fresh")
+        self.cache.set_refresh_metadata(
+            f"{directory_path}_listing", time.time(), "fresh"
+        )
         return [".", ".."] + [e["name"] for e in entries]
 
     def _filter_unavailable_listing(

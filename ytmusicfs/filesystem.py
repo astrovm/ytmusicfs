@@ -11,8 +11,9 @@ import traceback
 from collections import deque
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, ClassVar, NoReturn
+from typing import TYPE_CHECKING, Any, ClassVar, NoReturn
 
+from cachetools import LRUCache
 from fuse import FUSE, FuseOSError, Operations
 
 from ytmusicfs import __version__
@@ -32,6 +33,9 @@ from ytmusicfs.processor import TrackProcessor
 from ytmusicfs.repair import LikedSongsRepairer
 from ytmusicfs.thread_manager import ThreadManager
 from ytmusicfs.yt_dlp_utils import YTDLPUtils
+
+if TYPE_CHECKING:
+    from collections.abc import MutableMapping
 
 FUSE_ATTR_TIMEOUT = 5
 FUSE_ENTRY_TIMEOUT = 5
@@ -53,6 +57,7 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
     PRECACHE_IDLE_SECONDS = 2.0
     PLAYLIST_PREFETCH_IDLE_SECONDS = 8.0
     PLAYLIST_PREFETCH_BACKOFF_SECONDS = 5
+    RECENT_RESULT_CACHE_SIZE = 4096
     LIBRARY_ROOTS: ClassVar[dict[str, str]] = {
         "/playlists": "playlist",
         "/albums": "album",
@@ -123,9 +128,14 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
 
     def _initialize_runtime_state(self) -> None:
         self.request_cooldown = 1.0
-        self.last_access_time: dict[str, float] = {}
+        # Bounded so browsing a large library does not keep one entry per path.
+        self.last_access_time: MutableMapping[str, float] = LRUCache(
+            maxsize=self.RECENT_RESULT_CACHE_SIZE
+        )
         self.last_access_lock = self.thread_manager.create_lock()
-        self.last_access_results: dict[str, Any] = {}
+        self.last_access_results: MutableMapping[str, Any] = LRUCache(
+            maxsize=self.RECENT_RESULT_CACHE_SIZE
+        )
         self.read_error_log_times: dict[str, float] = {}
         self.read_error_log_cooldown = 60.0
         self.hot_metadata_lock = self.thread_manager.create_lock()
@@ -1338,10 +1348,18 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
     def init(self, path: str) -> None:
         """Start post-mount background work after FUSE daemonization."""
         self._check_repair_notifications()
+        if self.fetcher.registry_loaded_from_cache:
+            threading.Thread(target=self._refresh_library_roots, daemon=True).start()
         threading.Thread(
             target=self._automatic_refresh_after_mount, daemon=True
         ).start()
         threading.Thread(target=self._poll_repair_notifications, daemon=True).start()
+
+    def _refresh_library_roots(self) -> None:
+        try:
+            self.fetcher.refresh_library_roots()
+        except Exception as exc:
+            self.logger.warning("Library root refresh failed: %s", exc)
 
     def _poll_repair_notifications(self) -> None:
         """Background thread that periodically checks for repair notifications."""
