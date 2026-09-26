@@ -14,7 +14,7 @@ from unittest.mock import Mock, call, patch
 from fuse import FuseOSError
 
 # Import the class to test
-from ytmusicfs.filesystem import YouTubeMusicFS, mount_ytmusicfs
+from ytmusicfs.filesystem import HotPath, YouTubeMusicFS, mount_ytmusicfs
 
 
 class TestYouTubeMusicFS(unittest.TestCase):
@@ -98,7 +98,9 @@ class TestYouTubeMusicFS(unittest.TestCase):
     def test_hot_readdir_does_not_route_or_call_external_clients(self):
         path = "/playlists/Mix"
         self.fs.hot_dir_entries[path] = ["song.m4a"]
-        self.fs.hot_attrs_by_path[f"{path}/song.m4a"] = {"videoId": "abc123"}
+        self.fs.hot_paths[f"{path}/song.m4a"] = HotPath(
+            attrs={"videoId": "abc123"}, video_id="abc123"
+        )
         self.mock_cache.get_unavailable_video_ids.return_value = set()
         self.mock_router.reset_mock()
         self.mock_fetcher.reset_mock()
@@ -115,11 +117,13 @@ class TestYouTubeMusicFS(unittest.TestCase):
 
     def test_hot_getattr_does_not_route_or_call_external_clients(self):
         path = "/playlists/Mix"
-        self.fs.hot_attrs_by_path[path] = {
-            "st_mode": stat.S_IFDIR | 0o555,
-            "st_nlink": 2,
-            "st_size": 4096,
-        }
+        self.fs.hot_paths[path] = HotPath(
+            attrs={
+                "st_mode": stat.S_IFDIR | 0o555,
+                "st_nlink": 2,
+                "st_size": 4096,
+            }
+        )
         self.mock_router.reset_mock()
         self.mock_fetcher.reset_mock()
         self.mock_client.reset_mock()
@@ -261,8 +265,8 @@ class TestYouTubeMusicFS(unittest.TestCase):
     def test_readdir_schedules_idle_precache_for_audio_entries(self):
         playlist_path = "/playlists/my_playlist"
         self.fs.precache_lock = threading.RLock()
-        self.fs.hot_video_ids_by_path[f"{playlist_path}/song1.m4a"] = "video1"
-        self.fs.hot_video_ids_by_path[f"{playlist_path}/song2.m4a"] = "video2"
+        self.fs.hot_paths[f"{playlist_path}/song1.m4a"] = HotPath(video_id="video1")
+        self.fs.hot_paths[f"{playlist_path}/song2.m4a"] = HotPath(video_id="video2")
         self.mock_cache.get.return_value = None
         self.mock_router.validate_path.return_value = True
         self.mock_router.route.return_value = [".", "..", "song1.m4a", "song2.m4a"]
@@ -522,12 +526,14 @@ class TestYouTubeMusicFS(unittest.TestCase):
 
     def test_update_file_size_updates_hot_attrs_and_getattr_cache(self):
         file_path = "/liked_songs/song.m4a"
-        self.fs.hot_attrs_by_path[file_path] = {"st_size": 100, "videoId": "abc123"}
+        self.fs.hot_paths[file_path] = HotPath(
+            attrs={"st_size": 100, "videoId": "abc123"}, video_id="abc123"
+        )
         self.fs.last_access_results[f"getattr:{file_path}"] = {"st_size": 100}
 
         self.fs._update_file_size(file_path, 200)
 
-        self.assertEqual(self.fs.hot_attrs_by_path[file_path]["st_size"], 200)
+        self.assertEqual(self.fs.hot_paths[file_path].attrs["st_size"], 200)
         self.assertNotIn(f"getattr:{file_path}", self.fs.last_access_results)
 
     def test_cached_listing_uses_duration_estimate(self):
@@ -740,8 +746,7 @@ class TestYouTubeMusicFS(unittest.TestCase):
 
         self.mock_thread_manager.submit_task.side_effect = submit_task
         self.mock_cache.is_no_replacement.return_value = False
-        self.fs.hot_video_ids_by_path[path] = "old"
-        self.fs.hot_attrs_by_path[path] = {"videoId": "old"}
+        self.fs.hot_paths[path] = HotPath(attrs={"videoId": "old"}, video_id="old")
 
         result = self.fs._auto_repair_on_stream_unavailable("old", path)
 
@@ -753,8 +758,8 @@ class TestYouTubeMusicFS(unittest.TestCase):
             "old", path, repair.old_track, repair.replacement
         )
         self.mock_cache.clear_unavailable_track.assert_called_once_with("old", path)
-        self.assertEqual(self.fs.hot_video_ids_by_path[path], "new")
-        self.assertEqual(self.fs.hot_attrs_by_path[path]["videoId"], "new")
+        self.assertEqual(self.fs.hot_paths[path].video_id, "new")
+        self.assertEqual(self.fs.hot_paths[path].attrs["videoId"], "new")
 
 
 if __name__ == "__main__":

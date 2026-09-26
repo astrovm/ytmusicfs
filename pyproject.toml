@@ -21,12 +21,12 @@ classifiers = [
 keywords = ["youtube", "music", "fuse", "filesystem", "streaming", "audio"]
 requires-python = ">=3.14"
 dependencies = [
-  "cachetools==7.1.8",
+  "cachetools==7.2.0",
   "fusepy==3.0.1",
   "requests==2.34.2",
   "yt-dlp==2026.8.19",
   "yt-dlp-ejs==0.8.0",
-  "ytmusicapi==1.12.2",
+  "ytmusicapi==1.12.3",
 ]
 
 [project.urls]
@@ -38,11 +38,11 @@ ytmusicfs = "ytmusicfs.cli:main"
 
 [project.optional-dependencies]
 dev = [
-  "build==1.6.0",
+  "build==1.6.1",
   "pytest==9.1.1",
   "pytest-cov==7.1.0",
   "black==26.5.1",
-  "ruff==0.16.6",
+  "ruff==0.16.9",
   "mypy==2.3.1",
 ]
 

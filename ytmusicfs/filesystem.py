@@ -10,9 +10,11 @@ import time
 import traceback
 from collections import deque
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, NoReturn
+from typing import TYPE_CHECKING, Any, ClassVar, NoReturn
 
+from cachetools import LRUCache
 from fuse import FUSE, FuseOSError, Operations
 
 from ytmusicfs import __version__
@@ -33,9 +35,20 @@ from ytmusicfs.repair import LikedSongsRepairer
 from ytmusicfs.thread_manager import ThreadManager
 from ytmusicfs.yt_dlp_utils import YTDLPUtils
 
+if TYPE_CHECKING:
+    from collections.abc import MutableMapping
+
 FUSE_ATTR_TIMEOUT = 5
 FUSE_ENTRY_TIMEOUT = 5
 FUSE_NEGATIVE_TIMEOUT = 1
+
+
+@dataclass(slots=True)
+class HotPath:
+    """In-memory metadata for one mounted path, published before SQLite."""
+
+    attrs: dict[str, Any] | None = None
+    video_id: str | None = None
 
 
 class YouTubeMusicFS(Operations):  # type: ignore[misc]
@@ -44,7 +57,11 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
     METADATA_DIR = "/.ytmusicfs"
     STATUS_FILE = "/.ytmusicfs/status.json"
     MIN_AUDIO_SIZE = 1024 * 1024
-    ESTIMATED_BYTES_PER_SECOND = 16 * 1024
+    # Until the real size is known, over-estimate from format 141 (256 kbps)
+    # plus container overhead. The kernel stops reads at the advertised size,
+    # so an estimate below the real size cuts fast readers off mid-track; one
+    # above it just ends with a short read at the true end of the stream.
+    ESTIMATED_BYTES_PER_SECOND = 34 * 1024
     FUSE_ATTR_TIMEOUT = FUSE_ATTR_TIMEOUT
     FUSE_ENTRY_TIMEOUT = FUSE_ENTRY_TIMEOUT
     FUSE_NEGATIVE_TIMEOUT = FUSE_NEGATIVE_TIMEOUT
@@ -53,6 +70,7 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
     PRECACHE_IDLE_SECONDS = 2.0
     PLAYLIST_PREFETCH_IDLE_SECONDS = 8.0
     PLAYLIST_PREFETCH_BACKOFF_SECONDS = 5
+    RECENT_RESULT_CACHE_SIZE = 4096
     LIBRARY_ROOTS: ClassVar[dict[str, str]] = {
         "/playlists": "playlist",
         "/albums": "album",
@@ -123,14 +141,18 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
 
     def _initialize_runtime_state(self) -> None:
         self.request_cooldown = 1.0
-        self.last_access_time: dict[str, float] = {}
+        # Bounded so browsing a large library does not keep one entry per path.
+        self.last_access_time: MutableMapping[str, float] = LRUCache(
+            maxsize=self.RECENT_RESULT_CACHE_SIZE
+        )
         self.last_access_lock = self.thread_manager.create_lock()
-        self.last_access_results: dict[str, Any] = {}
+        self.last_access_results: MutableMapping[str, Any] = LRUCache(
+            maxsize=self.RECENT_RESULT_CACHE_SIZE
+        )
         self.read_error_log_times: dict[str, float] = {}
         self.read_error_log_cooldown = 60.0
         self.hot_metadata_lock = self.thread_manager.create_lock()
-        self.hot_attrs_by_path: dict[str, dict[str, Any]] = {}
-        self.hot_video_ids_by_path: dict[str, str] = {}
+        self.hot_paths: dict[str, HotPath] = {}
         self.hot_dir_entries: dict[str, list[str]] = {}
         self.complete_audio_sizes: dict[str, tuple[int, int | None]] = {}
         self.reported_file_sizes: dict[str, int] = {}
@@ -357,50 +379,48 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
         self, dir_path: str, listing_with_attrs: dict[str, dict[str, Any]]
     ) -> None:
         entries: list[str] = []
-        attrs_by_path: dict[str, dict[str, Any]] = {}
-        video_ids_by_path: dict[str, str] = {}
+        hot_paths: dict[str, HotPath] = {}
         for filename, attrs in listing_with_attrs.items():
             if filename in (".", ".."):
                 continue
-            full_path = f"{dir_path}/{filename}"
-            attrs_copy = dict(attrs)
             entries.append(filename)
-            attrs_by_path[full_path] = attrs_copy
-            video_id = attrs_copy.get("videoId")
-            if isinstance(video_id, str) and video_id:
-                video_ids_by_path[full_path] = video_id
+            video_id = attrs.get("videoId")
+            hot_paths[f"{dir_path}/{filename}"] = HotPath(
+                attrs=dict(attrs),
+                video_id=video_id if isinstance(video_id, str) and video_id else None,
+            )
 
         with self.hot_metadata_lock:
             self.hot_dir_entries[dir_path] = entries
-            self.hot_attrs_by_path.update(attrs_by_path)
-            self.hot_video_ids_by_path.update(video_ids_by_path)
+            self.hot_paths.update(hot_paths)
 
     def _get_hot_readdir(self, path: str) -> list[str] | None:
         with self.hot_metadata_lock:
             entries = self.hot_dir_entries.get(path)
             if entries is None:
                 return None
-            attrs = {
-                name: self.hot_attrs_by_path.get(f"{path}/{name}", {})
+            video_ids = {
+                name: entry.video_id if entry else None
                 for name in entries
+                for entry in (self.hot_paths.get(f"{path}/{name}"),)
             }
         unavailable_ids = self.cache.get_unavailable_video_ids()
         visible = [
             name
             for name in entries
-            if not attrs[name].get("videoId")
-            or attrs[name].get("videoId") not in unavailable_ids
+            if not video_ids[name] or video_ids[name] not in unavailable_ids
         ]
         return [".", "..", *visible]
 
     def _get_hot_attrs(self, path: str) -> dict[str, Any] | None:
         with self.hot_metadata_lock:
-            attrs = self.hot_attrs_by_path.get(path)
-            return dict(attrs) if attrs else None
+            entry = self.hot_paths.get(path)
+            return dict(entry.attrs) if entry and entry.attrs else None
 
     def _get_hot_video_id(self, path: str) -> str | None:
         with self.hot_metadata_lock:
-            return self.hot_video_ids_by_path.get(path)
+            entry = self.hot_paths.get(path)
+            return entry.video_id if entry else None
 
     def _resolve_video_id(self, path: str) -> str:
         video_id = self._get_hot_video_id(path)
@@ -477,8 +497,7 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
 
     def _clear_hot_metadata(self) -> None:
         with self.hot_metadata_lock:
-            self.hot_attrs_by_path.clear()
-            self.hot_video_ids_by_path.clear()
+            self.hot_paths.clear()
             self.hot_dir_entries.clear()
             self.complete_audio_sizes.clear()
             self.reported_file_sizes.clear()
@@ -486,8 +505,7 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
     def _invalidate_hot_paths(self, paths: list[str]) -> None:
         with self.hot_metadata_lock:
             for path in paths:
-                self.hot_attrs_by_path.pop(path, None)
-                self.hot_video_ids_by_path.pop(path, None)
+                self.hot_paths.pop(path, None)
 
     def _prime_hot_metadata_from_cache(self) -> None:
         for dir_path in ("/liked_songs", "/playlists", "/albums"):
@@ -761,8 +779,29 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             self.logger.exception("Error in getattr for %s", path)
             raise FuseOSError(errno.ENOENT) from error
 
-    def open(self, path: str, flags: int) -> int:
-        """Validate a media path and allocate its streaming handle."""
+    def open(self, path: str, flags: Any) -> int:
+        """Allocate a streaming handle.
+
+        Mounted with ``raw_fi``, fusepy passes the ``fuse_file_info`` struct
+        instead of the open flags. The handle is then stored on it, and
+        direct I/O is enabled while the track's real size is still unknown so
+        the kernel neither stops at the estimated size nor pads past the end.
+        """
+        file_info = flags if hasattr(flags, "direct_io") else None
+        open_flags = file_info.flags if file_info is not None else flags
+        fh = self._open_handle(path, open_flags)
+        if file_info is None:
+            return fh
+        file_info.fh = fh
+        if path == self.STATUS_FILE or self._get_real_file_size(path) is None:
+            file_info.direct_io = 1
+        return 0
+
+    @staticmethod
+    def _handle_number(fh: Any) -> int:
+        return int(getattr(fh, "fh", fh))
+
+    def _open_handle(self, path: str, flags: int) -> int:
         try:
             self.logger.debug("open: %s (flags=%s)", path, flags)
 
@@ -808,7 +847,7 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             raise FuseOSError(errno.ENOENT)
         return video_id
 
-    def read(self, path: str, size: int, offset: int, fh: int) -> bytes:
+    def read(self, path: str, size: int, offset: int, fh: Any) -> bytes:
         """Read data from file.
 
         Args:
@@ -821,7 +860,9 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             Bytes read from file
         """
         try:
-            self.logger.debug(f"read: {path} (size={size}, offset={offset}, fh={fh})")
+            self.logger.debug(
+                "read: %s (size=%s, offset=%s, fh=%s)", path, size, offset, fh
+            )
 
             if path == self.STATUS_FILE:
                 data = self._get_status_json()
@@ -830,7 +871,9 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
 
             start_time = time.time()
             try:
-                return self.file_handler.read(path, size, offset, fh)
+                return self.file_handler.read(
+                    path, size, offset, self._handle_number(fh)
+                )
             finally:
                 self._record_elapsed("read_total_ms", start_time)
 
@@ -1044,10 +1087,10 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
 
     def _replace_hot_video_id(self, path: str, video_id: str) -> None:
         with self.hot_metadata_lock:
-            self.hot_video_ids_by_path[path] = video_id
-            attrs = self.hot_attrs_by_path.get(path)
-            if attrs:
-                attrs["videoId"] = video_id
+            entry = self.hot_paths.setdefault(path, HotPath())
+            entry.video_id = video_id
+            if entry.attrs:
+                entry.attrs["videoId"] = video_id
 
     def _automatic_refresh_after_mount(self) -> None:
         """Refresh large library data only after the mounted FS is idle."""
@@ -1256,7 +1299,7 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             return real_size
         return self._estimated_audio_size(duration_seconds)
 
-    def release(self, path: str, fh: int) -> int:
+    def release(self, path: str, fh: Any) -> int:
         """Close the file.
 
         Args:
@@ -1267,9 +1310,9 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             0 on success
         """
         try:
-            self.logger.debug(f"release: {path} (fh={fh})")
-
-            return self.file_handler.release(path, fh)
+            handle = self._handle_number(fh)
+            self.logger.debug("release: %s (fh=%s)", path, handle)
+            return self.file_handler.release(path, handle)
 
         except Exception as e:
             self.logger.error(f"Error releasing {path}: {e}")
@@ -1300,11 +1343,9 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
         }
         self.cache.update_file_attrs_in_parent_dir(path, attr)
         with self.hot_metadata_lock:
-            if path in self.hot_attrs_by_path:
-                self.hot_attrs_by_path[path] = {
-                    **self.hot_attrs_by_path[path],
-                    **attr,
-                }
+            entry = self.hot_paths.get(path)
+            if entry and entry.attrs:
+                entry.attrs = {**entry.attrs, **attr}
         with self.last_access_lock:
             self.last_access_results.pop(f"getattr:{path}", None)
 
@@ -1338,10 +1379,18 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
     def init(self, path: str) -> None:
         """Start post-mount background work after FUSE daemonization."""
         self._check_repair_notifications()
+        if self.fetcher.registry_loaded_from_cache:
+            threading.Thread(target=self._refresh_library_roots, daemon=True).start()
         threading.Thread(
             target=self._automatic_refresh_after_mount, daemon=True
         ).start()
         threading.Thread(target=self._poll_repair_notifications, daemon=True).start()
+
+    def _refresh_library_roots(self) -> None:
+        try:
+            self.fetcher.refresh_library_roots()
+        except Exception as exc:
+            self.logger.warning("Library root refresh failed: %s", exc)
 
     def _poll_repair_notifications(self) -> None:
         """Background thread that periodically checks for repair notifications."""
@@ -1433,5 +1482,6 @@ def mount_ytmusicfs(
             browser=browser,
         ),
         mount_point,
+        raw_fi=True,
         **fuse_options,
     )

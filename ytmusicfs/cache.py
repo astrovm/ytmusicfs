@@ -100,7 +100,9 @@ class CacheManager:
         self.hotcache: LRUCache[str, Any] = LRUCache(maxsize=self.maxsize)
         self.cache_timeout = cache_timeout
 
-        self.directory_listings_cache: LRUCache[str, Any] = LRUCache(maxsize=50)
+        # The single in-memory copy of each listing; sized for a large library
+        # so playlist lookups rarely fall back to parsing JSON from SQLite.
+        self.directory_listings_cache: LRUCache[str, Any] = LRUCache(maxsize=512)
         self.path_validation_cache: LRUCache[str, Any] = LRUCache(maxsize=1000)
         self.attrs_cache: LRUCache[str, Any] = LRUCache(maxsize=500)
         self.valid_paths: set[str] = set()
@@ -569,9 +571,7 @@ class CacheManager:
         Args:
             path: The path to delete from cache
         """
-        for hotcache_key in (f"hotcache:{path}", f"hot:{path}"):
-            if hotcache_key in self.hotcache:
-                del self.hotcache[hotcache_key]
+        self.hotcache.pop(f"hotcache:{path}", None)
 
         db_key = self.path_to_key(path)
         try:
@@ -818,17 +818,6 @@ class CacheManager:
 
         cache_key = f"{path}_listing_with_attrs"
 
-        hot_key = f"hot:{cache_key}"
-        hot_cached = self.hotcache.get(hot_key)
-        if hot_cached and time.time() - hot_cached["time"] < self.cache_timeout:
-            self.logger.debug(f"Hot cache hit for directory listing: {path}")
-            self.stats["hits"] += 1
-            self.directory_listings_cache[path] = {
-                "data": hot_cached["data"],
-                "time": hot_cached["time"],
-            }
-            return self._as_directory_listing(hot_cached.get("data"))
-
         db_key = self.path_to_key(cache_key)
         try:
             with self.lock:
@@ -850,7 +839,6 @@ class CacheManager:
                                 "data": listing,
                                 "time": cache_data["time"],
                             }
-                            self.hotcache[hot_key] = cache_data
 
                             self.logger.debug(
                                 f"DB cache hit for directory listing: {path}"
@@ -915,13 +903,6 @@ class CacheManager:
             }
 
             self.attrs_cache[child_path] = attrs
-
-        cache_key = f"{path}_listing_with_attrs"
-        hot_key = f"hot:{cache_key}"
-        self.hotcache[hot_key] = {
-            "data": listing_with_attrs,
-            "time": current_time,
-        }
 
         if self._persist_directory_listing(path, listing_with_attrs, current_time):
             self.set_batch(batch_entries)
@@ -1259,7 +1240,6 @@ class CacheManager:
             for parent_dir in parent_dirs:
                 self.directory_listings_cache.pop(parent_dir, None)
                 self.hotcache.pop(f"hotcache:{parent_dir}_processed", None)
-                self.hotcache.pop(f"hot:{parent_dir}_listing_with_attrs", None)
                 self.delete(f"{parent_dir}_listing_with_attrs")
                 self.delete(f"{parent_dir}_listing")
             self.logger.info(
@@ -1410,9 +1390,5 @@ class CacheManager:
         self.attrs_cache[path] = merged
         now = time.time()
         self.directory_listings_cache[parent_dir] = {"data": dir_listing, "time": now}
-        self.hotcache[f"hot:{parent_dir}_listing_with_attrs"] = {
-            "data": dir_listing,
-            "time": now,
-        }
         self._persist_directory_listing(parent_dir, dir_listing, now)
         self.logger.debug(f"Updated attributes for {filename} in {parent_dir}")

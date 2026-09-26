@@ -216,7 +216,7 @@ class TestFilesystemSizeLookups(unittest.TestCase):
         self.fs.cache.cache_dir = self.temp_dir
         self.fs.hot_metadata_lock = threading.RLock()
         self.fs.last_access_lock = threading.RLock()
-        self.fs.hot_attrs_by_path = {}
+        self.fs.hot_paths = {}
         self.fs.last_access_results = {}
         self.fs.complete_audio_sizes = {}
         self.fs.reported_file_sizes = {}
