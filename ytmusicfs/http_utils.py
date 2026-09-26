@@ -127,7 +127,8 @@ def _set_sapisidhash_authorization(
         return
 
     current_auth = headers.get(existing_auth_key) if existing_auth_key else None
-    if existing_auth_key and not _is_sapisidhash(current_auth):
+    # Keep real credentials such as OAuth tokens; replace stale or blank ones.
+    if current_auth and current_auth.strip() and not _is_sapisidhash(current_auth):
         return
 
     if existing_auth_key and existing_auth_key != "Authorization":

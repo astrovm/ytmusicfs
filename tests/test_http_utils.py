@@ -77,6 +77,15 @@ class TestEnsureHeadersAndCookies:
         assert merged_headers["Authorization"].startswith("SAPISIDHASH ")
         assert merged_headers["Authorization"] != "sapisidhash 1_old"
 
+    def test_replaces_blank_authorization_header_with_sapisidhash(self):
+        headers = {"authorization": "  "}
+        cookies = {"SAPISID": "cookie"}
+
+        merged_headers, _ = ensure_headers_and_cookies(headers, cookies)
+
+        assert "authorization" not in merged_headers
+        assert merged_headers["Authorization"].startswith("SAPISIDHASH ")
+
     def test_signs_with_existing_custom_origin(self, monkeypatch):
         monkeypatch.setattr("ytmusicfs.http_utils.time.time", lambda: 10)
         headers = {"origin": "https://www.youtube.com"}

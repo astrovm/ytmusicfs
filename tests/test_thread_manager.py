@@ -83,20 +83,31 @@ class TestThreadManager:
         assert manager.is_shutdown() is True
         assert manager.shutdown(wait=True) is True
 
-    def test_shutdown_waits_for_active_tasks_until_timeout(self, manager):
+    def test_shutdown_waits_for_active_tasks_to_finish(self, manager):
         release = threading.Event()
-        manager.submit_task("io", release.wait, 1)
-
-        real_sleep = time.sleep
+        future = manager.submit_task("io", release.wait, 5)
 
         def fake_sleep(_seconds):
+            # Finish the task during the wait instead of racing a real timer.
             release.set()
-            real_sleep(0.005)
+            future.result(timeout=5)
 
         with patch("ytmusicfs.thread_manager.time.sleep", side_effect=fake_sleep):
             clean = manager.shutdown(wait=True, timeout=1.0)
 
         assert clean is True
+        assert manager.get_active_tasks() == 0
+
+    def test_submit_task_rejected_by_pool_is_not_counted(self, manager):
+        rejecting_pool = Mock()
+        rejecting_pool.submit.side_effect = RuntimeError("pool shut down")
+
+        with (
+            patch.object(manager, "get_pool", return_value=rejecting_pool),
+            pytest.raises(RuntimeError),
+        ):
+            manager.submit_task("io", lambda: None)
+
         assert manager.get_active_tasks() == 0
 
     def test_shutdown_without_wait_reports_active_tasks(self, manager):
