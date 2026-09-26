@@ -239,7 +239,7 @@ class TestYouTubeMusicFSIntegration(unittest.TestCase):
         self.fs.readdir = original_readdir
         self.fs.getattr = original_getattr
 
-    @patch("ytmusicfs.file_handler.requests.get")
+    @patch("ytmusicfs.file_handler.http_get")
     def test_file_streaming_with_network_error(self, mock_requests_get):
         """Test the workflow of streaming a file with a network error and retry."""
         # Setup file path and video ID

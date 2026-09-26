@@ -132,6 +132,8 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
         self.hot_attrs_by_path: dict[str, dict[str, Any]] = {}
         self.hot_video_ids_by_path: dict[str, str] = {}
         self.hot_dir_entries: dict[str, list[str]] = {}
+        self.complete_audio_sizes: dict[str, tuple[int, int | None]] = {}
+        self.reported_file_sizes: dict[str, int] = {}
         self.precache_lock = self.thread_manager.create_lock()
         self.precache_queue: deque[tuple[str, str]] = deque()
         self.precache_queued_paths: set[str] = set()
@@ -265,6 +267,7 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
         listing_with_attrs = {}
         valid_filenames = set()
         unavailable_ids = self.cache.get_unavailable_video_ids()
+        known_sizes = self._known_file_sizes(dir_path, processed_tracks)
 
         for track in processed_tracks:
             video_id = track.get("videoId")
@@ -298,8 +301,9 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
                     "st_mtime": now,
                     "st_nlink": 1,
                 }
-                attrs["st_size"] = self._audio_size_for_path(
-                    f"{dir_path}/{filename}",
+                attrs["st_size"] = self._listing_audio_size(
+                    video_id,
+                    known_sizes.get(f"filesize:{dir_path}/{filename}"),
                     track.get("duration_seconds"),
                 )
 
@@ -315,6 +319,39 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
         self.cache.set_directory_listing_with_attrs(dir_path, listing_with_attrs)
         self.cache.set(f"valid_files:{dir_path}", list(valid_filenames))
         self.cache.mark_valid(dir_path, is_directory=True)
+
+    def _known_file_sizes(
+        self, dir_path: str, processed_tracks: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """Load every remembered file size for a listing in one batched read."""
+        keys = [
+            f"filesize:{dir_path}/{track['filename']}"
+            for track in processed_tracks
+            if track.get("filename") and not track.get("is_directory")
+        ]
+        return self.cache.get_many(keys) if keys else {}
+
+    def _listing_audio_size(
+        self,
+        video_id: object,
+        cached_size: object,
+        duration_seconds: float | None,
+    ) -> int:
+        if isinstance(video_id, str) and video_id:
+            complete_size = self._complete_cached_audio_size(video_id)
+            if complete_size is not None:
+                return complete_size
+        if isinstance(cached_size, int):
+            return cached_size
+        return self._estimated_audio_size(duration_seconds)
+
+    def _estimated_audio_size(self, duration_seconds: float | None) -> int:
+        if duration_seconds:
+            return max(
+                int(duration_seconds * self.ESTIMATED_BYTES_PER_SECOND),
+                self.MIN_AUDIO_SIZE,
+            )
+        return self.MIN_AUDIO_SIZE
 
     def _update_hot_metadata(
         self, dir_path: str, listing_with_attrs: dict[str, dict[str, Any]]
@@ -443,6 +480,8 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             self.hot_attrs_by_path.clear()
             self.hot_video_ids_by_path.clear()
             self.hot_dir_entries.clear()
+            self.complete_audio_sizes.clear()
+            self.reported_file_sizes.clear()
 
     def _invalidate_hot_paths(self, paths: list[str]) -> None:
         with self.hot_metadata_lock:
@@ -1169,16 +1208,31 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             attrs["st_size"] = real_size
 
     def _complete_cached_audio_size(self, video_id: str) -> int | None:
-        cache_dir = Path(self.cache.cache_dir)
-        audio_path = cache_dir / "audio" / f"{video_id}.m4a"
-        status_path = cache_dir / "audio" / f"{video_id}.status"
+        """Return the size of fully cached audio.
+
+        getattr calls this for every track, so results are memoized per status
+        file mtime and a repeat lookup costs a single stat.
+        """
+        audio_dir = Path(self.cache.cache_dir) / "audio"
+        status_path = audio_dir / f"{video_id}.status"
         try:
-            status = status_path.read_text().strip()
-            if not status.startswith("complete:"):
-                return None
-            return audio_path.stat().st_size
+            status_mtime = status_path.stat().st_mtime_ns
         except OSError:
             return None
+        memo = self.complete_audio_sizes.get(video_id)
+        if memo is not None and memo[0] == status_mtime:
+            return memo[1]
+        try:
+            status = status_path.read_text().strip()
+            size = (
+                (audio_dir / f"{video_id}.m4a").stat().st_size
+                if status.startswith("complete:")
+                else None
+            )
+        except OSError:
+            return None
+        self.complete_audio_sizes[video_id] = (status_mtime, size)
+        return size
 
     def _get_advertised_file_size(self, path: str) -> int | None:
         real_size = self._get_real_file_size(path)
@@ -1200,12 +1254,7 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
         real_size = self._get_real_file_size(path, video_id)
         if real_size is not None:
             return real_size
-        if duration_seconds:
-            return max(
-                int(duration_seconds * self.ESTIMATED_BYTES_PER_SECOND),
-                self.MIN_AUDIO_SIZE,
-            )
-        return self.MIN_AUDIO_SIZE
+        return self._estimated_audio_size(duration_seconds)
 
     def release(self, path: str, fh: int) -> int:
         """Close the file.
@@ -1234,6 +1283,10 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             path: The file path
             size: The new file size
         """
+        # Every streamed range reports the same total; persist it only once.
+        if self.reported_file_sizes.get(path) == size:
+            return
+        self.reported_file_sizes[path] = size
         file_size_cache_key = f"filesize:{path}"
         self.cache.set(file_size_cache_key, size)
 

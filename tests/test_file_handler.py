@@ -194,7 +194,7 @@ class TestFileHandler(unittest.TestCase):
         self.assertEqual(self.file_handler.open_files[fh]["stream_url"], "cached")
         self.assertEqual(self.file_handler.open_files[fh]["format_id"], "140")
 
-    @patch("ytmusicfs.file_handler.requests.get")
+    @patch("ytmusicfs.file_handler.http_get")
     def test_read_file(self, mock_requests_get):
         """Test reading content from a file."""
         # Set up mock data
@@ -262,7 +262,7 @@ class TestFileHandler(unittest.TestCase):
                 StreamRequest(
                     url=stream_url,
                     offset=offset,
-                    size=size,
+                    size=FileHandler.READAHEAD_INITIAL_BYTES,
                     path=path,
                 )
             )
@@ -318,7 +318,7 @@ class TestFileHandler(unittest.TestCase):
             StreamRequest(
                 url="https://example.com/stream.m4a",
                 offset=0,
-                size=1024,
+                size=FileHandler.READAHEAD_INITIAL_BYTES,
                 path=path,
                 headers=file_info["headers"],
                 cookies=file_info["cookies"],
@@ -717,7 +717,7 @@ class TestFileHandler(unittest.TestCase):
             StreamRequest(
                 url="https://example.com/audio.m4a",
                 offset=0,
-                size=1024,
+                size=FileHandler.READAHEAD_INITIAL_BYTES,
                 path=path,
                 headers=file_info["headers"],
                 cookies=file_info["cookies"],
@@ -836,7 +836,7 @@ class TestFileHandler(unittest.TestCase):
         self.yt_dlp_utils.extract_stream_url_async.assert_not_called()
         self.file_handler.downloader.download_file.assert_not_called()
 
-    @patch("ytmusicfs.file_handler.requests.get")
+    @patch("ytmusicfs.file_handler.http_get")
     def test_read_file_with_offset(self, mock_requests_get):
         """Test reading content from a file with an offset."""
         # Set up mock data
@@ -897,14 +897,14 @@ class TestFileHandler(unittest.TestCase):
             data = self.file_handler.read(path, size, offset, file_handle)
 
             # Verify correct data was returned
-            self.assertEqual(data, mock_response.content)
+            self.assertEqual(data, mock_response.content[:size])
 
             # Verify _stream_content was called with the right arguments
             self.file_handler._stream_content.assert_called_once_with(
                 StreamRequest(
                     url=stream_url,
                     offset=offset,
-                    size=size,
+                    size=FileHandler.READAHEAD_INITIAL_BYTES,
                     path=path,
                 )
             )
@@ -953,7 +953,7 @@ class TestFileHandler(unittest.TestCase):
 
         self.file_handler.downloader.download_file.assert_not_called()
 
-    @patch("ytmusicfs.file_handler.requests.get")
+    @patch("ytmusicfs.file_handler.http_get")
     def test_stream_content_preserves_lowercase_user_agent(self, mock_requests_get):
         """Lowercase user-agent headers must not be replaced by defaults."""
 
@@ -984,7 +984,7 @@ class TestFileHandler(unittest.TestCase):
         self.assertEqual(sent_headers["user-agent"], "Real UA")
         self.assertNotIn("User-Agent", sent_headers)
 
-    @patch("ytmusicfs.file_handler.requests.get")
+    @patch("ytmusicfs.file_handler.http_get")
     def test_stream_content_treats_416_as_eof(self, mock_requests_get):
         mock_response = Mock()
         mock_response.status_code = 416
@@ -1008,7 +1008,7 @@ class TestFileHandler(unittest.TestCase):
         self.assertEqual(data, b"")
         self.file_handler.record_stat_callback.assert_called_once_with("range_416_eof")
 
-    @patch("ytmusicfs.file_handler.requests.get")
+    @patch("ytmusicfs.file_handler.http_get")
     def test_stream_content_updates_size_from_content_range(self, mock_requests_get):
         mock_response = Mock()
         mock_response.status_code = 206
@@ -1073,7 +1073,7 @@ class TestFileHandler(unittest.TestCase):
         self.assertNotIn(file_handle, self.file_handler.open_files)
         self.assertNotIn(path, self.file_handler.path_to_fh)
 
-    @patch("ytmusicfs.file_handler.requests.get")
+    @patch("ytmusicfs.file_handler.http_get")
     @patch("ytmusicfs.file_handler.time.sleep")
     def test_stream_content_retry_on_failure(self, mock_sleep, mock_requests_get):
         """Test the retry logic in _stream_content method with detailed verification."""
@@ -1166,7 +1166,7 @@ class TestFileHandler(unittest.TestCase):
         # Restore original method
         self.file_handler._stream_content = original_stream_content
 
-    @patch("ytmusicfs.file_handler.requests.get")
+    @patch("ytmusicfs.file_handler.http_get")
     @patch("ytmusicfs.file_handler.time.sleep")
     def test_stream_content_max_retries_exceeded(self, mock_sleep, mock_requests_get):
         """Test behavior when max retries are exceeded in _stream_content method."""
@@ -1241,7 +1241,7 @@ class TestFileHandler(unittest.TestCase):
         # Restore original method
         self.file_handler._stream_content = original_stream_content
 
-    @patch("ytmusicfs.file_handler.requests.get")
+    @patch("ytmusicfs.file_handler.http_get")
     def test_stream_content_merges_cookie_header(self, mock_requests_get):
         """Cookies present only in the header should be preserved for streaming."""
 

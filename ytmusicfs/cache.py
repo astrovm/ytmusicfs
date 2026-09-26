@@ -17,12 +17,14 @@ from cachetools import LRUCache
 
 if TYPE_CHECKING:
     import builtins
+    from collections.abc import Iterable
 
 
 class CacheManager:
     """Manager for handling cache operations with simplified locking and caching."""
 
     WRITE_COMMIT_INTERVAL = 50
+    GET_MANY_CHUNK_SIZE = 500
     STATIC_DIRECTORIES = frozenset({"/", "/playlists", "/albums", "/liked_songs"})
 
     def __init__(
@@ -188,20 +190,29 @@ class CacheManager:
         if path == "/":
             return
 
+        known_type = self.path_types.get(path)
+        requested_type = (
+            None if is_directory is None else "directory" if is_directory else "file"
+        )
+        already_persisted = path in self.valid_paths and (
+            requested_type is None or requested_type == known_type
+        )
+
         self.valid_paths.add(path)
         self.path_validation_cache[path] = {
             "valid": True,
             "is_directory": is_directory,
             "time": time.time() + 300,
         }
-        if is_directory is not None:
-            self.path_types[path] = "directory" if is_directory else "file"
+        if requested_type is not None:
+            self.path_types[path] = requested_type
+        # FUSE calls this on hot paths; the row already exists once it is known.
+        if already_persisted:
+            return
 
         entry = {"data": True, "time": time.time()}
         entry_str = json.dumps(entry)
-        entry_type = (
-            None if is_directory is None else "directory" if is_directory else "file"
-        )
+        entry_type = requested_type
         metadata_str = json.dumps({"valid_since": time.time()})
         prefixes = (
             ["valid_dir:", "exact_path:"]
@@ -432,6 +443,45 @@ class CacheManager:
             )
             self.stats["db_misses"] += 1
             return None
+
+    def get_many(self, keys: Iterable[str]) -> dict[str, Any]:
+        """Return valid cached values for many keys with batched SQLite reads."""
+        now = time.time()
+        results: dict[str, Any] = {}
+        missing: dict[str, str] = {}
+        for key in keys:
+            cache_entry = self.hotcache.get(f"hotcache:{key}")
+            if cache_entry and now - cache_entry["time"] < self.cache_timeout:
+                results[key] = cache_entry["data"]
+                continue
+            missing[self.path_to_key(key)] = key
+        if not missing:
+            return results
+
+        db_keys = list(missing)
+        try:
+            with self.lock:
+                rows = []
+                for start in range(0, len(db_keys), self.GET_MANY_CHUNK_SIZE):
+                    chunk = db_keys[start : start + self.GET_MANY_CHUNK_SIZE]
+                    placeholders = ",".join("?" * len(chunk))
+                    rows.extend(
+                        self.conn.execute(
+                            "SELECT key, entry FROM cache_entries "
+                            f"WHERE key IN ({placeholders})",
+                            chunk,
+                        ).fetchall()
+                    )
+        except sqlite3.Error as error:
+            self.logger.warning("Failed batched cache read: %s", error)
+            return results
+
+        for db_key, entry in rows:
+            with suppress(json.JSONDecodeError, KeyError, TypeError):
+                cache_data = json.loads(entry)
+                if now - cache_data["time"] < self.cache_timeout:
+                    results[missing[db_key]] = cache_data["data"]
+        return results
 
     def set(self, key: str, value: Any) -> None:
         """Store one value and commit on deterministic durability boundaries."""
@@ -873,45 +923,46 @@ class CacheManager:
             "time": current_time,
         }
 
-        db_key = self.path_to_key(cache_key)
-        entry = {
-            "data": listing_with_attrs,
-            "time": current_time,
+        if self._persist_directory_listing(path, listing_with_attrs, current_time):
+            self.set_batch(batch_entries)
+            self.logger.debug(
+                f"Cached directory listing with {len(listing_with_attrs)} entries for {path}"
+            )
+
+    def _persist_directory_listing(
+        self,
+        path: str,
+        listing_with_attrs: dict[str, dict[str, Any]],
+        current_time: float,
+    ) -> bool:
+        """Write only the listing row, without touching per-child validity rows."""
+        db_key = self.path_to_key(f"{path}_listing_with_attrs")
+        entry = {"data": listing_with_attrs, "time": current_time}
+        metadata = {
+            "entries_count": len(listing_with_attrs),
+            "cached_at": current_time,
+            "path_length": len(path),
         }
-
         try:
-            entry_type = "directory"
-            metadata = {
-                "entries_count": len(listing_with_attrs),
-                "cached_at": current_time,
-                "path_length": len(path),
-            }
-
             entry_str = json.dumps(entry)
             metadata_str = json.dumps(metadata)
-
             with self.lock:
-                cursor = self.conn.cursor()
-                cursor.execute(
+                self.conn.execute(
                     """
                     INSERT OR REPLACE INTO cache_entries
                     (key, entry, entry_type, metadata)
                     VALUES (?, ?, ?, ?)
                     """,
-                    (db_key, entry_str, entry_type, metadata_str),
+                    (db_key, entry_str, "directory", metadata_str),
                 )
                 self.conn.commit()
                 self._pending_writes = 0
-
-            self.set_batch(batch_entries)
-
-            self.logger.debug(
-                f"Cached directory listing with {len(listing_with_attrs)} entries for {path}"
-            )
-        except (sqlite3.Error, json.JSONDecodeError) as e:
+        except (sqlite3.Error, TypeError, ValueError) as e:
             self.logger.warning(
                 f"Failed to cache directory listing: {e.__class__.__name__}: {e}"
             )
+            return False
+        return True
 
     def get_file_attrs_from_parent_dir(self, path: str) -> dict[str, Any] | None:
         """Return file attributes from the nearest cached directory listing."""
@@ -1337,7 +1388,10 @@ class CacheManager:
         }
 
     def update_file_attrs_in_parent_dir(self, path: str, attrs: dict[str, Any]) -> None:
-        """Update file attributes in the parent directory's cached listing with improved caching.
+        """Merge file attributes into the parent's cached listing.
+
+        Existing keys such as ``videoId`` are kept, and only the listing row is
+        rewritten because the child validity rows do not change.
 
         Args:
             path: The file path
@@ -1346,22 +1400,19 @@ class CacheManager:
         parent_dir = os.path.dirname(path)
         filename = os.path.basename(path)
 
-        self.attrs_cache[path] = {"attrs": attrs, "time": time.time()}
-
-        if parent_dir in self.directory_listings_cache:
-            cached = self.directory_listings_cache[parent_dir]
-            dir_listing = cached["data"]
-            if dir_listing:
-                dir_listing[filename] = attrs
-                self.logger.debug(
-                    f"Updated attributes for {filename} in {parent_dir} memory cache"
-                )
-
         dir_listing = self.get_directory_listing_with_attrs(parent_dir)
+        if dir_listing is None:
+            self.attrs_cache[path] = dict(attrs)
+            return
 
-        if dir_listing is not None:
-            dir_listing[filename] = attrs
-            self.set_directory_listing_with_attrs(parent_dir, dir_listing)
-            self.logger.debug(
-                f"Updated attributes for {filename} in {parent_dir} database cache"
-            )
+        merged = {**dir_listing.get(filename, {}), **attrs}
+        dir_listing[filename] = merged
+        self.attrs_cache[path] = merged
+        now = time.time()
+        self.directory_listings_cache[parent_dir] = {"data": dir_listing, "time": now}
+        self.hotcache[f"hot:{parent_dir}_listing_with_attrs"] = {
+            "data": dir_listing,
+            "time": now,
+        }
+        self._persist_directory_listing(parent_dir, dir_listing, now)
+        self.logger.debug(f"Updated attributes for {filename} in {parent_dir}")

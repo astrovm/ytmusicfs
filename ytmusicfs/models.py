@@ -89,6 +89,9 @@ class FileHandleState(TypedDict, total=False):
     read_ranges: list[list[int]]
     opened_at: float
     initialized_event: threading.Event
+    readahead: tuple[int, bytes, bool]
+    readahead_size: int
+    local_fd: int
 
 
 class DownloadProgress(TypedDict, total=False):
@@ -107,7 +110,7 @@ class DownloadRequest:
     headers: dict[str, Any] | None = None
     cookies: dict[str, Any] | None = None
     retries: int = 3
-    chunk_size: int = 8192
+    chunk_size: int = 64 * 1024
 
 
 @dataclass(frozen=True)
