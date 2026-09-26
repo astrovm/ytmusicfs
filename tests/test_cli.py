@@ -3,6 +3,7 @@ import logging
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -325,7 +326,7 @@ def test_config_set_mount_point_and_browser(tmp_path):
 def _init_cache_db(cache_dir: Path) -> None:
     """Create a minimal valid cache database for CLI tests."""
     db_path = cache_dir / "cache.db"
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn, conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(
             "CREATE TABLE cache_entries (key TEXT PRIMARY KEY, entry TEXT, entry_type TEXT, metadata TEXT)"
@@ -394,7 +395,7 @@ def test_cache_mutation_works_while_mounted(mock_active_mount, tmp_path, cache_a
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
     db_path = cache_dir / "cache.db"
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn, conn:
         conn.execute(
             "CREATE TABLE repair_notifications (id INTEGER PRIMARY KEY, timestamp REAL, repair_data TEXT)"
         )
@@ -410,7 +411,7 @@ def test_cache_stats_reads_database_counts(tmp_path):
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
     db_path = cache_dir / "cache.db"
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn, conn:
         conn.execute("CREATE TABLE cache_entries (key TEXT)")
         conn.execute("INSERT INTO cache_entries VALUES ('one')")
 
