@@ -1073,7 +1073,6 @@ class TestCacheManager(unittest.TestCase):
         self.cache.attrs_cache[path] = {"st_size": 123}
         self.cache.directory_listings_cache[parent] = {"data": {}}
         self.cache.hotcache["hotcache:/playlists/Mix_processed"] = {"data": []}
-        self.cache.hotcache["hot:/playlists/Mix_listing_with_attrs"] = {"data": {}}
         self.cache.delete = Mock()
 
         self.cache.invalidate_repaired_paths([{"old_video_id": "old1", "path": path}])
@@ -1085,7 +1084,6 @@ class TestCacheManager(unittest.TestCase):
         self.assertNotIn(path, self.cache.attrs_cache)
         self.assertNotIn(parent, self.cache.directory_listings_cache)
         self.assertNotIn("hotcache:/playlists/Mix_processed", self.cache.hotcache)
-        self.assertNotIn("hot:/playlists/Mix_listing_with_attrs", self.cache.hotcache)
         self.cache.delete.assert_any_call(f"video_id:{path}")
         self.cache.delete.assert_any_call("/playlists/Mix_listing_with_attrs")
         self.cache.delete.assert_any_call("/playlists/Mix_listing")

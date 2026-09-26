@@ -10,6 +10,7 @@ import time
 import traceback
 from collections import deque
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, NoReturn
 
@@ -40,6 +41,14 @@ if TYPE_CHECKING:
 FUSE_ATTR_TIMEOUT = 5
 FUSE_ENTRY_TIMEOUT = 5
 FUSE_NEGATIVE_TIMEOUT = 1
+
+
+@dataclass(slots=True)
+class HotPath:
+    """In-memory metadata for one mounted path, published before SQLite."""
+
+    attrs: dict[str, Any] | None = None
+    video_id: str | None = None
 
 
 class YouTubeMusicFS(Operations):  # type: ignore[misc]
@@ -139,8 +148,7 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
         self.read_error_log_times: dict[str, float] = {}
         self.read_error_log_cooldown = 60.0
         self.hot_metadata_lock = self.thread_manager.create_lock()
-        self.hot_attrs_by_path: dict[str, dict[str, Any]] = {}
-        self.hot_video_ids_by_path: dict[str, str] = {}
+        self.hot_paths: dict[str, HotPath] = {}
         self.hot_dir_entries: dict[str, list[str]] = {}
         self.complete_audio_sizes: dict[str, tuple[int, int | None]] = {}
         self.reported_file_sizes: dict[str, int] = {}
@@ -367,50 +375,48 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
         self, dir_path: str, listing_with_attrs: dict[str, dict[str, Any]]
     ) -> None:
         entries: list[str] = []
-        attrs_by_path: dict[str, dict[str, Any]] = {}
-        video_ids_by_path: dict[str, str] = {}
+        hot_paths: dict[str, HotPath] = {}
         for filename, attrs in listing_with_attrs.items():
             if filename in (".", ".."):
                 continue
-            full_path = f"{dir_path}/{filename}"
-            attrs_copy = dict(attrs)
             entries.append(filename)
-            attrs_by_path[full_path] = attrs_copy
-            video_id = attrs_copy.get("videoId")
-            if isinstance(video_id, str) and video_id:
-                video_ids_by_path[full_path] = video_id
+            video_id = attrs.get("videoId")
+            hot_paths[f"{dir_path}/{filename}"] = HotPath(
+                attrs=dict(attrs),
+                video_id=video_id if isinstance(video_id, str) and video_id else None,
+            )
 
         with self.hot_metadata_lock:
             self.hot_dir_entries[dir_path] = entries
-            self.hot_attrs_by_path.update(attrs_by_path)
-            self.hot_video_ids_by_path.update(video_ids_by_path)
+            self.hot_paths.update(hot_paths)
 
     def _get_hot_readdir(self, path: str) -> list[str] | None:
         with self.hot_metadata_lock:
             entries = self.hot_dir_entries.get(path)
             if entries is None:
                 return None
-            attrs = {
-                name: self.hot_attrs_by_path.get(f"{path}/{name}", {})
+            video_ids = {
+                name: entry.video_id if entry else None
                 for name in entries
+                for entry in (self.hot_paths.get(f"{path}/{name}"),)
             }
         unavailable_ids = self.cache.get_unavailable_video_ids()
         visible = [
             name
             for name in entries
-            if not attrs[name].get("videoId")
-            or attrs[name].get("videoId") not in unavailable_ids
+            if not video_ids[name] or video_ids[name] not in unavailable_ids
         ]
         return [".", "..", *visible]
 
     def _get_hot_attrs(self, path: str) -> dict[str, Any] | None:
         with self.hot_metadata_lock:
-            attrs = self.hot_attrs_by_path.get(path)
-            return dict(attrs) if attrs else None
+            entry = self.hot_paths.get(path)
+            return dict(entry.attrs) if entry and entry.attrs else None
 
     def _get_hot_video_id(self, path: str) -> str | None:
         with self.hot_metadata_lock:
-            return self.hot_video_ids_by_path.get(path)
+            entry = self.hot_paths.get(path)
+            return entry.video_id if entry else None
 
     def _resolve_video_id(self, path: str) -> str:
         video_id = self._get_hot_video_id(path)
@@ -487,8 +493,7 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
 
     def _clear_hot_metadata(self) -> None:
         with self.hot_metadata_lock:
-            self.hot_attrs_by_path.clear()
-            self.hot_video_ids_by_path.clear()
+            self.hot_paths.clear()
             self.hot_dir_entries.clear()
             self.complete_audio_sizes.clear()
             self.reported_file_sizes.clear()
@@ -496,8 +501,7 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
     def _invalidate_hot_paths(self, paths: list[str]) -> None:
         with self.hot_metadata_lock:
             for path in paths:
-                self.hot_attrs_by_path.pop(path, None)
-                self.hot_video_ids_by_path.pop(path, None)
+                self.hot_paths.pop(path, None)
 
     def _prime_hot_metadata_from_cache(self) -> None:
         for dir_path in ("/liked_songs", "/playlists", "/albums"):
@@ -1054,10 +1058,10 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
 
     def _replace_hot_video_id(self, path: str, video_id: str) -> None:
         with self.hot_metadata_lock:
-            self.hot_video_ids_by_path[path] = video_id
-            attrs = self.hot_attrs_by_path.get(path)
-            if attrs:
-                attrs["videoId"] = video_id
+            entry = self.hot_paths.setdefault(path, HotPath())
+            entry.video_id = video_id
+            if entry.attrs:
+                entry.attrs["videoId"] = video_id
 
     def _automatic_refresh_after_mount(self) -> None:
         """Refresh large library data only after the mounted FS is idle."""
@@ -1310,11 +1314,9 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
         }
         self.cache.update_file_attrs_in_parent_dir(path, attr)
         with self.hot_metadata_lock:
-            if path in self.hot_attrs_by_path:
-                self.hot_attrs_by_path[path] = {
-                    **self.hot_attrs_by_path[path],
-                    **attr,
-                }
+            entry = self.hot_paths.get(path)
+            if entry and entry.attrs:
+                entry.attrs = {**entry.attrs, **attr}
         with self.last_access_lock:
             self.last_access_results.pop(f"getattr:{path}", None)
 
