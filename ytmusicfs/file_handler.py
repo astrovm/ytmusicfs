@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import errno
+import os
 import threading
 import time
 from collections import deque
@@ -13,7 +14,7 @@ import requests
 
 from ytmusicfs.dependencies import DownloaderDependencies, FileHandlerDependencies
 from ytmusicfs.downloader import Downloader
-from ytmusicfs.http_utils import ensure_headers_and_cookies
+from ytmusicfs.http_utils import ensure_headers_and_cookies, http_get
 from ytmusicfs.models import (
     DownloadProgress,
     DownloadRequest,
@@ -31,6 +32,10 @@ class FileHandler:
     PROBE_EOF_OFFSET = 1024 * 1024
     PROBE_TAIL_BYTES = 512 * 1024
     STREAM_INFO_TTL = 60 * 60
+    # Remote reads fetch ahead of the player and grow while playback stays
+    # sequential, so most FUSE reads are served from memory instead of HTTP.
+    READAHEAD_INITIAL_BYTES = 256 * 1024
+    READAHEAD_MAX_BYTES = 2 * 1024 * 1024
     RANGE_CACHE_DIR = "ranges"
     UNAVAILABLE_ERRORS = (
         "Video unavailable",
@@ -57,6 +62,8 @@ class FileHandler:
         self.futures: dict[str, Future[Any]] = {}
         self.stream_info_cache: dict[str, dict[str, Any]] = {}
         self.recent_handles: deque[dict[str, Any]] = deque(maxlen=100)
+        self.range_index: dict[Path, list[tuple[int, int, Path]]] = {}
+        self.range_index_lock = threading.Lock()
 
         self.downloader = Downloader(
             DownloaderDependencies(
@@ -173,11 +180,11 @@ class FileHandler:
         base_headers: dict[str, str],
         cookies: dict[str, str] | None,
     ) -> bytes:
-        buffer_size = 32768
-        end_byte = request.offset + request.size + buffer_size * 4 - 1
+        buffer_size = 64 * 1024
+        end_byte = request.offset + request.size - 1
         headers = {**base_headers, "Range": f"bytes={request.offset}-{end_byte}"}
         self.logger.debug("Streaming with range: %d-%d", request.offset, end_byte)
-        with requests.get(
+        with http_get(
             request.url,
             headers=headers,
             cookies=cookies,
@@ -214,6 +221,10 @@ class FileHandler:
         file_info = self._get_file_info(fh)
         self._record_read_request(file_info, size, offset)
         self._raise_stored_error(file_info)
+
+        buffered = self._read_from_readahead(file_info, offset, size)
+        if buffered is not None:
+            return buffered
 
         cached_data = self._read_local_audio(file_info, offset, size)
         if cached_data is not None:
@@ -255,18 +266,44 @@ class FileHandler:
             audio_file.seek(offset)
             return audio_file.read(size)
 
+    @staticmethod
+    def _read_from_readahead(
+        file_info: FileHandleState, offset: int, size: int
+    ) -> bytes | None:
+        buffer = file_info.get("readahead")
+        if not buffer:
+            return None
+        start, data, at_eof = buffer
+        end = start + len(data)
+        if offset < start or (offset + size > end and not (at_eof and offset <= end)):
+            return None
+        return data[offset - start : offset - start + size]
+
+    def _read_complete_local_audio(
+        self, file_info: FileHandleState, cache_path: Path, offset: int, size: int
+    ) -> bytes:
+        """Serve fully cached audio from one descriptor kept for the handle."""
+        with self.file_handle_lock:
+            fd = file_info.get("local_fd")
+            if fd is None:
+                fd = os.open(cache_path, os.O_RDONLY)
+                file_info["local_fd"] = fd
+                file_info["stream_url"] = "cached"
+        return os.pread(fd, size, offset)
+
     def _read_local_audio(
         self, file_info: FileHandleState, offset: int, size: int
     ) -> bytes | None:
         cache_path = Path(file_info["cache_path"])
+        if file_info.get("local_fd") is not None:
+            return self._read_complete_local_audio(file_info, cache_path, offset, size)
+
         video_id = file_info["video_id"]
         if not cache_path.exists():
             return None
 
         if self._check_cached_audio(video_id):
-            with self.file_handle_lock:
-                file_info["stream_url"] = "cached"
-            return self._read_file(cache_path, offset, size)
+            return self._read_complete_local_audio(file_info, cache_path, offset, size)
 
         cached_data = self._read_available_audio_cache(
             cache_path, video_id, file_info.get("format_id"), offset, size
@@ -396,20 +433,37 @@ class FileHandler:
             raise OSError(errno.EIO, "Stream URL unavailable")
 
         self.logger.debug("Streaming from URL for %s at offset %s", video_id, offset)
+        fetch_size = self._next_readahead_size(file_info, offset, size)
         data = self._stream_content(
             StreamRequest(
                 url=stream_url,
                 offset=offset,
-                size=size,
+                size=fetch_size,
                 path=path,
                 headers=file_info.get("headers"),
                 cookies=file_info.get("cookies"),
             )
         )
+        file_info["readahead"] = (offset, data, len(data) < fetch_size)
         self._cache_range(file_info, offset, data)
         self._write_progressive_audio_cache(file_info, offset, data)
         self._maybe_start_cache_download(path, file_info, len(data))
-        return data
+        return data[:size]
+
+    def _next_readahead_size(
+        self, file_info: FileHandleState, offset: int, size: int
+    ) -> int:
+        """Grow the fetch window on sequential reads and reset it after a seek."""
+        previous = file_info.get("readahead")
+        sequential = bool(previous and previous[0] + len(previous[1]) == offset)
+        window = file_info.get("readahead_size", 0)
+        window = (
+            min(window * 2, self.READAHEAD_MAX_BYTES)
+            if sequential and window
+            else self.READAHEAD_INITIAL_BYTES
+        )
+        file_info["readahead_size"] = window
+        return max(size, window)
 
     def _maybe_start_cache_download(
         self, path: str, file_info: FileHandleState, bytes_read: int
@@ -630,7 +684,8 @@ class FileHandler:
 
         format_id = file_info.get("format_id") or PREFERRED_YOUTUBE_MUSIC_AUDIO_FORMAT
         range_dir = self._range_cache_dir(file_info["video_id"], format_id)
-        if not range_dir.exists():
+        ranges = self._cached_ranges(range_dir)
+        if not ranges:
             return None
 
         requested_end = offset + size
@@ -639,19 +694,19 @@ class FileHandler:
             if self.get_file_size_callback
             else None
         )
-        for path in range_dir.glob("*.part"):
-            try:
-                start_text, end_text = path.stem.split("-", 1)
-                start = int(start_text)
-                end = int(end_text)
-            except ValueError:
-                continue
+        for start, end, path in ranges:
             cached_to_eof = bool(known_size and end == known_size)
             if start > offset or (end < requested_end and not cached_to_eof):
                 continue
-            with path.open("rb") as cached:
-                cached.seek(offset - start)
-                data = cached.read(size)
+            try:
+                with path.open("rb") as cached:
+                    cached.seek(offset - start)
+                    data = cached.read(size)
+            except OSError:
+                # The cache was cleared underneath us; rescan on the next read.
+                with self.range_index_lock:
+                    self.range_index.pop(range_dir, None)
+                return None
             if len(data) == size:
                 file_info["format_id"] = format_id
                 return data
@@ -660,6 +715,23 @@ class FileHandler:
                 file_info["format_id"] = format_id
                 return data
         return None
+
+    def _cached_ranges(self, range_dir: Path) -> list[tuple[int, int, Path]]:
+        """Return parsed range parts, scanning the directory once per handler."""
+        with self.range_index_lock:
+            ranges = self.range_index.get(range_dir)
+            if ranges is not None:
+                return list(ranges)
+        ranges = []
+        for path in range_dir.glob("*.part"):
+            try:
+                start_text, end_text = path.stem.split("-", 1)
+                ranges.append((int(start_text), int(end_text), path))
+            except ValueError:
+                continue
+        with self.range_index_lock:
+            self.range_index[range_dir] = ranges
+        return list(ranges)
 
     @staticmethod
     def _read_available_audio_cache(
@@ -740,6 +812,10 @@ class FileHandler:
         if path.exists():
             return
         path.write_bytes(data)
+        with self.range_index_lock:
+            ranges = self.range_index.get(range_dir)
+            if ranges is not None:
+                ranges.append((offset, end, path))
         self._record_stat("range_cache_writes")
 
     @staticmethod
@@ -826,6 +902,9 @@ class FileHandler:
                 }
             )
 
+            local_fd = self.open_files[fh].get("local_fd")
+            if local_fd is not None:
+                os.close(local_fd)
             del self.open_files[fh]
 
             if path in self.path_to_fh and self.path_to_fh[path] == fh:

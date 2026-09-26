@@ -377,10 +377,11 @@ class ContentFetcher:
                 self.logger.info("Liked songs cache is empty; waiting for refresh")
                 return [".", ".."]
             self._cache_directory_listing_with_attrs("/liked_songs", tracks)
+            unavailable_ids = self.cache.get_unavailable_video_ids()
             return [".", ".."] + [
                 track["filename"]
                 for track in tracks
-                if not self._is_track_unavailable(track)
+                if track.get("videoId") not in unavailable_ids
             ]
 
         entries = [p for p in self.PLAYLIST_REGISTRY if p["type"] == playlist_type]
@@ -413,10 +414,6 @@ class ContentFetcher:
             for filename, attrs in listing.items()
             if not attrs.get("videoId") or attrs["videoId"] not in unavailable_ids
         }
-
-    def _is_track_unavailable(self, track: dict[str, Any]) -> bool:
-        video_id = track.get("videoId")
-        return bool(video_id and video_id in self.cache.get_unavailable_video_ids())
 
     def _repair_unavailable_liked_songs_locally(self) -> bool:
         if not any(

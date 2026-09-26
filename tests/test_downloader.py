@@ -35,8 +35,8 @@ class TestDownloaderCookieMerging(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.temp_dir)
 
-    @patch("ytmusicfs.downloader.requests.get")
-    @patch("ytmusicfs.downloader.requests.head")
+    @patch("ytmusicfs.downloader.http_get")
+    @patch("ytmusicfs.downloader.http_head")
     def test_download_task_merges_cookie_header(self, mock_head, mock_get):
         video_id = "abc123"
         stream_url = "https://example.com/audio.m4a"
@@ -109,8 +109,8 @@ class TestDownloaderCookieMerging(unittest.TestCase):
         self.thread_manager.submit_task.assert_not_called()
         task.assert_called_once_with(request)
 
-    @patch("ytmusicfs.downloader.requests.get")
-    @patch("ytmusicfs.downloader.requests.head")
+    @patch("ytmusicfs.downloader.http_get")
+    @patch("ytmusicfs.downloader.http_head")
     def test_download_task_resumes_existing_progressive_cache(
         self, mock_head, mock_get
     ):
@@ -157,8 +157,8 @@ class TestDownloaderCookieMerging(unittest.TestCase):
             f"bytes={len(prefix)}-",
         )
 
-    @patch("ytmusicfs.downloader.requests.get")
-    @patch("ytmusicfs.downloader.requests.head")
+    @patch("ytmusicfs.downloader.http_get")
+    @patch("ytmusicfs.downloader.http_head")
     def test_download_task_replaces_cache_from_different_format(
         self, mock_head, mock_get
     ):
@@ -201,8 +201,8 @@ class TestDownloaderCookieMerging(unittest.TestCase):
         self.assertNotIn("Range", mock_head.call_args.kwargs["headers"])
         self.assertNotIn("Range", mock_get.call_args.kwargs["headers"])
 
-    @patch("ytmusicfs.downloader.requests.get")
-    @patch("ytmusicfs.downloader.requests.head")
+    @patch("ytmusicfs.downloader.http_get")
+    @patch("ytmusicfs.downloader.http_head")
     def test_download_task_keeps_partial_cache_after_failure(self, mock_head, mock_get):
         video_id = "abc123"
         stream_url = "https://example.com/audio.m4a"
@@ -268,8 +268,8 @@ class TestDownloaderCookieMerging(unittest.TestCase):
 
         with (
             patch.object(self.downloader, "_validate_file_format", return_value=True),
-            patch("ytmusicfs.downloader.requests.head") as mock_head,
-            patch("ytmusicfs.downloader.requests.get") as mock_get,
+            patch("ytmusicfs.downloader.http_head") as mock_head,
+            patch("ytmusicfs.downloader.http_get") as mock_get,
         ):
             head_response = MagicMock()
             head_response.status_code = 200

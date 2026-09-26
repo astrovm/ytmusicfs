@@ -5,8 +5,13 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 import time
+from http.cookiejar import DefaultCookiePolicy
 from typing import TYPE_CHECKING, Any
+
+import requests
+from requests.adapters import HTTPAdapter
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -194,3 +199,35 @@ def ensure_headers_and_cookies(
     sanitized_headers = sanitize_headers(headers)
     sanitized_cookies = sanitize_cookies(cookies)
     return merge_cookie_sources(sanitized_headers, sanitized_cookies)
+
+
+_session_local = threading.local()
+
+
+def http_session() -> requests.Session:
+    """Return this thread's pooled session so stream requests reuse connections.
+
+    Opening a fresh TLS connection to the media CDN for every FUSE read adds a
+    full handshake to each chunk. Sessions are per thread because ``requests``
+    does not guarantee thread safety, and they never store response cookies so
+    one track's auth cannot leak into another request.
+    """
+    session = getattr(_session_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        session.cookies.set_policy(DefaultCookiePolicy(allowed_domains=[]))
+        adapter = HTTPAdapter(pool_connections=4, pool_maxsize=4)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        _session_local.session = session
+    return session
+
+
+def http_get(url: str, **kwargs: Any) -> requests.Response:
+    """Issue a GET through the calling thread's pooled session."""
+    return http_session().get(url, **kwargs)
+
+
+def http_head(url: str, **kwargs: Any) -> requests.Response:
+    """Issue a HEAD through the calling thread's pooled session."""
+    return http_session().head(url, **kwargs)

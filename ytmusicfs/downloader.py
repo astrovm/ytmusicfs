@@ -4,9 +4,7 @@ import errno
 import time
 from typing import TYPE_CHECKING
 
-import requests
-
-from ytmusicfs.http_utils import ensure_headers_and_cookies
+from ytmusicfs.http_utils import ensure_headers_and_cookies, http_get, http_head
 from ytmusicfs.models import DownloadProgress, DownloadRequest, DownloadStatus
 from ytmusicfs.retry import RetryPolicy
 
@@ -187,7 +185,7 @@ class Downloader:
         if downloaded:
             request_headers["Range"] = f"bytes={downloaded}-"
 
-        response = requests.head(
+        response = http_head(
             request.stream_url,
             headers=request_headers,
             cookies=cookies,
@@ -222,7 +220,7 @@ class Downloader:
     ) -> int:
         audio_path = self._audio_path(request.video_id)
         status_path = self._status_path(request.video_id)
-        with requests.get(
+        with http_get(
             request.stream_url,
             headers=request_headers,
             cookies=cookies,
