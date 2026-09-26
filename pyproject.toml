@@ -109,3 +109,14 @@ strict_equality = true
 [[tool.mypy.overrides]]
 module = ["fuse", "yt_dlp", "yt_dlp.*"]
 ignore_missing_imports = true
+
+[tool.coverage.run]
+branch = true
+source = ["ytmusicfs"]
+# Protocols are imported only for type checking.
+omit = ["ytmusicfs/protocols.py"]
+
+[tool.coverage.report]
+fail_under = 95
+skip_covered = true
+show_missing = true
