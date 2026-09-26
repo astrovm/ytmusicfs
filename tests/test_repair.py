@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import Mock
 
 from ytmusicfs.dependencies import RepairDependencies
-from ytmusicfs.repair import LikedSongsRepairer
+from ytmusicfs.repair import LikedSongRepair, LikedSongsRepairer
 
 
 class TestLikedSongsRepairer(unittest.TestCase):
@@ -303,3 +303,244 @@ class TestLikedSongsRepairer(unittest.TestCase):
         self.cache.delete.assert_any_call("/playlists/Mix_listing_with_attrs")
         self.cache.delete.assert_any_call("/playlists/Mix_listing")
         self.cache.delete.assert_any_call(f"video_id:{path}")
+
+    def test_plan_repairs_skips_track_without_replacement_and_marks_it(self):
+        path = "/liked_songs/Artist - Song.m4a"
+        self.cache.get_unavailable_tracks.return_value = [
+            {"videoId": "old", "path": path}
+        ]
+        self.cache.get.return_value = None
+        self.client.search.return_value = []
+
+        repairs, dead_tracks, stats = self.repairer.plan_repairs()
+
+        self.assertEqual((repairs, dead_tracks), ([], []))
+        self.assertEqual(stats["skipped"], 1)
+        self.cache.mark_no_replacement.assert_called_once_with("old", path)
+
+    def test_plan_one_returns_none_for_missing_video_id_or_path(self):
+        self.assertIsNone(self.repairer._plan_one({"path": "/liked_songs/a.m4a"}))
+        self.assertIsNone(self.repairer._plan_one({"videoId": "old"}))
+        self.client.search.assert_not_called()
+
+    def test_plan_one_skips_when_artist_and_title_cannot_be_derived(self):
+        self.cache.get.return_value = []
+
+        with self.assertLogs("test", level="INFO"):
+            result = self.repairer._plan_one(
+                {"videoId": "old", "path": "/liked_songs/NoSeparator.m4a"}
+            )
+
+        self.assertIsNone(result)
+        self.client.search.assert_not_called()
+
+    def test_plan_one_derives_artist_and_title_from_filename(self):
+        self.cache.get.return_value = [{"videoId": "other", "filename": "x.m4a"}]
+        self.client.search.return_value = [
+            {"videoId": "new", "title": "Song", "artists": [{"name": "Artist"}]}
+        ]
+
+        repair = self.repairer._plan_one(
+            {"videoId": "old", "path": "/liked_songs/Artist - Song.m4a"}
+        )
+
+        self.assertEqual(repair.new_video_id, "new")
+        self.assertIsNone(repair.old_track)
+        self.client.search.assert_called_once_with(
+            "Artist Song", filter_type="songs", limit=10, ignore_spelling=True
+        )
+
+    def test_find_replacement_ignores_low_scores_and_same_video(self):
+        self.client.search.return_value = [
+            {"videoId": "old", "title": "Song", "artists": [{"name": "Artist"}]},
+            {"title": "Song", "artists": [{"name": "Artist"}]},
+            {"videoId": "weak", "title": "Something Else", "artists": []},
+        ]
+
+        self.assertIsNone(self.repairer._find_replacement("old", "Artist", "Song"))
+        self.yt_dlp_utils.extract_stream_url.assert_not_called()
+
+    def test_find_replacement_skips_candidates_without_playable_stream(self):
+        self.client.search.return_value = [
+            {"videoId": "broken", "title": "Song", "artists": [{"name": "Artist"}]},
+            {"videoId": "ok", "title": "Song", "artists": []},
+        ]
+        self.yt_dlp_utils.extract_stream_url.side_effect = [
+            RuntimeError("unavailable"),
+            {"format_id": "141"},
+        ]
+
+        result = self.repairer._find_replacement("old", "Artist", "Song")
+
+        self.assertEqual(result["videoId"], "ok")
+        self.assertEqual(self.yt_dlp_utils.extract_stream_url.call_count, 2)
+
+    def test_find_cached_track_matches_by_filename_and_skips_non_dicts(self):
+        self.cache.get.return_value = [
+            "garbage",
+            {"videoId": "x", "filename": "Song.m4a", "title": "T"},
+        ]
+
+        track = self.repairer._find_cached_track("old", "/liked_songs/Song.m4a")
+
+        self.assertEqual(track["title"], "T")
+
+    def test_find_cached_track_returns_none_when_absent(self):
+        self.cache.get.return_value = [{"videoId": "x", "filename": "Other.m4a"}]
+        self.assertIsNone(self.repairer._find_cached_track("old", "/a/Song.m4a"))
+
+        self.cache.get.return_value = {"not": "a list"}
+        self.assertIsNone(self.repairer._find_cached_track("old", "/a/Song.m4a"))
+
+    def test_replace_cached_track_keeps_other_tracks_and_old_metadata(self):
+        path = "/liked_songs/Artist - Song.m4a"
+        other = {"videoId": "keep", "filename": "Keep.m4a"}
+        self.cache.get.return_value = [
+            other,
+            {"videoId": "old", "filename": "Artist - Song.m4a", "album": "Stale"},
+        ]
+        self.processor.extract_track_info.return_value = {
+            "videoId": "new",
+            "title": "Song",
+            "is_new_duration": True,
+        }
+
+        self.repairer._replace_cached_liked_track(
+            "old",
+            path,
+            {"videoId": "old", "album": "Original"},
+            {"videoId": "new", "duration_seconds": 200},
+        )
+
+        info_arg = self.processor.extract_track_info.call_args.args[0]
+        self.assertEqual(info_arg["duration_seconds"], 200)
+        updated = self.cache.set.call_args_list[0].args[1]
+        self.assertEqual(updated[0], other)
+        self.assertEqual(
+            updated[1],
+            {
+                "videoId": "new",
+                "album": "Original",
+                "title": "Song",
+                "filename": "Artist - Song.m4a",
+                "is_directory": False,
+            },
+        )
+
+    def test_replace_cached_track_noop_when_cache_missing_or_unmatched(self):
+        self.cache.get.return_value = None
+        self.repairer._replace_cached_liked_track(
+            "old", "/liked_songs/a.m4a", None, {"videoId": "new"}
+        )
+        self.processor.extract_track_info.assert_not_called()
+
+        self.cache.get.return_value = [{"videoId": "x", "filename": "b.m4a"}]
+        self.processor.extract_track_info.return_value = {"videoId": "new"}
+        self.repairer._replace_cached_liked_track(
+            "old", "/liked_songs/a.m4a", None, {"videoId": "new"}
+        )
+        self.cache.set.assert_not_called()
+        self.cache.delete.assert_not_called()
+
+    def test_apply_repairs_records_trigger_only_when_something_repaired(self):
+        self.assertEqual(self.repairer.apply_repairs([]), 0)
+        self.cache.record_repair_trigger.assert_not_called()
+
+        self.cache.get.return_value = None
+        repair = LikedSongRepair(
+            path="/liked_songs/a.m4a",
+            old_video_id="old",
+            new_video_id="new",
+            old_track=None,
+            replacement={"videoId": "new"},
+        )
+        self.assertEqual(self.repairer.apply_repairs([repair]), 1)
+        self.cache.record_repair_trigger.assert_called_once_with(
+            [
+                {
+                    "old_video_id": "old",
+                    "path": "/liked_songs/a.m4a",
+                    "new_video_id": "new",
+                }
+            ]
+        )
+
+    def test_apply_removals_without_sync_only_updates_cache(self):
+        self.repairer.sync_account = False
+        self.cache.get.return_value = [
+            {"videoId": "dead"},
+            {"videoId": "alive"},
+            "garbage",
+        ]
+
+        removed = self.repairer.apply_removals([("dead", "/liked_songs/a.m4a")])
+
+        self.assertEqual(removed, 1)
+        self.client.rate_song.assert_not_called()
+        self.cache.set.assert_any_call("/liked_songs_processed", [{"videoId": "alive"}])
+        self.cache.delete.assert_any_call("video_id:/liked_songs/a.m4a")
+
+    def test_remove_dead_track_noop_when_cache_missing_or_track_absent(self):
+        self.cache.get.return_value = None
+        self.repairer._remove_dead_track_from_cache("dead", "/liked_songs/a.m4a")
+
+        self.cache.get.return_value = [{"videoId": "alive"}]
+        self.repairer._remove_dead_track_from_cache("dead", "/liked_songs/a.m4a")
+
+        self.cache.set.assert_not_called()
+        self.cache.delete.assert_not_called()
+
+
+class TestLikedSongsRepairerMatchScore(unittest.TestCase):
+    def setUp(self):
+        self.repairer = LikedSongsRepairer(
+            RepairDependencies(
+                client=Mock(),
+                cache=Mock(),
+                processor=Mock(),
+                yt_dlp=Mock(),
+                browser="brave",
+                sync_account=False,
+                logger=None,
+            )
+        )
+
+    def test_logger_defaults_to_ytmusicfs_logger(self):
+        self.assertEqual(self.repairer.logger.name, "YTMusicFS")
+
+    def test_match_score_exact_title_and_artist(self):
+        candidate = {"title": "Song", "artists": [{"name": "Artist"}, "bad"]}
+
+        self.assertEqual(self.repairer._match_score(candidate, "Artist", "Song"), 8)
+
+    def test_match_score_normalizes_accents_and_punctuation(self):
+        candidate = {"title": "Café—Déjà Vu!", "artists": [{"name": "BEYONCÉ"}]}
+
+        self.assertEqual(
+            self.repairer._match_score(candidate, "Beyonce", "cafe deja vu"), 8
+        )
+
+    def test_match_score_counts_long_token_overlap_capped_at_four(self):
+        candidate = {
+            "title": "alpha bravo charlie delta echoes (Live)",
+            "artists": [],
+        }
+
+        score = self.repairer._match_score(
+            candidate, "Nobody", "alpha bravo charlie delta echoes"
+        )
+
+        self.assertEqual(score, 4)
+
+    def test_match_score_ignores_short_tokens(self):
+        candidate = {"title": "a b cd live", "artists": [{"name": "Other"}]}
+
+        self.assertEqual(self.repairer._match_score(candidate, "Me", "a b cd"), 0)
+
+    def test_match_score_empty_title_and_artist_scores_zero(self):
+        self.assertEqual(self.repairer._match_score({}, "", "!!!"), 0)
+
+    def test_match_score_gives_no_artist_credit_for_missing_candidate_artists(self):
+        candidate = {"title": "Other", "artists": []}
+
+        self.assertEqual(self.repairer._match_score(candidate, "Artist", "Song"), 0)

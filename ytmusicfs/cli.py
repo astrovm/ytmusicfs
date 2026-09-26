@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -94,7 +95,10 @@ def setup_logging(args: argparse.Namespace) -> logging.Logger:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(str(LOG_FILE)))
 
-    logging.basicConfig(level=log_level, format=log_format, handlers=handlers)
+    # force closes handlers from an earlier call instead of leaking their files.
+    logging.basicConfig(
+        level=log_level, format=log_format, handlers=handlers, force=True
+    )
 
     return logging.getLogger("YTMusicFS")
 
@@ -502,7 +506,8 @@ class CacheCommandHandler:
 
     @staticmethod
     def read_database_stats(db_path: Path) -> dict[str, Any]:
-        with sqlite3.connect(str(db_path)) as conn:
+        # sqlite3's own context manager only commits; closing() releases it.
+        with closing(sqlite3.connect(str(db_path))) as conn:
             cursor = conn.cursor()
             stats = {}
             for table in ("cache_entries", "hash_mappings", "refresh_tracker"):

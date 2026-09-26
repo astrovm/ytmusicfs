@@ -5,15 +5,32 @@ import time
 import unittest
 from unittest.mock import ANY, Mock, patch
 
-from ytmusicfs.content_fetcher import ContentFetcher
+from ytmusicfs.content_fetcher import ContentFetcher, RefreshRequest
 from ytmusicfs.dependencies import ContentFetcherDependencies
+
+SAVED_REGISTRY = [
+    {"name": "liked_songs", "id": "LM", "type": "liked_songs", "path": "/liked_songs"},
+    {"name": "Mix", "id": "PL1", "type": "playlist", "path": "/playlists/Mix"},
+]
+
+
+def build_fetcher(cache: Mock, client: Mock) -> ContentFetcher:
+    processor = Mock()
+    processor.sanitize_filename.side_effect = lambda name: name
+    return ContentFetcher(
+        ContentFetcherDependencies(
+            client=client,
+            processor=processor,
+            cache=cache,
+            logger=logging.getLogger("test"),
+            yt_dlp=Mock(),
+            browser="brave",
+        )
+    )
 
 
 class TestContentFetcher(unittest.TestCase):
-    """Test case for ContentFetcher class."""
-
     def setUp(self):
-        """Set up test fixtures before each test method."""
         # Create patches for initialization
         self.patcher_initialize = patch.object(
             ContentFetcher, "_initialize_playlist_registry"
@@ -63,11 +80,11 @@ class TestContentFetcher(unittest.TestCase):
         self.mock_initialize.reset_mock()
 
     def tearDown(self):
-        """Clean up after each test."""
         self.patcher_initialize.stop()
 
-    def test_initialize_playlist_registry(self):
-        """Test initialization of playlist registry with mocked API responses."""
+    def test_initialize_playlist_registry_builds_liked_playlist_and_album_entries(
+        self,
+    ):
         # Re-enable the original method for this test
         self.patcher_initialize.stop()
 
@@ -298,8 +315,7 @@ class TestContentFetcher(unittest.TestCase):
         self.assertEqual(processed[0]["playlistId"], "PL_MIAU")
         self.assertEqual(processed[0]["id"], "PL_MIAU")
 
-    def test_fetch_playlist_content(self):
-        """Test fetching playlist content with mocked yt-dlp responses."""
+    def test_fetch_playlist_content_processes_and_caches_fetched_tracks(self):
         # Configure the cache mock to return stale data
         self.cache.get_refresh_metadata.return_value = (
             time.time() - 7200,
@@ -628,8 +644,7 @@ class TestContentFetcher(unittest.TestCase):
             ],
         )
 
-    def test_readdir_playlist_by_type(self):
-        """Test listing directory contents for a playlist type."""
+    def test_readdir_playlist_by_type_serves_cached_root_listings(self):
         # Configure mock state
         self.fetcher.PLAYLIST_REGISTRY = [
             {
@@ -751,8 +766,7 @@ class TestContentFetcher(unittest.TestCase):
         dependencies = mock_repairer_class.call_args.args[0]
         self.assertFalse(dependencies.sync_account)
 
-    def test_get_playlist_id_from_name(self):
-        """Test retrieving playlist ID from its name."""
+    def test_get_playlist_id_from_name_honors_type_filter(self):
         # Configure mock state
         self.fetcher.PLAYLIST_REGISTRY = [
             {
@@ -794,6 +808,423 @@ class TestContentFetcher(unittest.TestCase):
             "my_playlist", type_filter="album"
         )
         self.assertIsNone(playlist_id)
+
+    def test_fetch_playlist_content_skips_podcast_playlist(self):
+        self.assertEqual(self.fetcher.fetch_playlist_content("SE", "/playlists/p"), [])
+
+        self.cache.get.assert_not_called()
+        self.yt_dlp_utils.extract_playlist_content.assert_not_called()
+
+    def test_fetch_playlist_content_missing_id_without_cache_returns_empty(self):
+        self.fetcher.PLAYLIST_REGISTRY = []
+        self.cache.get.return_value = None
+
+        with self.assertLogs("test", level="ERROR"):
+            result = self.fetcher.fetch_playlist_content(None, "/playlists/gone")
+
+        self.assertEqual(result, [])
+        self.yt_dlp_utils.extract_playlist_content.assert_not_called()
+
+    def test_refresh_liked_songs_automatic_without_registry_entry_does_nothing(self):
+        self.fetcher.PLAYLIST_REGISTRY = []
+
+        with self.assertLogs("test", level="ERROR"):
+            self.fetcher.refresh_liked_songs_automatic()
+
+        self.yt_dlp_utils.extract_playlist_content.assert_not_called()
+
+    def test_repair_unavailable_liked_songs_skips_without_liked_failures(self):
+        self.cache.get_unavailable_tracks.return_value = [
+            {"videoId": "x", "path": "/playlists/Mix/a.m4a"}
+        ]
+
+        with patch("ytmusicfs.repair.LikedSongsRepairer") as repairer_class:
+            self.assertFalse(self.fetcher._repair_unavailable_liked_songs_locally())
+
+        repairer_class.assert_not_called()
+
+    def test_readdir_playlist_by_type_derives_directory_from_type(self):
+        self.cache.get_directory_listing_with_attrs.return_value = {"a": {}}
+
+        self.assertEqual(
+            self.fetcher.readdir_playlist_by_type("album"), [".", "..", "a"]
+        )
+        self.cache.get_directory_listing_with_attrs.assert_called_once_with("/albums")
+
+    def test_readdir_playlist_by_type_rejects_unknown_type(self):
+        with self.assertLogs("test", level="ERROR"):
+            result = self.fetcher.readdir_playlist_by_type("podcast")
+
+        self.assertEqual(result, [".", ".."])
+        self.cache.get_directory_listing_with_attrs.assert_not_called()
+
+    def test_readdir_liked_songs_without_cached_tracks_returns_empty(self):
+        self.cache.get.return_value = None
+
+        result = self.fetcher.readdir_playlist_by_type("liked_songs", "/liked_songs")
+
+        self.assertEqual(result, [".", ".."])
+
+    def test_readdir_liked_songs_hides_unavailable_tracks(self):
+        self.cache.get.return_value = [
+            {"filename": "ok.m4a", "videoId": "ok"},
+            {"filename": "gone.m4a", "videoId": "gone"},
+        ]
+        self.cache.get_unavailable_video_ids.return_value = {"gone"}
+
+        result = self.fetcher.readdir_playlist_by_type("liked_songs", "/liked_songs")
+
+        self.assertEqual(result, [".", "..", "ok.m4a"])
+
+    def test_readdir_albums_root_rebuilds_listing_with_browse_ids(self):
+        self.fetcher.PLAYLIST_REGISTRY = [
+            {"name": "alb", "id": "MPREb_1", "type": "album", "path": "/albums/alb"}
+        ]
+        self.fetcher.cache_directory_callback = Mock()
+        self.cache.get_directory_listing_with_attrs.return_value = None
+
+        result = self.fetcher.readdir_playlist_by_type("album", "/albums")
+
+        self.assertEqual(result, [".", "..", "alb"])
+        processed = self.fetcher.cache_directory_callback.call_args.args[1]
+        self.assertEqual(
+            processed,
+            [
+                {
+                    "filename": "alb",
+                    "is_directory": True,
+                    "id": "MPREb_1",
+                    "browseId": "MPREb_1",
+                }
+            ],
+        )
+        self.cache.set_refresh_metadata.assert_called_once_with(
+            "/albums_listing", ANY, "fresh"
+        )
+
+    def test_readdir_root_without_registry_entries_returns_empty(self):
+        self.fetcher.PLAYLIST_REGISTRY = []
+        self.cache.get_directory_listing_with_attrs.return_value = None
+
+        with self.assertLogs("test", level="WARNING"):
+            result = self.fetcher.readdir_playlist_by_type("album", "/albums")
+
+        self.assertEqual(result, [".", ".."])
+        self.cache.set_refresh_metadata.assert_not_called()
+
+    def test_get_playlist_entry_from_path_uses_rebuilt_index(self):
+        entry = {"name": "m", "id": "PL1", "type": "playlist", "path": "/playlists/m"}
+        self.fetcher.PLAYLIST_REGISTRY = [entry]
+
+        self.assertEqual(
+            self.fetcher.get_playlist_entry_from_path("/playlists/m"), entry
+        )
+        self.assertIsNone(self.fetcher.get_playlist_entry_from_path("/playlists/x"))
+
+    def test_get_expected_total_count_requires_id_and_int(self):
+        self.assertIsNone(self.fetcher._get_expected_total_count(""))
+        self.yt_dlp_utils.get_last_playlist_total_count.return_value = "10"
+        self.assertIsNone(self.fetcher._get_expected_total_count("PL1"))
+        self.yt_dlp_utils.get_last_playlist_total_count.return_value = 10
+        self.assertEqual(self.fetcher._get_expected_total_count("PL1"), 10)
+
+
+class TestContentFetcherApiTracks(unittest.TestCase):
+    def test_api_track_count_requires_int(self):
+        self.assertEqual(ContentFetcher._api_track_count({"trackCount": 3}), 3)
+        self.assertIsNone(ContentFetcher._api_track_count({"trackCount": "3"}))
+        self.assertIsNone(ContentFetcher._api_track_count(None))
+
+    def test_api_track_entries_rejects_malformed_results(self):
+        self.assertEqual(ContentFetcher._api_track_entries(None, 10), [])
+        self.assertEqual(ContentFetcher._api_track_entries({"tracks": "x"}, 10), [])
+
+    def test_api_track_entries_fills_album_and_year_without_overwriting(self):
+        result = {
+            "title": "Album",
+            "year": "1999",
+            "tracks": [
+                "junk",
+                {"title": "no id"},
+                {"videoId": "a"},
+                {"videoId": "b", "album": {"name": "Own"}, "year": "2001"},
+                {"videoId": "c"},
+            ],
+        }
+
+        entries = ContentFetcher._api_track_entries(result, 4)
+
+        self.assertEqual(
+            entries,
+            [
+                {"videoId": "a", "album": "Album", "year": "1999"},
+                {"videoId": "b", "album": {"name": "Own"}, "year": "2001"},
+            ],
+        )
+
+    def test_api_track_entries_without_album_title_or_year(self):
+        result = {"title": {"runs": []}, "tracks": [{"videoId": "a"}]}
+
+        self.assertEqual(
+            ContentFetcher._api_track_entries(result, 10), [{"videoId": "a"}]
+        )
+
+
+class TestContentFetcherRefresh(unittest.TestCase):
+    def setUp(self):
+        self.cache = Mock()
+        self.cache.get.return_value = SAVED_REGISTRY
+        self.fetcher = build_fetcher(self.cache, Mock())
+        self.fetcher.cache_directory_callback = Mock()
+        self.fetcher.processor.extract_track_info.side_effect = lambda info: {
+            "videoId": info["videoId"],
+            "artist": info.get("artist", "A"),
+            "title": info.get("title", "T"),
+        }
+        self.cache.reset_mock()
+
+    def _request(self, fetch_tracks, expected_total=None, force=True):
+        return RefreshRequest(
+            cache_key="/playlists/Mix_processed",
+            fetch_tracks=fetch_tracks,
+            path="/playlists/Mix",
+            force=force,
+            expected_total=expected_total,
+        )
+
+    def test_refresh_content_keeps_cached_tracks_when_fetch_raises(self):
+        cached = [{"filename": "a.m4a", "videoId": "a"}]
+        self.cache.get.return_value = cached
+
+        with self.assertLogs("test", level="ERROR"):
+            result = self.fetcher.refresh_content(
+                self._request(Mock(side_effect=RuntimeError("offline")))
+            )
+
+        self.assertIs(result, cached)
+        self.cache.set_refresh_metadata.assert_called_with(
+            "/playlists/Mix_processed", ANY, "stale"
+        )
+        self.cache.set.assert_not_called()
+
+    def test_refresh_content_keeps_cached_tracks_when_fetch_is_empty(self):
+        cached = [{"filename": "a.m4a", "videoId": "a"}]
+        self.cache.get.return_value = cached
+
+        with self.assertLogs("test", level="WARNING"):
+            result = self.fetcher.refresh_content(self._request(Mock(return_value=[])))
+
+        self.assertIs(result, cached)
+        self.cache.set_refresh_metadata.assert_called_with(
+            "/playlists/Mix_processed", ANY, "stale"
+        )
+        self.cache.set.assert_not_called()
+
+    def test_refresh_content_serves_cache_with_unknown_refresh_age(self):
+        cached = [{"filename": "a.m4a", "videoId": "a"}]
+        self.cache.get.return_value = cached
+        self.cache.get_refresh_metadata.return_value = (None, None)
+        fetch = Mock()
+
+        result = self.fetcher.refresh_content(self._request(fetch, force=False))
+
+        self.assertEqual(
+            result, [{"filename": "a.m4a", "videoId": "a", "is_directory": False}]
+        )
+        fetch.assert_not_called()
+
+    def test_refresh_content_skips_entries_without_video_id(self):
+        self.cache.get.return_value = None
+        fetched = [
+            None,
+            {},
+            {"title": "no id"},
+            {"id": "v1", "title": "Song", "duration": 200, "uploader": "Up"},
+        ]
+
+        result = self.fetcher.refresh_content(self._request(Mock(return_value=fetched)))
+
+        self.assertEqual([track["videoId"] for track in result], ["v1"])
+        self.cache.set_durations_batch.assert_called_once_with({"v1": 200})
+        info = self.fetcher.processor.extract_track_info.call_args.args[0]
+        self.assertEqual(info["artist"], "Up")
+        self.assertEqual(info["duration_seconds"], 200)
+
+    def test_refresh_content_merge_deduplicates_by_video_id(self):
+        cached = [
+            {"filename": "a.m4a", "videoId": "a"},
+            {"filename": "local.m4a"},
+            {"filename": "b.m4a", "videoId": "b"},
+        ]
+        self.cache.get.return_value = cached
+        fetched = [
+            {"videoId": "a"},
+            {"videoId": "c"},
+            {"videoId": "d"},
+            {"videoId": "e"},
+        ]
+
+        result = self.fetcher.refresh_content(
+            self._request(Mock(return_value=fetched), expected_total=lambda: 100)
+        )
+
+        self.assertEqual(
+            [track.get("videoId") for track in result], ["a", "c", "d", "e", None, "b"]
+        )
+        self.cache.set_refresh_metadata.assert_called_with(
+            "/playlists/Mix_processed", ANY, "stale"
+        )
+
+    def test_cache_directory_listing_without_callback_logs_warning(self):
+        self.fetcher.cache_directory_callback = None
+
+        with self.assertLogs("test", level="WARNING"):
+            self.fetcher._cache_directory_listing_with_attrs("/x", [])
+
+
+class TestContentFetcherRegistryStartup(unittest.TestCase):
+    def setUp(self):
+        self.cache = Mock()
+        self.cache.get_refresh_metadata.return_value = (None, None)
+        self.cache.get_directory_listing_with_attrs.return_value = None
+        self.client = Mock()
+        self.client.get_library_playlists.return_value = [
+            {"title": "Mix", "playlistId": "PL1"},
+            {"title": "New", "playlistId": "PL2"},
+        ]
+        self.client.get_library_albums.return_value = []
+
+    def test_saved_registry_skips_network_at_startup(self):
+        self.cache.get.return_value = SAVED_REGISTRY
+
+        fetcher = build_fetcher(self.cache, self.client)
+
+        self.assertTrue(fetcher.registry_loaded_from_cache)
+        self.assertEqual(fetcher.get_playlist_id_from_name("Mix", "playlist"), "PL1")
+        self.client.get_library_playlists.assert_not_called()
+
+    def test_first_mount_without_saved_registry_fetches(self):
+        self.cache.get.return_value = None
+
+        fetcher = build_fetcher(self.cache, self.client)
+
+        self.assertFalse(fetcher.registry_loaded_from_cache)
+        self.client.get_library_playlists.assert_called_once()
+        self.assertEqual(fetcher.get_playlist_id_from_name("New", "playlist"), "PL2")
+
+    def test_refresh_library_roots_republishes_root_listings(self):
+        self.cache.get.return_value = SAVED_REGISTRY
+        fetcher = build_fetcher(self.cache, self.client)
+        published: dict[str, list[str]] = {}
+        fetcher.cache_directory_callback = lambda path, tracks: published.update(
+            {path: [track["filename"] for track in tracks]}
+        )
+
+        fetcher.refresh_library_roots()
+
+        self.client.get_library_playlists.assert_called_once()
+        self.assertEqual(published["/playlists"], ["Mix", "New"])
+        self.assertEqual(fetcher.get_playlist_id_from_name("New", "playlist"), "PL2")
+
+    def test_unreadable_saved_registry_falls_back_to_network(self):
+        self.cache.get.side_effect = [RuntimeError("corrupt"), None]
+
+        with self.assertLogs("test", level="WARNING"):
+            fetcher = build_fetcher(self.cache, self.client)
+
+        self.assertFalse(fetcher.registry_loaded_from_cache)
+        self.assertEqual(fetcher.get_playlist_id_from_name("Mix", "playlist"), "PL1")
+
+    def test_registry_rebuilt_from_cached_root_listings(self):
+        self.cache.get.return_value = None
+        listings = {
+            "/playlists": {
+                ".": {},
+                "Mix": {"playlistId": "PL1"},
+                "NoId": {},
+                "Broken": "not a dict",
+            },
+            "/albums": {"Alb": {"id": "MPREb_1"}},
+        }
+        self.cache.get_directory_listing_with_attrs.side_effect = listings.get
+
+        fetcher = build_fetcher(self.cache, self.client)
+
+        self.assertTrue(fetcher.registry_loaded_from_cache)
+        self.assertEqual(fetcher.get_playlist_id_from_name("Mix", "playlist"), "PL1")
+        self.assertEqual(fetcher.get_playlist_id_from_name("Alb", "album"), "MPREb_1")
+        self.assertIsNone(fetcher.get_playlist_id_from_name("NoId"))
+        self.assertIsNone(fetcher.get_playlist_id_from_name("Broken"))
+        self.client.get_library_playlists.assert_not_called()
+
+    def test_initialize_registry_skips_network_when_recently_refreshed(self):
+        self.cache.get.return_value = SAVED_REGISTRY
+        fetcher = build_fetcher(self.cache, self.client)
+        self.cache.get_refresh_metadata.return_value = (time.time(), "fresh")
+
+        fetcher._initialize_playlist_registry()
+
+        self.client.get_library_playlists.assert_not_called()
+
+    def test_initialize_registry_skips_podcast_playlist(self):
+        self.cache.get.return_value = []
+        self.client.get_library_playlists.return_value = [
+            {"title": "Episodes", "playlistId": "SE"},
+            {"title": "Mix", "playlistId": "PL1"},
+        ]
+
+        fetcher = build_fetcher(self.cache, self.client)
+
+        self.assertIsNone(fetcher.get_playlist_id_from_name("Episodes"))
+        self.assertEqual(fetcher.get_playlist_id_from_name("Mix"), "PL1")
+        saved = self.cache.set.call_args.args
+        self.assertEqual(saved[0], ContentFetcher.PLAYLIST_REGISTRY_CACHE_KEY)
+        self.assertEqual([entry["name"] for entry in saved[1]], ["liked_songs", "Mix"])
+
+    def test_initialize_registry_keeps_cache_when_most_paths_disappear(self):
+        cached = [SAVED_REGISTRY[0]] + [
+            {
+                "name": f"P{i}",
+                "id": f"PL{i}",
+                "type": "playlist",
+                "path": f"/playlists/P{i}",
+            }
+            for i in range(5)
+        ]
+        self.cache.get.return_value = cached
+        fetcher = build_fetcher(self.cache, self.client)
+        self.client.get_library_playlists.return_value = [
+            {"title": f"Q{i}", "playlistId": f"QL{i}"} for i in range(5)
+        ]
+
+        with self.assertLogs("test", level="WARNING"):
+            fetcher._initialize_playlist_registry(force_refresh=True)
+
+        self.assertEqual(fetcher.get_playlist_id_from_name("P0"), "PL0")
+        self.assertIsNone(fetcher.get_playlist_id_from_name("Q0"))
+        self.cache.set.assert_not_called()
+
+    def test_initialize_registry_accepts_small_path_churn(self):
+        cached = [SAVED_REGISTRY[0]] + [
+            {
+                "name": f"P{i}",
+                "id": f"PL{i}",
+                "type": "playlist",
+                "path": f"/playlists/P{i}",
+            }
+            for i in range(5)
+        ]
+        self.cache.get.return_value = cached
+        fetcher = build_fetcher(self.cache, self.client)
+        self.client.get_library_playlists.return_value = [
+            {"title": f"P{i}", "playlistId": f"PL{i}"} for i in range(1, 5)
+        ] + [{"title": "New", "playlistId": "PL9"}]
+
+        fetcher._initialize_playlist_registry(force_refresh=True)
+
+        self.assertEqual(fetcher.get_playlist_id_from_name("New"), "PL9")
+        self.assertIsNone(fetcher.get_playlist_id_from_name("P0"))
+        self.cache.set.assert_called_once()
 
 
 if __name__ == "__main__":

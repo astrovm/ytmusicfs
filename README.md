@@ -85,10 +85,16 @@ python -m pip install -e '.[dev]'
 black --check .
 ruff check .
 mypy ytmusicfs
-pytest -q
+pytest -q --cov
 python -m build
 python -m benchmarks.benchmark_hot_paths
 ```
+
+Tests live in `tests/test_<module>.py`, one file per module, with classes named
+`Test<ClassUnderTest>` and methods named `test_<subject>_<expected_behavior>`.
+Warnings fail the run, and coverage must stay at or above 95%.
+`tests/test_end_to_end.py` mounts the filesystem through FUSE against a local
+fake of YouTube; it is skipped when `/dev/fuse` or `fusermount` is unavailable.
 
 ## Authentication Setup
 

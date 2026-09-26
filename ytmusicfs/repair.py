@@ -299,9 +299,13 @@ class LikedSongsRepairer:
         artist_norm = self._normalize(artist)
         candidate_artists_norm = self._normalize(candidate_artists)
 
-        if artist_norm and (
-            artist_norm in candidate_artists_norm
-            or candidate_artists_norm in artist_norm
+        if (
+            artist_norm
+            and candidate_artists_norm
+            and (
+                artist_norm in candidate_artists_norm
+                or candidate_artists_norm in artist_norm
+            )
         ):
             score += 3
 

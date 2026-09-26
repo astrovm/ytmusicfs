@@ -54,9 +54,13 @@ class MetadataManager:
         if entry_type != "file" and not path.endswith(".m4a"):
             self.logger.warning(f"Attempting to get video ID for non-file: {path}")
             raise OSError(errno.EINVAL, "Not a music file")
+        video_id = self._lookup_video_id(path)
+        # Only a resolved track becomes a known file, so typos never persist.
         if entry_type != "file":
             self.cache.mark_valid(path, is_directory=False)
+        return video_id
 
+    def _lookup_video_id(self, path: str) -> str:
         with self.video_id_cache_lock:
             if path in self.video_id_cache:
                 return self.video_id_cache[path]
@@ -94,7 +98,7 @@ class MetadataManager:
             if video_id:
                 return video_id
 
-        self.logger.error(f"Could not find video ID for {filename} in {dir_path}")
+        self.logger.debug("Could not find video ID for %s in %s", filename, dir_path)
         raise OSError(errno.ENOENT, "Video ID not found")
 
     def clear_cache(self) -> None:

@@ -3,6 +3,7 @@
 import errno
 import logging
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -72,11 +73,9 @@ class TestFileHandler(unittest.TestCase):
         self.file_handler.path_to_fh = {}
 
         # Clean up temporary directory
-        import shutil
-
         shutil.rmtree(self.temp_dir)
 
-    def test_open_file(self):
+    def test_open_registers_new_handle_with_ready_state(self):
         """Test opening a file for streaming."""
         # Test data
         path = "/playlists/my_playlist/song.m4a"
@@ -114,7 +113,7 @@ class TestFileHandler(unittest.TestCase):
             self.file_handler.open_files[file_handle]["initialized_event"].is_set()
         )
 
-    def test_open_file_cached_handle(self):
+    def test_open_allocates_new_handle_when_path_already_open(self):
         """Test opening a file for a path that already has a handle, but expecting a new handle.
 
         Note: The implementation doesn't reuse handles even if the path exists.
@@ -195,7 +194,7 @@ class TestFileHandler(unittest.TestCase):
         self.assertEqual(self.file_handler.open_files[fh]["format_id"], "140")
 
     @patch("ytmusicfs.file_handler.http_get")
-    def test_read_file(self, mock_requests_get):
+    def test_read_streams_initial_readahead_window(self, mock_requests_get):
         """Test reading content from a file."""
         # Set up mock data
         path = "/playlists/my_playlist/song.m4a"
@@ -837,7 +836,7 @@ class TestFileHandler(unittest.TestCase):
         self.file_handler.downloader.download_file.assert_not_called()
 
     @patch("ytmusicfs.file_handler.http_get")
-    def test_read_file_with_offset(self, mock_requests_get):
+    def test_read_at_offset_streams_from_that_offset(self, mock_requests_get):
         """Test reading content from a file with an offset."""
         # Set up mock data
         path = "/playlists/my_playlist/song.m4a"
@@ -1035,7 +1034,7 @@ class TestFileHandler(unittest.TestCase):
             "/liked_songs/song.m4a", 12345
         )
 
-    def test_release_file(self):
+    def test_release_removes_handle_and_path_mapping(self):
         """Test releasing (closing) a file handle."""
         # Set up mock data
         path = "/playlists/my_playlist/song.m4a"
@@ -1073,173 +1072,88 @@ class TestFileHandler(unittest.TestCase):
         self.assertNotIn(file_handle, self.file_handler.open_files)
         self.assertNotIn(path, self.file_handler.path_to_fh)
 
+    @staticmethod
+    def _stream_response(status_code, chunks=()):
+        response = MagicMock()
+        response.status_code = status_code
+        response.headers = {}
+        response.iter_content.return_value = list(chunks)
+        context = MagicMock()
+        context.__enter__.return_value = response
+        context.__exit__.return_value = None
+        return context
+
     @patch("ytmusicfs.file_handler.http_get")
     @patch("ytmusicfs.file_handler.time.sleep")
-    def test_stream_content_retry_on_failure(self, mock_sleep, mock_requests_get):
-        """Test the retry logic in _stream_content method with detailed verification."""
-        # Setup stream URL and request parameters
-        stream_url = "https://example.com/stream.m4a"
-        offset = 0
-        size = 1024
-        retries = 2  # Test with 2 retries
+    def test_stream_content_retries_request_errors_then_succeeds(
+        self, mock_sleep, mock_http_get
+    ):
+        mock_http_get.side_effect = [
+            requests.exceptions.ConnectionError("reset"),
+            self._stream_response(206, [b"audio-bytes"]),
+        ]
 
-        # Create mock responses - first fails with 503, second succeeds
-        mock_response_fail = MagicMock()
-        mock_response_fail.status_code = 503  # Service Unavailable
-
-        # Configure mock context manager correctly
-        mock_response_fail.__enter__ = MagicMock(return_value=mock_response_fail)
-        mock_response_fail.__exit__ = MagicMock(return_value=None)
-
-        mock_response_success = MagicMock()
-        mock_response_success.status_code = 200  # Success
-        mock_response_success.content = b"test_audio_data" * 64
-
-        # Configure mock context manager correctly
-        mock_response_success.__enter__ = MagicMock(return_value=mock_response_success)
-        mock_response_success.__exit__ = MagicMock(return_value=None)
-
-        mock_response_success.iter_content = MagicMock(
-            return_value=[mock_response_success.content]
-        )
-
-        # Use a list to store responses for our patched method
-        responses = [mock_response_fail, mock_response_success]
-
-        # Configure requests.get to fail on first call and succeed on second
-        mock_requests_get.side_effect = responses
-
-        # Track which response to return
-        current_attempt = [0]  # Using list for mutable reference
-
-        def mock_get(*args, **kwargs):
-            # Return the appropriate response based on current attempt
-            response = responses[current_attempt[0]]
-            current_attempt[0] += 1
-            return response
-
-        # Replace the side_effect with our function
-        mock_requests_get.side_effect = mock_get
-
-        # Create a patched version of _stream_content that handles status codes correctly
-        original_stream_content = self.file_handler._stream_content
-
-        def patched_stream_content(request):
-            # Mock the behavior we want for this test
-            for attempt in range(request.retries):
-                try:
-                    # Get response from the mock
-                    with mock_requests_get() as resp:
-                        if resp.status_code != 200 and resp.status_code != 206:
-                            # Simulate how the real method works - non-200/206 is treated as an error
-                            raise requests.exceptions.RequestException(
-                                f"HTTP {resp.status_code}"
-                            )
-                        # For successful response, return the content
-                        return resp.content[: request.size]
-                except requests.exceptions.RequestException as exc:
-                    if attempt == request.retries - 1:
-                        raise OSError(
-                            errno.EIO,
-                            f"Failed after {request.retries} attempts: {exc}",
-                        )
-                    time.sleep(2**attempt)
-            raise OSError(errno.EIO, f"Failed after {request.retries} attempts")
-
-        # Use the patched method for this test
-        self.file_handler._stream_content = patched_stream_content
-
-        # Call the method
         data = self.file_handler._stream_content(
-            StreamRequest(stream_url, offset, size, retries=retries)
+            StreamRequest("https://example.com/stream.m4a", 0, 5, retries=2)
         )
 
-        # Verify requests.get was called twice (once for failure, once for success)
-        self.assertEqual(mock_requests_get.call_count, 2)
-
-        # Verify sleep was called once for backoff (after first failure)
-        mock_sleep.assert_called_once_with(1)  # 2^0 = 1 second for first retry
-
-        # Verify correct data was returned
-        self.assertEqual(data, mock_response_success.content[:size])
-
-        # Restore original method
-        self.file_handler._stream_content = original_stream_content
+        self.assertEqual(data, b"audio")
+        self.assertEqual(mock_http_get.call_count, 2)
+        mock_sleep.assert_called_once_with(1.0)
 
     @patch("ytmusicfs.file_handler.http_get")
     @patch("ytmusicfs.file_handler.time.sleep")
-    def test_stream_content_max_retries_exceeded(self, mock_sleep, mock_requests_get):
-        """Test behavior when max retries are exceeded in _stream_content method."""
-        # Setup stream URL and request parameters
-        stream_url = "https://example.com/stream.m4a"
-        offset = 0
-        size = 1024
-        retries = 3
+    def test_stream_content_raises_eio_after_retries_exhausted(
+        self, mock_sleep, mock_http_get
+    ):
+        mock_http_get.side_effect = requests.exceptions.Timeout("slow")
 
-        # Configure requests.get to always fail with 503
-        mock_response_fail = MagicMock()
-        mock_response_fail.status_code = 503
-
-        # Configure mock context manager correctly
-        mock_response_fail.__enter__ = MagicMock(return_value=mock_response_fail)
-        mock_response_fail.__exit__ = MagicMock(return_value=None)
-
-        # Configure requests.get to fail each time
-        mock_requests_get.return_value = mock_response_fail
-
-        # Create a patched version of _stream_content that handles status codes as errors
-        original_stream_content = self.file_handler._stream_content
-
-        def patched_stream_content(request):
-            # Ensure the mock is called the expected number of times
-            responses = [mock_response_fail] * request.retries
-
-            for attempt in range(request.retries):
-                try:
-                    # Call the mock each time to increment call count
-                    mock_requests_get()
-                    with responses[attempt] as resp:
-                        if resp.status_code != 200 and resp.status_code != 206:
-                            # Simulate how the real method works
-                            raise requests.exceptions.RequestException(
-                                f"HTTP {resp.status_code}"
-                            )
-                except requests.exceptions.RequestException:
-                    if attempt == request.retries - 1:
-                        raise OSError(
-                            errno.EIO, f"HTTP {mock_response_fail.status_code}"
-                        )
-                    time.sleep(2**attempt)
-
-            # Should not reach here
-            return
-
-        # Use the patched method for this test
-        self.file_handler._stream_content = patched_stream_content
-
-        # Expect OSError when max retries are exceeded
         with self.assertRaises(OSError) as context:
             self.file_handler._stream_content(
-                StreamRequest(stream_url, offset, size, retries=retries)
+                StreamRequest("https://example.com/stream.m4a", 0, 1024, retries=3)
             )
 
-        # Verify error code and message
         self.assertEqual(context.exception.errno, errno.EIO)
-        self.assertTrue("HTTP 503" in str(context.exception))
+        self.assertIn("after 3 attempts", str(context.exception))
+        self.assertEqual(mock_http_get.call_count, 3)
+        mock_sleep.assert_has_calls([call(1.0), call(2.0)])
 
-        # Verify requests.get was called 'retries' times
-        self.assertEqual(mock_requests_get.call_count, retries)
+    @patch("ytmusicfs.file_handler.http_get")
+    @patch("ytmusicfs.file_handler.time.sleep")
+    def test_stream_content_does_not_retry_http_error_status(
+        self, mock_sleep, mock_http_get
+    ):
+        mock_http_get.return_value = self._stream_response(503)
 
-        # Verify sleep was called for exponential backoff
-        mock_sleep.assert_has_calls(
-            [
-                call(1),  # 2^0 = 1 second for first retry
-                call(2),  # 2^1 = 2 seconds for second retry
-            ]
-        )
+        with self.assertRaises(OSError) as context:
+            self.file_handler._stream_content(
+                StreamRequest("https://example.com/stream.m4a", 0, 1024, retries=3)
+            )
 
-        # Restore original method
-        self.file_handler._stream_content = original_stream_content
+        self.assertEqual(context.exception.errno, errno.EIO)
+        self.assertIn("HTTP 503", str(context.exception))
+        mock_http_get.assert_called_once()
+        mock_sleep.assert_not_called()
+
+    def test_read_response_bytes_stops_iterating_once_size_is_reached(self):
+        consumed = []
+
+        def chunks(chunk_size):
+            for chunk in (b"ab", b"cd", b"ef"):
+                consumed.append(chunk)
+                yield chunk
+
+        response = Mock()
+        response.iter_content.side_effect = chunks
+
+        self.assertEqual(FileHandler._read_response_bytes(response, 3, 2), b"abc")
+        self.assertEqual(consumed, [b"ab", b"cd"])
+
+    def test_read_response_bytes_returns_short_data_when_stream_ends(self):
+        response = Mock()
+        response.iter_content.return_value = [b"ab"]
+
+        self.assertEqual(FileHandler._read_response_bytes(response, 10, 2), b"ab")
 
     @patch("ytmusicfs.file_handler.http_get")
     def test_stream_content_merges_cookie_header(self, mock_requests_get):
@@ -1283,7 +1197,7 @@ class TestFileHandler(unittest.TestCase):
             {"SID": "mappingSid", "HSID": "headerHsid", "CONSENT": "YES+"},
         )
 
-    def test_read_from_cached_file(self):
+    def test_read_serves_complete_cached_file_from_disk(self):
         """Test reading content from a completely cached file."""
         # Set up mock data
         path = "/playlists/my_playlist/song.m4a"
@@ -1464,6 +1378,540 @@ class TestFileHandler(unittest.TestCase):
             self.file_handler.read(path, size=1024, offset=0, fh=fh)
 
         self.assertEqual(context.exception.errno, errno.ENOENT)
+
+
+class _RealFileHandlerMixin:
+    """Build a FileHandler whose cache checks run against a temp directory."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        self.cache_dir = Path(self.temp_dir)
+        thread_manager = Mock()
+        thread_manager.create_lock.side_effect = threading.RLock
+        self.cache = Mock()
+        self.cache.get_unavailable_track.return_value = None
+        self.cache.is_track_unavailable.return_value = False
+        self.yt_dlp = Mock()
+        self.update_size = Mock()
+        self.record_stat = Mock()
+        self.file_sizes: dict[str, int] = {}
+        self.handler = FileHandler(
+            FileHandlerDependencies(
+                thread_manager=thread_manager,
+                cache_dir=self.cache_dir,
+                cache=self.cache,
+                logger=logging.getLogger("test"),
+                update_file_size=self.update_size,
+                yt_dlp=self.yt_dlp,
+                browser="brave",
+                record_stat=self.record_stat,
+                get_file_size=self.file_sizes.get,
+            )
+        )
+        self.handler.downloader = Mock()
+        self.handler.downloader.get_progress.return_value = None
+        self.audio_dir = self.cache_dir / "audio"
+        self.audio_dir.mkdir(parents=True)
+
+    def tearDown(self):
+        for fh in list(self.handler.open_files):
+            self.handler.release("", fh)
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _stream_result(self, **overrides):
+        result = {
+            "status": "success",
+            "stream_url": "https://example.com/new.m4a",
+            "format_id": "141",
+            "http_headers": {},
+            "cookies": None,
+        }
+        result.update(overrides)
+        future = Future()
+        future.set_result(result)
+        return future
+
+
+class TestFileHandlerStreamInfo(_RealFileHandlerMixin, unittest.TestCase):
+    """Stream extraction, auth preparation and precaching."""
+
+    def test_summarize_auth_labels_authorization_scheme(self):
+        self.assertEqual(
+            FileHandler._summarize_auth({"Authorization": "Bearer abc"}, None),
+            ("Bearer", False, []),
+        )
+        self.assertEqual(
+            FileHandler._summarize_auth(
+                {"Authorization": "SAPISIDHASH 1_x"}, {"SAPISID": "s", "A": "b"}
+            ),
+            ("SAPISIDHASH", True, ["A", "SAPISID"]),
+        )
+        self.assertEqual(FileHandler._summarize_auth(None, {}), ("none", False, []))
+
+    def test_normalize_cookies_accepts_cookie_objects_and_dicts(self):
+        jar_cookie = Mock()
+        jar_cookie.name = "SID"
+        jar_cookie.value = 123
+        cookies = [
+            jar_cookie,
+            {"name": "HSID", "value": "h"},
+            {"key": "CONSENT", "value": "YES+"},
+            {"name": "EMPTY", "value": None},
+            "ignored",
+        ]
+
+        self.assertEqual(
+            FileHandler._normalize_cookies(cookies),
+            {"SID": "123", "HSID": "h", "CONSENT": "YES+"},
+        )
+
+    def test_normalize_cookies_returns_none_for_unusable_input(self):
+        self.assertIsNone(FileHandler._normalize_cookies("SID=abc"))
+        self.assertIsNone(FileHandler._normalize_cookies([]))
+        self.assertEqual(FileHandler._normalize_cookies({"A": "b"}), {"A": "b"})
+
+    def test_get_stream_info_reuses_in_flight_future(self):
+        self.handler.futures["vid"] = self._stream_result()
+
+        result = self.handler._get_stream_info("vid")
+
+        self.assertEqual(result["format_id"], "141")
+        self.yt_dlp.extract_stream_url_async.assert_not_called()
+        self.assertNotIn("vid", self.handler.futures)
+
+    def test_get_stream_info_rejects_non_dict_result(self):
+        future = Future()
+        future.set_result("not a dict")
+        self.yt_dlp.extract_stream_url_async.return_value = future
+
+        with self.assertRaises(OSError) as context:
+            self.handler._get_stream_info("vid")
+
+        self.assertEqual(context.exception.errno, errno.EIO)
+        self.record_stat.assert_called_with("stream_extractions")
+
+    def test_apply_stream_info_refuses_fallback_after_preferred_format(self):
+        file_info = {"video_id": "vid", "format_id": "141"}
+
+        with self.assertRaises(OSError) as context:
+            self.handler._apply_stream_info(
+                file_info, {"stream_url": "https://x", "format_id": "140"}
+            )
+
+        self.assertEqual(context.exception.errno, errno.EIO)
+        self.assertEqual(file_info["format_id"], "141")
+
+    def test_extract_stream_stores_integer_duration(self):
+        self.yt_dlp.extract_stream_url_async.return_value = self._stream_result(
+            duration=215
+        )
+        file_info = {"video_id": "vid"}
+
+        self.handler._extract_and_apply_stream("vid", file_info)
+
+        self.cache.set_durations_batch.assert_called_once_with({"vid": 215})
+        self.assertEqual(file_info["stream_url"], "https://example.com/new.m4a")
+
+    def test_expired_stream_info_is_discarded(self):
+        self.handler.stream_info_cache["vid"] = {
+            "time": time.time() - FileHandler.STREAM_INFO_TTL - 1,
+            "stream_url": "https://example.com/old.m4a",
+        }
+
+        self.assertFalse(self.handler._use_cached_stream_info({"video_id": "vid"}))
+        self.assertNotIn("vid", self.handler.stream_info_cache)
+
+    def test_mark_unavailable_ignores_transient_errors(self):
+        self.handler._mark_unavailable_if_needed("vid", "/p.m4a", "HTTP Error 500")
+        self.cache.mark_unavailable_track.assert_not_called()
+
+        self.handler._mark_unavailable_if_needed("vid", "/p.m4a", "Video unavailable")
+        self.cache.mark_unavailable_track.assert_called_once_with(
+            "vid", "/p.m4a", "Video unavailable"
+        )
+
+    def test_precache_returns_true_for_complete_cached_audio(self):
+        (self.audio_dir / "vid.m4a").write_bytes(b"data")
+        (self.audio_dir / "vid.status").write_text("complete:140")
+
+        self.assertTrue(self.handler.precache("/p.m4a", "vid"))
+        self.yt_dlp.extract_stream_url_async.assert_not_called()
+        self.handler.downloader.download_file_now.assert_not_called()
+
+    def test_precache_skips_known_unavailable_track(self):
+        self.cache.is_track_unavailable.return_value = True
+
+        self.assertFalse(self.handler.precache("/p.m4a", "vid"))
+        self.yt_dlp.extract_stream_url_async.assert_not_called()
+
+    def test_precache_marks_unavailable_on_extraction_error(self):
+        self.yt_dlp.extract_stream_url_async.return_value = self._stream_result(
+            status="error", error="Video unavailable"
+        )
+
+        self.assertFalse(self.handler.precache("/p.m4a", "vid"))
+        self.cache.mark_unavailable_track.assert_called_once_with(
+            "vid", "/p.m4a", "Video unavailable"
+        )
+        self.handler.downloader.download_file_now.assert_not_called()
+
+    def test_precache_uses_cached_stream_info(self):
+        self.handler.stream_info_cache["vid"] = {
+            "time": time.time(),
+            "stream_url": "https://example.com/cached.m4a",
+            "format_id": "140",
+        }
+
+        self.assertTrue(self.handler.precache("/p.m4a", "vid"))
+
+        self.yt_dlp.extract_stream_url_async.assert_not_called()
+        request = self.handler.downloader.download_file_now.call_args.args[0]
+        self.assertEqual(request.stream_url, "https://example.com/cached.m4a")
+        self.assertEqual(request.format_id, "140")
+
+    def test_precache_returns_false_without_format(self):
+        self.handler.stream_info_cache["vid"] = {
+            "time": time.time(),
+            "stream_url": "https://example.com/cached.m4a",
+            "format_id": None,
+        }
+
+        self.assertFalse(self.handler.precache("/p.m4a", "vid"))
+        self.handler.downloader.download_file_now.assert_not_called()
+
+
+class TestFileHandlerCaches(_RealFileHandlerMixin, unittest.TestCase):
+    """Local audio, range and progressive cache behavior."""
+
+    def _open(self, format_id="141", stream_url="https://example.com/a.m4a"):
+        fh = self.handler.open("/liked_songs/a.m4a", "vid")
+        self.handler.open_files[fh]["format_id"] = format_id
+        self.handler.open_files[fh]["stream_url"] = stream_url
+        return fh
+
+    def test_read_unknown_handle_raises_ebadf(self):
+        with self.assertRaises(OSError) as context:
+            self.handler.read("/a.m4a", 10, 0, 999)
+        self.assertEqual(context.exception.errno, errno.EBADF)
+
+    def test_read_reraises_stored_stream_error(self):
+        fh = self._open()
+        self.handler.open_files[fh]["status"] = "error"
+        self.handler.open_files[fh]["error"] = "Video unavailable"
+
+        with self.assertRaises(OSError) as context:
+            self.handler.read("/liked_songs/a.m4a", 10, 0, fh)
+        self.assertEqual(context.exception.errno, errno.ENOENT)
+
+    def test_read_zero_bytes_returns_empty_without_streaming(self):
+        fh = self._open()
+        with patch.object(self.handler, "_stream_content") as stream:
+            self.assertEqual(self.handler.read("/liked_songs/a.m4a", 0, 0, fh), b"")
+        stream.assert_not_called()
+
+    def test_read_uses_downloaded_bytes_reported_by_downloader(self):
+        fh = self._open(format_id="141")
+        (self.audio_dir / "vid.m4a").write_bytes(b"0123456789")
+        (self.audio_dir / "vid.status").write_text("partial:140")
+        self.handler.downloader.get_progress.return_value = {
+            "status": "downloading",
+            "progress": 8,
+        }
+
+        with patch.object(self.handler, "_stream_content") as stream:
+            data = self.handler.read("/liked_songs/a.m4a", 4, 2, fh)
+
+        self.assertEqual(data, b"2345")
+        stream.assert_not_called()
+
+    def test_download_has_range_requires_enough_progress(self):
+        self.assertFalse(FileHandler._download_has_range(None, 0, 1))
+        self.assertFalse(
+            FileHandler._download_has_range(
+                {"status": "downloading", "progress": 5}, 2, 4
+            )
+        )
+        self.assertTrue(FileHandler._download_has_range({"status": "complete"}, 0, 9))
+
+    def test_read_remote_requires_stream_url(self):
+        fh = self._open(stream_url="cached")
+        with self.assertRaises(OSError) as context:
+            self.handler._read_remote(
+                "/liked_songs/a.m4a", self.handler.open_files[fh], 0, 10
+            )
+        self.assertEqual(context.exception.errno, errno.EIO)
+
+    def test_cached_range_drops_index_when_part_file_vanishes(self):
+        fh = self._open(stream_url=None)
+        range_dir = self.handler._range_cache_dir("vid", "141")
+        range_dir.mkdir(parents=True)
+        part = range_dir / "0-8.part"
+        part.write_bytes(b"abcdefgh")
+        file_info = self.handler.open_files[fh]
+        self.assertEqual(
+            self.handler._read_cached_range("/liked_songs/a.m4a", file_info, 0, 4),
+            b"abcd",
+        )
+
+        part.unlink()
+
+        self.assertIsNone(
+            self.handler._read_cached_range("/liked_songs/a.m4a", file_info, 0, 4)
+        )
+        self.assertNotIn(range_dir, self.handler.range_index)
+
+    def test_cached_range_serves_short_read_at_known_eof(self):
+        fh = self._open(stream_url=None)
+        self.file_sizes["/liked_songs/a.m4a"] = 8
+        range_dir = self.handler._range_cache_dir("vid", "141")
+        range_dir.mkdir(parents=True)
+        (range_dir / "0-8.part").write_bytes(b"abcdefgh")
+
+        data = self.handler._read_cached_range(
+            "/liked_songs/a.m4a", self.handler.open_files[fh], 6, 10
+        )
+
+        self.assertEqual(data, b"gh")
+
+    def test_cached_ranges_ignore_malformed_part_names(self):
+        range_dir = self.handler._range_cache_dir("vid", "141")
+        range_dir.mkdir(parents=True)
+        (range_dir / "junk.part").write_bytes(b"x")
+        (range_dir / "0-1.part").write_bytes(b"x")
+
+        ranges = self.handler._cached_ranges(range_dir)
+
+        self.assertEqual([(start, end) for start, end, _ in ranges], [(0, 1)])
+
+    def test_cache_range_does_not_rewrite_existing_part(self):
+        fh = self._open()
+        file_info = self.handler.open_files[fh]
+        self.handler._cache_range(file_info, 0, b"first")
+        self.handler._cache_range(file_info, 0, b"other")
+
+        part = self.handler._range_cache_dir("vid", "141") / "0-5.part"
+        self.assertEqual(part.read_bytes(), b"first")
+        self.assertEqual(self.record_stat.call_args_list, [call("range_cache_writes")])
+
+    def test_read_available_audio_cache_edge_cases(self):
+        cache_path = self.audio_dir / "vid.m4a"
+        self.assertEqual(
+            FileHandler._read_available_audio_cache(cache_path, "vid", "141", 0, 0),
+            b"",
+        )
+        # No status and no audio file: stat fails.
+        self.assertIsNone(
+            FileHandler._read_available_audio_cache(cache_path, "vid", "141", 0, 4)
+        )
+        cache_path.write_bytes(b"abc")
+        self.assertIsNone(
+            FileHandler._read_available_audio_cache(cache_path, "vid", "141", 0, 4)
+        )
+
+    def test_read_cache_status_returns_none_when_unreadable(self):
+        status_path = self.audio_dir / "vid.status"
+        status_path.mkdir()
+        self.assertIsNone(FileHandler._read_cache_status(status_path))
+
+    def test_progressive_cache_ignores_empty_data(self):
+        fh = self._open()
+        self.handler._write_progressive_audio_cache(self.handler.open_files[fh], 0, b"")
+        self.assertFalse((self.audio_dir / "vid.m4a").exists())
+
+    def test_progressive_cache_write_errors_are_swallowed(self):
+        fh = self._open()
+
+        with patch.object(Path, "open", side_effect=OSError(errno.ENOSPC, "full")):
+            self.handler._write_progressive_audio_cache(
+                self.handler.open_files[fh], 0, b"data"
+            )
+
+        self.assertFalse((self.audio_dir / "vid.status").exists())
+
+    def test_maybe_start_cache_download_ignores_empty_reads(self):
+        fh = self._open()
+        file_info = self.handler.open_files[fh]
+        self.handler._maybe_start_cache_download("/a.m4a", file_info, 0)
+        self.assertEqual(file_info["bytes_read"], 0)
+
+    def test_maybe_start_cache_download_requires_format(self):
+        fh = self._open(format_id=None)
+        file_info = self.handler.open_files[fh]
+
+        self.handler._maybe_start_cache_download(
+            "/a.m4a", file_info, FileHandler.CACHE_START_BYTES
+        )
+
+        self.handler.downloader.download_file.assert_not_called()
+        self.assertFalse(file_info["cache_started"])
+
+    def test_read_ranges_are_capped_at_twelve(self):
+        file_info = {}
+        for offset in range(20):
+            FileHandler._record_read_request(file_info, 1, offset)
+        self.assertEqual(len(file_info["read_ranges"]), 12)
+        self.assertEqual(file_info["read_calls"], 20)
+
+    def test_uncached_probe_ignores_small_advertised_size(self):
+        self.file_sizes["/a.m4a"] = FileHandler.PROBE_EOF_OFFSET
+        self.assertFalse(
+            self.handler._is_uncached_probe_read("/a.m4a", FileHandler.PROBE_EOF_OFFSET)
+        )
+
+    def test_update_size_uses_content_length_for_full_response(self):
+        response = Mock(status_code=200, headers={"Content-Length": "4096"})
+        self.handler._update_size_from_response("/a.m4a", response, 0)
+        self.update_size.assert_called_once_with("/a.m4a", 4096)
+
+    def test_update_size_ignores_unknown_length(self):
+        response = Mock(status_code=200, headers={"Content-Length": "abc"})
+        self.handler._update_size_from_response("/a.m4a", response, 0)
+        response = Mock(status_code=206, headers={"Content-Range": "bytes 0-1/*"})
+        self.handler._update_size_from_response("/a.m4a", response, 0)
+        self.update_size.assert_not_called()
+
+    def test_content_range_total_parses_only_numeric_totals(self):
+        self.assertIsNone(FileHandler._content_range_total(None))
+        self.assertIsNone(FileHandler._content_range_total("bytes 0-1"))
+        self.assertIsNone(FileHandler._content_range_total("bytes 0-1/*"))
+        self.assertIsNone(FileHandler._content_range_total("bytes 0-1/x"))
+        self.assertEqual(FileHandler._content_range_total("bytes 0-1/99"), 99)
+
+    def test_release_unknown_handle_is_noop(self):
+        self.assertEqual(self.handler.release("/a.m4a", 12345), 0)
+        self.assertEqual(self.handler.get_recent_handles(), [])
+
+    def test_release_keeps_path_mapping_owned_by_newer_handle(self):
+        first = self.handler.open("/a.m4a", "vid")
+        second = self.handler.open("/a.m4a", "vid")
+
+        self.handler.release("/a.m4a", first)
+
+        self.assertEqual(self.handler.path_to_fh["/a.m4a"], second)
+        self.assertEqual(self.handler.get_recent_handles()[0]["video_id"], "vid")
+
+    def test_cached_audio_format_returns_none_when_status_unreadable(self):
+        (self.audio_dir / "vid.status").mkdir()
+        (self.audio_dir / "vid.m4a").write_bytes(b"data")
+
+        self.assertIsNone(self.handler._cached_audio_format("vid"))
+
+
+class TestFileHandlerStreaming(unittest.TestCase):
+    """Read-ahead and cached playback behavior."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+        thread_manager = Mock()
+        thread_manager.create_lock.side_effect = threading.RLock
+        cache = Mock()
+        cache.get_unavailable_track.return_value = None
+        self.handler = FileHandler(
+            FileHandlerDependencies(
+                thread_manager=thread_manager,
+                cache_dir=Path(self.temp_dir),
+                cache=cache,
+                logger=logging.getLogger("test"),
+                update_file_size=Mock(),
+                yt_dlp=Mock(),
+                browser="brave",
+            )
+        )
+        self.handler.downloader = Mock()
+        self.handler.downloader.get_progress.return_value = None
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _open_streaming(self, path: str) -> int:
+        fh = self.handler.open(path, "vid")
+        self.handler.open_files[fh]["stream_url"] = "https://example.com/a.m4a"
+        self.handler.open_files[fh]["format_id"] = "141"
+        return fh
+
+    def test_sequential_reads_are_served_from_readahead(self):
+        path = "/liked_songs/a.m4a"
+        fh = self._open_streaming(path)
+        audio = bytes(range(256)) * 16384
+
+        def fake_stream(request):
+            return audio[request.offset : request.offset + request.size]
+
+        with patch.object(
+            self.handler, "_stream_content", side_effect=fake_stream
+        ) as stream:
+            chunks = [
+                self.handler.read(path, 131072, offset, fh)
+                for offset in range(0, 1024 * 1024, 131072)
+            ]
+
+        self.assertEqual(b"".join(chunks), audio[: 1024 * 1024])
+        sizes = [c.args[0].size for c in stream.call_args_list]
+        self.assertEqual(sizes, [256 * 1024, 512 * 1024, 1024 * 1024])
+
+    def test_seek_resets_readahead_window(self):
+        path = "/liked_songs/a.m4a"
+        fh = self._open_streaming(path)
+        with patch.object(
+            self.handler,
+            "_stream_content",
+            side_effect=lambda request: b"x" * request.size,
+        ) as stream:
+            self.handler.read(path, 4096, 0, fh)
+            self.handler.read(path, 4096, 256 * 1024, fh)
+            self.handler.read(path, 4096, 3 * 1024 * 1024, fh)
+
+        sizes = [c.args[0].size for c in stream.call_args_list]
+        self.assertEqual(sizes, [256 * 1024, 512 * 1024, 256 * 1024])
+
+    def test_readahead_serves_short_reads_at_eof(self):
+        path = "/liked_songs/a.m4a"
+        fh = self._open_streaming(path)
+        with patch.object(
+            self.handler, "_stream_content", return_value=b"tail"
+        ) as stream:
+            self.assertEqual(self.handler.read(path, 4096, 0, fh), b"tail")
+            self.assertEqual(self.handler.read(path, 4096, 4, fh), b"")
+        stream.assert_called_once()
+
+    def test_complete_cached_audio_reuses_one_descriptor(self):
+        audio_dir = Path(self.temp_dir) / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        (audio_dir / "vid.m4a").write_bytes(b"0123456789")
+        (audio_dir / "vid.status").write_text("complete:141")
+        path = "/liked_songs/a.m4a"
+        fh = self.handler.open(path, "vid")
+
+        with patch.object(
+            self.handler,
+            "_cached_audio_format",
+            wraps=self.handler._cached_audio_format,
+        ) as status_check:
+            self.assertEqual(self.handler.read(path, 4, 0, fh), b"0123")
+            self.assertEqual(self.handler.read(path, 4, 4, fh), b"4567")
+        self.assertEqual(status_check.call_count, 1)
+
+        fd = self.handler.open_files[fh]["local_fd"]
+        self.handler.release(path, fh)
+        with self.assertRaises(OSError):
+            os.fstat(fd)
+
+    def test_range_index_scans_directory_once(self):
+        path = "/liked_songs/a.m4a"
+        fh = self._open_streaming(path)
+        self.handler.open_files[fh]["stream_url"] = None
+        range_dir = self.handler._range_cache_dir("vid", "141")
+        range_dir.mkdir(parents=True)
+        (range_dir / "0-8.part").write_bytes(b"abcdefgh")
+
+        with patch.object(Path, "glob", wraps=range_dir.glob) as glob:
+            for offset in range(4):
+                self.handler.open_files[fh].pop("readahead", None)
+                self.assertEqual(
+                    self.handler.read(path, 2, offset, fh),
+                    b"abcdefgh"[offset : offset + 2],
+                )
+        self.assertEqual(glob.call_count, 1)
 
 
 if __name__ == "__main__":

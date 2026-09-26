@@ -8,9 +8,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   checks:
     runs-on: ubuntu-26.04
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -18,8 +23,9 @@ jobs:
         with:
           python-version-file: ".python-version"
           cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libfuse2t64
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fuse3 libfuse2t64
       - name: Install project
         run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
       - name: Format
@@ -29,7 +35,10 @@ jobs:
       - name: Types
         run: mypy ytmusicfs
       - name: Tests
-        run: pytest -q
+        env:
+          # Fail instead of skipping the end-to-end tests that mount through FUSE.
+          YTMUSICFS_REQUIRE_FUSE: "1"
+        run: pytest -q --durations=10 --cov
       - name: Build package
         run: python -m build
       - name: Benchmark smoke test
