@@ -71,6 +71,11 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
     PLAYLIST_PREFETCH_IDLE_SECONDS = 8.0
     PLAYLIST_PREFETCH_BACKOFF_SECONDS = 5
     RECENT_RESULT_CACHE_SIZE = 4096
+    # Only these counters mean a user touched the mount; background work such
+    # as pre-caching must not reset the idle timer it waits on.
+    FUSE_ACTIVITY_STATS: ClassVar[frozenset[str]] = frozenset(
+        {"open", "read", "getattr", "readdir"}
+    )
     LIBRARY_ROOTS: ClassVar[dict[str, str]] = {
         "/playlists": "playlist",
         "/albums": "album",
@@ -428,7 +433,13 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             self._record_stat("video_id_hot_hits")
             return video_id
         self._record_stat("video_id_fallbacks")
-        return self.metadata_manager.get_video_id(path)
+        try:
+            return self.metadata_manager.get_video_id(path)
+        except OSError:
+            # A player may open a saved track path before its folder is listed.
+            if not self._ensure_parent_listed(path):
+                raise
+        return self._get_hot_video_id(path) or self.metadata_manager.get_video_id(path)
 
     def _schedule_precache_for_entries(self, dir_path: str, entries: list[str]) -> None:
         candidates: list[tuple[str, str]] = []
@@ -465,10 +476,17 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
     def _run_precache_worker(self) -> None:
         try:
             while True:
-                while time.time() - self.last_fs_activity < self.PRECACHE_IDLE_SECONDS:
+                while (
+                    time.time() - self.last_fs_activity < self.PRECACHE_IDLE_SECONDS
+                    and not self.thread_manager.is_shutdown()
+                ):
                     time.sleep(0.25)
 
                 with self.precache_lock:
+                    if self.thread_manager.is_shutdown():
+                        # Unmounting: drop queued work instead of delaying exit.
+                        self.precache_queue.clear()
+                        self.precache_queued_paths.clear()
                     if not self.precache_queue:
                         self.precache_worker_running = False
                         return
@@ -654,6 +672,7 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             return self._store_getattr_result(operation_key, cached_attrs)
 
         if self._is_library_item_directory(path):
+            self._ensure_parent_listed(path)
             if not self.router.validate_path(path):
                 self.logger.debug("Rejecting invalid level 2 path: %s", path)
                 raise FuseOSError(errno.ENOENT)
@@ -730,6 +749,20 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
     def _is_library_item_directory(path: str) -> bool:
         parts = path.split("/")
         return len(parts) == 3 and parts[1] in {"playlists", "albums"}
+
+    def _ensure_parent_listed(self, path: str) -> bool:
+        """List a path's folder once so lookups can tell real names from typos.
+
+        Returns True when the listing was just fetched.
+        """
+        parent = os.path.dirname(path)
+        if self.cache.get_directory_listing_with_attrs(parent) is not None:
+            return False
+        try:
+            self.readdir(parent)
+        except OSError:
+            return False
+        return True
 
     def _store_getattr_result(
         self, operation_key: str, attrs: dict[str, Any]
@@ -977,7 +1010,8 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
     def _record_stat(self, name: str) -> None:
         with self.stats_lock:
             self.stats[name] = self.stats.get(name, 0) + 1
-            self.last_fs_activity = time.time()
+            if name in self.FUSE_ACTIVITY_STATS:
+                self.last_fs_activity = time.time()
 
     def _record_elapsed(self, name: str, start_time: float) -> None:
         elapsed_ms = (time.time() - start_time) * 1000

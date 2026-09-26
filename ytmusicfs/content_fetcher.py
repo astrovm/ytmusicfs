@@ -239,8 +239,8 @@ class ContentFetcher:
         }
         if not cached_paths:
             return False
-        missing_ratio = len(cached_paths - current_paths) / len(cached_paths)
-        return missing_ratio > (1 - self.MIN_REGISTRY_RETAIN_RATIO)
+        retained_ratio = len(cached_paths & current_paths) / len(cached_paths)
+        return retained_ratio < self.MIN_REGISTRY_RETAIN_RATIO
 
     def _registry_from_cached_root_listings(self) -> list[RegistryEntry]:
         registry: list[RegistryEntry] = [

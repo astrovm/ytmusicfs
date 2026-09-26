@@ -136,24 +136,23 @@ class CacheManager:
         try:
             cursor = self.conn.cursor()
             cursor.execute(
-                "SELECT key, entry_type FROM cache_entries WHERE key LIKE 'valid_dir:%'"
+                "SELECT entry, entry_type FROM cache_entries "
+                "WHERE key LIKE 'valid_dir:%' OR key LIKE 'exact_path:%'"
             )
-            for row in cursor.fetchall():
-                path = self.key_to_path(row[0].replace("valid_dir:", ""))
-                self.valid_paths.add(path)
-                if row[1]:
-                    self.path_types[path] = row[1]
-                valid_paths_count += 1
-
-            cursor.execute(
-                "SELECT key, entry_type FROM cache_entries WHERE key LIKE 'exact_path:%'"
-            )
-            for row in cursor.fetchall():
-                path = self.key_to_path(row[0].replace("exact_path:", ""))
-                self.valid_paths.add(path)
-                if row[1]:
-                    self.path_types[path] = row[1]
-                valid_paths_count += 1
+            for entry_str, entry_type in cursor.fetchall():
+                # Keys are lossy ("_" and " " both become "/"), so only rows
+                # that stored their real path can be loaded; the rest are still
+                # found by the database lookup in is_valid_path.
+                with suppress(AttributeError, TypeError, ValueError):
+                    entry = json.loads(entry_str)
+                    # Listing rows go through set_batch, which nests the entry.
+                    path = entry.get("path") or entry.get("data", {}).get("path")
+                    if not isinstance(path, str):
+                        continue
+                    self.valid_paths.add(path)
+                    if entry_type:
+                        self.path_types[path] = entry_type
+                    valid_paths_count += 1
         except sqlite3.Error as e:
             self.logger.warning(
                 f"Failed to load valid paths: {e.__class__.__name__}: {e}"
@@ -171,15 +170,18 @@ class CacheManager:
                     (self.path_to_key("unavailable:") + "%",),
                 )
                 for key, entry in cursor.fetchall():
-                    self.unavailable_video_ids.add(
-                        self.key_to_path(key).replace("unavailable:", "", 1)
-                    )
-                    with suppress(json.JSONDecodeError, TypeError):
-                        metadata = json.loads(entry)
-                        data = metadata.get("data")
-                        path = data.get("path") if isinstance(data, dict) else None
-                        if isinstance(path, str):
-                            self.unavailable_paths.add(path)
+                    # Keys map "_" to "/", so prefer the stored videoId.
+                    video_id = self.key_to_path(key).replace("unavailable:", "", 1)
+                    with suppress(json.JSONDecodeError, TypeError, AttributeError):
+                        data = json.loads(entry).get("data")
+                        if isinstance(data, dict):
+                            stored_id = data.get("videoId")
+                            if isinstance(stored_id, str) and stored_id:
+                                video_id = stored_id
+                            path = data.get("path")
+                            if isinstance(path, str):
+                                self.unavailable_paths.add(path)
+                    self.unavailable_video_ids.add(video_id)
         except sqlite3.Error as e:
             self.logger.warning(
                 "Failed to load unavailable-track cache: %s: %s",
@@ -212,7 +214,7 @@ class CacheManager:
         if already_persisted:
             return
 
-        entry = {"data": True, "time": time.time()}
+        entry = {"data": True, "time": time.time(), "path": path}
         entry_str = json.dumps(entry)
         entry_type = requested_type
         metadata_str = json.dumps({"valid_since": time.time()})
@@ -888,7 +890,11 @@ class CacheManager:
         batch_entries = {}
 
         # Persist child validity in one batch with the listing.
-        batch_entries[f"valid_dir:{path}"] = {"data": True, "time": current_time}
+        batch_entries[f"valid_dir:{path}"] = {
+            "data": True,
+            "time": current_time,
+            "path": path,
+        }
 
         for filename, attrs in listing_with_attrs.items():
             if filename in [".", ".."]:
@@ -900,6 +906,7 @@ class CacheManager:
             batch_entries[f"{entry_type}{child_path}"] = {
                 "data": True,
                 "time": current_time,
+                "path": child_path,
             }
 
             self.attrs_cache[child_path] = attrs

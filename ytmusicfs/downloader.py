@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 
 import errno
+import math
 import time
 from typing import TYPE_CHECKING
 
 from ytmusicfs.http_utils import ensure_headers_and_cookies, http_get, http_head
 from ytmusicfs.models import DownloadProgress, DownloadRequest, DownloadStatus
 from ytmusicfs.retry import RetryPolicy
+
+# Retry backoff is slept in slices so a stop or unmount is noticed promptly.
+RETRY_WAIT_SLICE_SECONDS = 0.1
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -66,6 +70,11 @@ class Downloader:
         return self._download_task(request)
 
     def _download_task(self, request: DownloadRequest) -> bool:
+        if self.thread_manager.is_shutdown():
+            self.logger.debug(
+                "Skipping download of %s during shutdown", request.video_id
+            )
+            return False
         audio_path = self._audio_path(request.video_id)
         status_path = self._status_path(request.video_id)
         cached_format = self._cached_status_format(status_path)
@@ -114,11 +123,19 @@ class Downloader:
                 if attempt.is_last:
                     self._mark_failed(request, status_path)
                     return False
-                if self._stop_requested(request.video_id):
-                    self.logger.debug("Not retrying an explicitly stopped download")
+                if not self._wait_before_retry(request.video_id, attempt.delay):
+                    self.logger.debug("Not retrying a stopped download")
                     return False
-                time.sleep(attempt.delay)
         return False
+
+    def _wait_before_retry(self, video_id: str, delay: float) -> bool:
+        """Sleep for the retry backoff; return False if a stop arrives first."""
+        slices = max(1, math.ceil(delay / RETRY_WAIT_SLICE_SECONDS))
+        for _ in range(slices):
+            if self._stop_requested(video_id):
+                return False
+            time.sleep(delay / slices)
+        return not self._stop_requested(video_id)
 
     def _audio_path(self, video_id: str) -> Path:
         return self.cache_dir / "audio" / f"{video_id}.m4a"
@@ -253,6 +270,8 @@ class Downloader:
                 f"Incomplete download: got {actual_size} bytes, expected {expected_size}",
             )
         if not self._validate_file_format(audio_path):
+            # Resuming would append to the bad bytes, so retry from scratch.
+            audio_path.unlink(missing_ok=True)
             raise OSError(errno.EIO, "Invalid file format")
 
     def _mark_complete(
@@ -271,6 +290,8 @@ class Downloader:
         status_path.write_text(f"failed:{request.format_id}")
 
     def _stop_requested(self, video_id: str) -> bool:
+        if self.thread_manager.is_shutdown():
+            return True
         with self.lock:
             active = self.active_downloads.get(video_id)
             return bool(active and active.get("stop_requested"))
