@@ -57,7 +57,11 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
     METADATA_DIR = "/.ytmusicfs"
     STATUS_FILE = "/.ytmusicfs/status.json"
     MIN_AUDIO_SIZE = 1024 * 1024
-    ESTIMATED_BYTES_PER_SECOND = 16 * 1024
+    # Until the real size is known, over-estimate from format 141 (256 kbps)
+    # plus container overhead. The kernel stops reads at the advertised size,
+    # so an estimate below the real size cuts fast readers off mid-track; one
+    # above it just ends with a short read at the true end of the stream.
+    ESTIMATED_BYTES_PER_SECOND = 34 * 1024
     FUSE_ATTR_TIMEOUT = FUSE_ATTR_TIMEOUT
     FUSE_ENTRY_TIMEOUT = FUSE_ENTRY_TIMEOUT
     FUSE_NEGATIVE_TIMEOUT = FUSE_NEGATIVE_TIMEOUT
@@ -775,8 +779,29 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             self.logger.exception("Error in getattr for %s", path)
             raise FuseOSError(errno.ENOENT) from error
 
-    def open(self, path: str, flags: int) -> int:
-        """Validate a media path and allocate its streaming handle."""
+    def open(self, path: str, flags: Any) -> int:
+        """Allocate a streaming handle.
+
+        Mounted with ``raw_fi``, fusepy passes the ``fuse_file_info`` struct
+        instead of the open flags. The handle is then stored on it, and
+        direct I/O is enabled while the track's real size is still unknown so
+        the kernel neither stops at the estimated size nor pads past the end.
+        """
+        file_info = flags if hasattr(flags, "direct_io") else None
+        open_flags = file_info.flags if file_info is not None else flags
+        fh = self._open_handle(path, open_flags)
+        if file_info is None:
+            return fh
+        file_info.fh = fh
+        if path == self.STATUS_FILE or self._get_real_file_size(path) is None:
+            file_info.direct_io = 1
+        return 0
+
+    @staticmethod
+    def _handle_number(fh: Any) -> int:
+        return int(getattr(fh, "fh", fh))
+
+    def _open_handle(self, path: str, flags: int) -> int:
         try:
             self.logger.debug("open: %s (flags=%s)", path, flags)
 
@@ -822,7 +847,7 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             raise FuseOSError(errno.ENOENT)
         return video_id
 
-    def read(self, path: str, size: int, offset: int, fh: int) -> bytes:
+    def read(self, path: str, size: int, offset: int, fh: Any) -> bytes:
         """Read data from file.
 
         Args:
@@ -835,7 +860,9 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             Bytes read from file
         """
         try:
-            self.logger.debug(f"read: {path} (size={size}, offset={offset}, fh={fh})")
+            self.logger.debug(
+                "read: %s (size=%s, offset=%s, fh=%s)", path, size, offset, fh
+            )
 
             if path == self.STATUS_FILE:
                 data = self._get_status_json()
@@ -844,7 +871,9 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
 
             start_time = time.time()
             try:
-                return self.file_handler.read(path, size, offset, fh)
+                return self.file_handler.read(
+                    path, size, offset, self._handle_number(fh)
+                )
             finally:
                 self._record_elapsed("read_total_ms", start_time)
 
@@ -1270,7 +1299,7 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             return real_size
         return self._estimated_audio_size(duration_seconds)
 
-    def release(self, path: str, fh: int) -> int:
+    def release(self, path: str, fh: Any) -> int:
         """Close the file.
 
         Args:
@@ -1281,9 +1310,9 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
             0 on success
         """
         try:
-            self.logger.debug(f"release: {path} (fh={fh})")
-
-            return self.file_handler.release(path, fh)
+            handle = self._handle_number(fh)
+            self.logger.debug("release: %s (fh=%s)", path, handle)
+            return self.file_handler.release(path, handle)
 
         except Exception as e:
             self.logger.error(f"Error releasing {path}: {e}")
@@ -1453,5 +1482,6 @@ def mount_ytmusicfs(
             browser=browser,
         ),
         mount_point,
+        raw_fi=True,
         **fuse_options,
     )

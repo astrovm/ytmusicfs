@@ -139,10 +139,17 @@ ytmusicfs mount
 from. Replace `brave` with your browser if needed. Supported browsers include
 `brave`, `chrome`, `firefox`, and others supported by yt-dlp.
 
-On mount, YTMusicFS refreshes playlist and album roots immediately. Expensive
-liked-song refresh runs later in a delayed background worker that waits for the
-mounted filesystem to be idle, so file managers do not wait on YouTube Music.
-The `/.ytmusicfs/status.json` file shows current refresh state.
+On mount, YTMusicFS shows your saved library right away and refreshes the
+playlist and album lists from YouTube Music in the background, so new playlists
+appear a few seconds after mounting. The first mount, with nothing saved yet,
+waits for that fetch. Expensive liked-song refresh runs later in a delayed
+background worker that waits for the mounted filesystem to be idle, so file
+managers do not wait on YouTube Music. The `/.ytmusicfs/status.json` file shows
+current refresh state.
+
+When an account does not receive the highest quality stream (format 141, which
+needs YouTube Music Premium), YTMusicFS retries extraction for a few tracks and
+then stops retrying, so songs start faster on accounts without Premium.
 
 For debugging or custom paths:
 
@@ -333,6 +340,8 @@ ytmusicfs service {install,start,stop,restart,status} [--debug]
 ## Limitations
 
 - Stream URLs from YouTube Music expire after some time
+- File sizes are estimated from track duration until a song is first streamed
+  or cached; reads still end at the real end of the audio
 - Seeking may not be perfectly smooth in all players
 - Metadata like album art may be limited depending on your player
 
