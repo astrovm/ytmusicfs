@@ -336,6 +336,9 @@ class TestYouTubeMusicFS(YouTubeMusicFSTestCase):
 
     def test_getattr_playlist_directory_does_not_rewrite_cached_attrs(self):
         self.mock_router.validate_path.return_value = True
+        self.mock_cache.get_directory_listing_with_attrs.return_value = {
+            "my_playlist": {"st_mode": stat.S_IFDIR | 0o555}
+        }
 
         attrs = self.fs.getattr("/playlists/my_playlist")
 
@@ -348,6 +351,19 @@ class TestYouTubeMusicFS(YouTubeMusicFSTestCase):
             call("/playlists/my_playlist", is_directory=True),
             self.mock_cache.mark_valid.mock_calls,
         )
+
+    def test_getattr_playlist_in_empty_library_raises_enoent(self):
+        # An empty /playlists listing is never cached, so it stays None.
+        self.mock_router.validate_path.return_value = True
+
+        with (
+            patch.object(self.fs, "readdir", return_value=[".", ".."]) as readdir,
+            self.assertRaises(FuseOSError) as context,
+        ):
+            self.fs.getattr("/playlists/Made Up")
+
+        readdir.assert_called_once_with("/playlists")
+        self.assertEqual(context.exception.errno, errno.ENOENT)
 
     def test_getattr_unknown_playlist_directory_raises_enoent(self):
         self.mock_router.validate_path.return_value = False

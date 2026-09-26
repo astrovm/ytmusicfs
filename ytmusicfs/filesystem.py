@@ -673,7 +673,11 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
 
         if self._is_library_item_directory(path):
             self._ensure_parent_listed(path)
-            if not self.router.validate_path(path):
+            # No listing even after listing it means the library is empty.
+            parent_listing = self.cache.get_directory_listing_with_attrs(
+                os.path.dirname(path)
+            )
+            if parent_listing is None or not self.router.validate_path(path):
                 self.logger.debug("Rejecting invalid level 2 path: %s", path)
                 raise FuseOSError(errno.ENOENT)
             return self._store_getattr_result(operation_key, self._directory_attrs())

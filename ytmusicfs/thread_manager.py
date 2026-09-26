@@ -108,7 +108,13 @@ class ThreadManager:
         with self._active_tasks_lock:
             self._active_tasks += 1
 
-        future = pool.submit(fn, *args, **kwargs)
+        try:
+            future = pool.submit(fn, *args, **kwargs)
+        except BaseException:
+            # A rejected task (e.g. after shutdown) must not count as active.
+            with self._active_tasks_lock:
+                self._active_tasks -= 1
+            raise
 
         future.add_done_callback(self._task_done_callback)
 
