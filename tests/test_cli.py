@@ -1,8 +1,10 @@
 import argparse
 import logging
+import runpy
 import sqlite3
 import subprocess
 import sys
+import warnings
 from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -1159,6 +1161,21 @@ class TestMain:
 
         assert exc_info.value.code == 2
         assert "must be greater than 0" in capsys.readouterr().err
+
+    def test_running_module_exits_with_command_status(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(sys, "argv", ["ytmusicfs", "logs"])
+
+        with warnings.catch_warnings(), pytest.raises(SystemExit) as exc_info:
+            # runpy warns that ytmusicfs.cli is already imported.
+            warnings.simplefilter("ignore", RuntimeWarning)
+            runpy.run_module("ytmusicfs.cli", run_name="__main__")
+
+        assert exc_info.value.code == 1
+        assert "No log file found" in capsys.readouterr().err
+        assert not (tmp_path / ".cache" / "ytmusicfs" / "logs").exists()
 
     def test_main_requires_a_command(self, monkeypatch, capsys):
         monkeypatch.setattr(sys, "argv", ["ytmusicfs"])

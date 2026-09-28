@@ -549,20 +549,19 @@ class CacheManager:
                 entry_str = json.dumps(cache_entry)
                 values.append((db_key, entry_str))
 
-            if values:
-                with self.lock:
-                    cursor = self.conn.cursor()
-                    cursor.executemany(
-                        """
-                        INSERT OR REPLACE INTO cache_entries (key, entry)
-                        VALUES (?, ?)
-                        """,
-                        values,
-                    )
-                    self.conn.commit()
-                    self._pending_writes = 0
+            with self.lock:
+                cursor = self.conn.cursor()
+                cursor.executemany(
+                    """
+                    INSERT OR REPLACE INTO cache_entries (key, entry)
+                    VALUES (?, ?)
+                    """,
+                    values,
+                )
+                self.conn.commit()
+                self._pending_writes = 0
 
-                self.logger.debug(f"Batch cached {len(values)} entries")
+            self.logger.debug(f"Batch cached {len(values)} entries")
         except Exception as e:
             self.logger.error(f"Failed to batch write to cache: {e}")
             self.logger.error(traceback.format_exc())

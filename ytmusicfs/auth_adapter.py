@@ -109,6 +109,7 @@ class YTMusicAuthAdapter:
                     attempt.total,
                 )
                 time.sleep(attempt.delay)
+        raise RuntimeError("YouTube Music auth validation made no attempts")
 
     def __getattr__(self, name: str) -> Any:
         """Delegate attribute access to the underlying :class:`YTMusic` client."""

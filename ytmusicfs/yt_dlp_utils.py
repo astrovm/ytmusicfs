@@ -129,7 +129,7 @@ class YTDLPUtils:
             "cookiesfrombrowser": (browser,),
         }
         with YoutubeDL(ydl_opts) as ydl:
-            self._save_cookiejar(browser, ydl, cookie_file, refreshed_from_browser=True)
+            self._save_cookiejar(browser, ydl, cookie_file)
         if not self._has_auth_cookies(cookie_file):
             self.logger.warning(
                 "Browser cookie extraction from %s did not include auth cookies "
@@ -144,13 +144,7 @@ class YTDLPUtils:
         ) as tmp:
             return tmp.name
 
-    def _save_cookiejar(
-        self,
-        browser: str,
-        ydl: YoutubeDL,
-        cookie_file: str,
-        refreshed_from_browser: bool = False,
-    ) -> bool:
+    def _save_cookiejar(self, browser: str, ydl: YoutubeDL, cookie_file: str) -> bool:
         cookiejar = getattr(ydl, "cookiejar", None)
         if cookiejar is None or not hasattr(cookiejar, "save"):
             return False
@@ -158,8 +152,7 @@ class YTDLPUtils:
         cookiejar.save(cookie_file, ignore_discard=True, ignore_expires=True)
         with self._cookie_lock:
             self._browser_cookie_files[browser] = cookie_file
-            if refreshed_from_browser:
-                self._browser_cookie_file_times[browser] = time.time()
+            self._browser_cookie_file_times[browser] = time.time()
         return True
 
     def _stream_extraction_options(self, browser: str) -> dict[str, object]:

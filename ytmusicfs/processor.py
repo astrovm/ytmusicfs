@@ -253,8 +253,7 @@ class TrackProcessor:
             ):
                 durations_batch[track_info["videoId"]] = track_info["duration_seconds"]
 
-            if "is_new_duration" in track_info:
-                del track_info["is_new_duration"]
+            del track_info["is_new_duration"]
 
             filename = self.sanitize_filename(
                 f"{track_info['artist']} - {track_info['title']}.m4a"
