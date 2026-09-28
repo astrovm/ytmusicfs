@@ -136,6 +136,20 @@ class TestYTMusicAuthAdapter:
         assert client.get_library_playlists.call_count == 3
         assert mock_sleep.call_count == 2
 
+    @patch("ytmusicfs.auth_adapter._VALIDATION_ATTEMPTS", 0)
+    @patch("ytmusicfs.auth_adapter.YTMusic")
+    def test_browser_cookie_auth_rejects_validation_without_attempts(
+        self, mock_ytmusic
+    ):
+        ytdlp = Mock()
+        ytdlp.extract_browser_cookies.return_value = {"SAPISID": "sapisid"}
+
+        # Skipping validation must not silently count as valid auth.
+        with pytest.raises(RuntimeError, match="made no attempts"):
+            YTMusicAuthAdapter(browser="brave", yt_dlp_utils=ytdlp)
+
+        mock_ytmusic.return_value.get_library_playlists.assert_not_called()
+
     @patch("ytmusicfs.auth_adapter.YTMusic")
     def test_browser_cookie_auth_propagates_other_validation_errors(self, mock_ytmusic):
         mock_ytmusic.return_value.get_library_playlists.side_effect = PermissionError(

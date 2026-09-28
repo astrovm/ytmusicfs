@@ -100,6 +100,17 @@ class TestCacheManager(unittest.TestCase):
 
     # --- get / set / delete ---------------------------------------------
 
+    def test_default_cache_dir_is_created_under_home(self):
+        home = self.cache_dir / "home"
+        with patch("ytmusicfs.cache.Path.home", return_value=home):
+            cache = CacheManager(thread_manager=_thread_manager(), logger=self.logger)
+        self._extra_caches.append(cache)
+
+        self.assertEqual(cache.cache_dir, home / ".cache" / "ytmusicfs")
+        self.assertTrue(cache.cache_dir.is_dir())
+        cache.set("/k", 1)
+        self.assertEqual(cache.get("/k"), 1)
+
     def test_get_returns_value_written_by_set(self):
         self.cache.set("key", {"name": "Test", "id": 123})
         self.cache.hotcache.clear()
@@ -338,6 +349,16 @@ class TestCacheManager(unittest.TestCase):
         self.assertNotIn("/liked/songs/a.m4a", cache.valid_paths)
         self.assertNotIn("/albums/X", cache.valid_paths)
 
+    def test_load_valid_paths_skips_rows_with_non_string_path(self):
+        self._insert_raw("exact_path:/a.m4a", json.dumps({"path": 42}))
+        self._insert_raw("exact_path:/b.m4a", json.dumps({"path": "/b.m4a"}))
+
+        cache = self._reopen()
+
+        self.assertIn("/b.m4a", cache.valid_paths)
+        self.assertNotIn(42, cache.valid_paths)
+        self.assertNotIn("/a.m4a", cache.valid_paths)
+
     def test_load_valid_paths_survives_database_error(self):
         with self._broken_db():
             self.cache._load_valid_paths()
@@ -369,6 +390,15 @@ class TestCacheManager(unittest.TestCase):
 
         self.assertTrue(self.cache.is_valid_path("/playlists/Mix/a.m4a"))
         self.assertGreaterEqual(self.cache.stats["db_hits"], 1)
+
+    def test_is_valid_path_falls_back_to_valid_files_when_listing_lacks_child(self):
+        self.cache.set_directory_listing_with_attrs(
+            "/playlists/Mix", {"a.m4a": FILE_ATTRS}
+        )
+        self.cache.set("valid_files:/playlists/Mix", ["a.m4a", "b.m4a"])
+
+        self.assertTrue(self.cache.is_valid_path("/playlists/Mix/b.m4a"))
+        self.assertFalse(self.cache.is_valid_path("/playlists/Mix/c.m4a"))
 
     def test_is_valid_path_finds_child_in_valid_files(self):
         self.cache.mark_valid("/albums/X", is_directory=True)
@@ -669,6 +699,24 @@ class TestCacheManager(unittest.TestCase):
         self.assertTrue(cache.is_track_unavailable("noPath"))
         self.assertTrue(cache.is_track_unavailable("corrupt"))
         self.assertEqual(cache.unavailable_paths, {"/liked_songs/a.m4a"})
+
+    def test_reopen_uses_key_id_when_unavailable_row_lacks_video_id(self):
+        self._insert_raw(
+            "unavailable:keyonly", json.dumps({"data": {"path": "/albums/A/x.m4a"}})
+        )
+        self._insert_raw(
+            "unavailable:blankid",
+            json.dumps({"data": {"videoId": "", "path": 7}}),
+        )
+        self._insert_raw("unavailable:scalar", json.dumps({"data": "gone"}))
+
+        cache = self._reopen()
+
+        self.assertTrue(cache.is_track_unavailable("keyonly"))
+        self.assertTrue(cache.is_track_unavailable("blankid"))
+        self.assertFalse(cache.is_track_unavailable(""))
+        self.assertTrue(cache.is_track_unavailable("scalar"))
+        self.assertEqual(cache.unavailable_paths, {"/albums/A/x.m4a"})
 
     def test_load_unavailable_tracks_survives_database_error(self):
         with self._broken_db():

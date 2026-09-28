@@ -40,6 +40,18 @@ class TestYouTubeMusicClient:
         assert auth_adapter.get_library_playlists.call_count == 3
         assert mock_sleep.call_count == 2
 
+    def test_zero_attempts_raises_without_calling_api(self):
+        auth_adapter = Mock()
+        client = YouTubeMusicClient(auth_adapter=auth_adapter)
+
+        with (
+            patch("ytmusicfs.client._API_ATTEMPTS", 0),
+            pytest.raises(RuntimeError, match="Failed to fetch album MPREb_1"),
+        ):
+            client.get_album("MPREb_1")
+
+        auth_adapter.get_album.assert_not_called()
+
     def test_other_api_errors_are_raised_without_retry(self):
         auth_adapter = Mock()
         auth_adapter.get_album.side_effect = ValueError("bad album")

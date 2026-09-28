@@ -74,6 +74,23 @@ class TestYTDLPUtils(unittest.TestCase):
         self.assertEqual(mock_youtube_dl.call_count, 5)
 
     @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
+    def test_playlist_extraction_returns_empty_when_every_attempt_is_empty(
+        self, mock_youtube_dl
+    ):
+        empty = {"entries": [], "playlist_count": 10}
+        contexts = [self._ydl()]
+        contexts.extend(self._ydl(empty) for _ in range(4))
+        mock_youtube_dl.return_value.__enter__.side_effect = contexts
+
+        utils = self._utils()
+        result = utils.extract_playlist_content("LM", 10000, "brave")
+
+        self.assertEqual(result, [])
+        self.assertEqual(mock_youtube_dl.call_count, 5)
+        # The reported total survives even though no attempt returned tracks.
+        self.assertEqual(utils.get_last_playlist_total_count("LM"), 10)
+
+    @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
     def test_stream_extraction_enables_ejs_runtime(self, mock_youtube_dl):
         info = {
             "url": "https://example.com/audio.m4a",
@@ -504,6 +521,19 @@ class TestYTDLPUtils(unittest.TestCase):
             self._utils().extract_stream_url("abc123", browser="brave")
 
         self.assertEqual(mock_youtube_dl.call_count, 4)
+
+    @patch("ytmusicfs.yt_dlp_utils.STREAM_EXTRACTION_ATTEMPTS", 0)
+    @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
+    def test_stream_extraction_without_attempts_raises(self, mock_youtube_dl):
+        warmup = self._ydl()
+        mock_youtube_dl.return_value.__enter__.side_effect = [warmup]
+
+        with self.assertRaisesRegex(RuntimeError, "Failed to extract stream URL"):
+            self._utils().extract_stream_url("abc123", browser="brave")
+
+        # Only the browser cookie refresh ran; no watch page was extracted.
+        self.assertEqual(mock_youtube_dl.call_count, 1)
+        warmup.extract_info.assert_not_called()
 
     @patch("ytmusicfs.yt_dlp_utils.YoutubeDL")
     def test_quality_retry_failure_returns_first_stream(self, mock_youtube_dl):

@@ -91,6 +91,30 @@ class TestTrackProcessor:
         assert result["duration_formatted"] == "62:03"
         assert result["is_new_duration"] is True
 
+    @pytest.mark.parametrize("duration", ["LIVE", "1:02:03:04", ""])
+    def test_unparseable_duration_is_unknown_and_not_cached(self, duration):
+        processor = TrackProcessor()
+
+        result = processor.extract_track_info(
+            {"title": "Song", "videoId": "v", "duration": duration}
+        )
+
+        assert result["duration_seconds"] is None
+        assert result["duration_formatted"] == "0:00"
+        assert result["is_new_duration"] is False
+
+    def test_process_tracks_does_not_cache_unparseable_duration(self):
+        cache = Mock()
+        processor = TrackProcessor(cache_manager=cache)
+
+        [track] = processor.process_tracks(
+            [{"title": "Song", "artist": "Band", "duration": "LIVE"}]
+        )
+
+        assert track["duration_seconds"] is None
+        assert "is_new_duration" not in track
+        cache.set_durations_batch.assert_not_called()
+
     def test_extract_track_info_cache_miss_leaves_duration_unknown(self):
         cache = Mock()
         cache.get_duration.return_value = None

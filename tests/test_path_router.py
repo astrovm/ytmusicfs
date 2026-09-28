@@ -176,6 +176,24 @@ class TestPathRouter(unittest.TestCase):
         exact_handler.assert_not_called()
         dynamic_handler.assert_not_called()
 
+    def test_route_tries_later_handlers_when_earlier_ones_do_not_match(self):
+        albums_handler = Mock(return_value=["album"])
+        playlists_handler = Mock(return_value=["playlist"])
+        artist_handler = Mock(return_value=["artist"])
+        track_handler = Mock(return_value=["track"])
+        self.router.register_subpath("/albums/", albums_handler)
+        self.router.register_subpath("/playlists/", playlists_handler)
+        self.router.register_dynamic("/artists/*", artist_handler)
+        self.router.register_dynamic("/artists/*/*", track_handler)
+
+        self.assertEqual(self.router.route("/playlists/mix"), ["playlist"])
+        playlists_handler.assert_called_once_with("/playlists/mix")
+        albums_handler.assert_not_called()
+
+        self.assertEqual(self.router.route("/artists/Band/Song"), ["track"])
+        track_handler.assert_called_once_with("/artists/Band/Song", "Band", "Song")
+        artist_handler.assert_not_called()
+
     def test_route_returns_empty_directory_when_no_handler_matches(self):
         result = self.router.route("/nowhere")
 

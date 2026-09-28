@@ -430,10 +430,9 @@ class ContentFetcher:
                 "is_directory": True,
                 "id": entry["id"],
             }
-            if entry["type"] == "playlist":
-                processed_entry["playlistId"] = entry["id"]
-            elif entry["type"] == "album":
-                processed_entry["browseId"] = entry["id"]
+            # Only playlist and album entries reach this listing.
+            id_key = "playlistId" if entry["type"] == "playlist" else "browseId"
+            processed_entry[id_key] = entry["id"]
             processed_entries.append(processed_entry)
         self._cache_directory_listing_with_attrs(directory_path, processed_entries)
         self.cache.set_refresh_metadata(

@@ -350,6 +350,24 @@ class TestLikedSongsRepairer(unittest.TestCase):
             "Artist Song", filter_type="songs", limit=10, ignore_spelling=True
         )
 
+    def test_plan_one_uses_filename_when_cached_track_lacks_title(self):
+        self.cache.get.return_value = [
+            {"videoId": "old", "artist": "Cached Artist", "title": None}
+        ]
+        self.client.search.return_value = [
+            {"videoId": "new", "title": "Song", "artists": [{"name": "Artist"}]}
+        ]
+
+        repair = self.repairer._plan_one(
+            {"videoId": "old", "path": "/liked_songs/Artist - Song.m4a"}
+        )
+
+        self.assertEqual(repair.new_video_id, "new")
+        self.assertEqual(repair.old_track["artist"], "Cached Artist")
+        self.client.search.assert_called_once_with(
+            "Artist Song", filter_type="songs", limit=10, ignore_spelling=True
+        )
+
     def test_find_replacement_ignores_low_scores_and_same_video(self):
         self.client.search.return_value = [
             {"videoId": "old", "title": "Song", "artists": [{"name": "Artist"}]},

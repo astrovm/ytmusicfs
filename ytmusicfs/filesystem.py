@@ -609,14 +609,13 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
         return any(part.startswith(".") for part in path.split("/") if part)
 
     def _cache_routed_listing(self, path: str, result: list[str]) -> None:
-        if path == "/" or len(result) <= len(self.EMPTY_DIRECTORY):
+        filenames = [entry for entry in result if entry not in self.EMPTY_DIRECTORY]
+        if path == "/" or not filenames:
             return
         self.cache.mark_valid(path, is_directory=True)
-        filenames = [entry for entry in result if entry not in self.EMPTY_DIRECTORY]
         self.cache.set(f"valid_files:{path}", filenames)
         path_entries = {f"path_valid:{path}/{filename}": True for filename in filenames}
-        if path_entries:
-            self.thread_manager.submit_task("io", self.cache.set_batch, path_entries)
+        self.thread_manager.submit_task("io", self.cache.set_batch, path_entries)
 
     def _routed_readdir(self, path: str, operation_key: str) -> list[str]:
         try:

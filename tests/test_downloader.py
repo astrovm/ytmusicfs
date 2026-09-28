@@ -451,6 +451,21 @@ class TestDownloader(unittest.TestCase):
 
     @patch("ytmusicfs.downloader.http_get")
     @patch("ytmusicfs.downloader.http_head")
+    def test_download_task_with_zero_retries_marks_failed_without_requests(
+        self, mock_head, mock_get
+    ):
+        self.assertFalse(self.downloader._download_task(self._request(retries=0)))
+
+        mock_head.assert_not_called()
+        mock_get.assert_not_called()
+        # The status must not stay "downloading" forever.
+        self.assertEqual(self.status_path.read_text(), "failed:141")
+        self.assertEqual(
+            self.downloader.get_progress("abc123")["status"], DownloadStatus.FAILED
+        )
+
+    @patch("ytmusicfs.downloader.http_get")
+    @patch("ytmusicfs.downloader.http_head")
     def test_download_task_fails_when_body_is_shorter_than_expected(
         self, mock_head, mock_get
     ):

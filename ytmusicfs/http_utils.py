@@ -22,11 +22,9 @@ _YT_ORIGIN = "https://music.youtube.com"
 _HEADER_BLOCKLIST = {"host", "content-length"}
 
 
-def _is_sapisidhash(value: str | None) -> bool:
+def _is_sapisidhash(value: str) -> bool:
     """Return ``True`` when *value* looks like a SAPISID-derived signature."""
 
-    if not value:
-        return False
     return value.strip().lower().startswith("sapisidhash ")
 
 
@@ -86,7 +84,7 @@ def _ensure_origin_headers(headers: dict[str, str]) -> dict[str, str]:
 
 
 def _build_sapisidhash(
-    cookies: Mapping[str, Any] | None, origin: str = _YT_ORIGIN
+    cookies: Mapping[str, Any], origin: str = _YT_ORIGIN
 ) -> str | None:
     """Return an ``Authorization`` header value based on SAPISID cookies.
 
@@ -96,9 +94,6 @@ def _build_sapisidhash(
     helper mirrors Chrome's behaviour by hashing the cookie with the request
     origin and the current Unix timestamp.
     """
-
-    if not cookies:
-        return None
 
     for key in ("SAPISID", "__Secure-3PAPISID", "__Secure-3PSID"):
         if key in cookies:

@@ -126,6 +126,7 @@ class Downloader:
                 if not self._wait_before_retry(request.video_id, attempt.delay):
                     self.logger.debug("Not retrying a stopped download")
                     return False
+        self._mark_failed(request, status_path)
         return False
 
     def _wait_before_retry(self, video_id: str, delay: float) -> bool:

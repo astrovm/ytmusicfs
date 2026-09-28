@@ -777,6 +777,54 @@ class TestFileHandler(unittest.TestCase):
         )
         self.yt_dlp_utils.extract_stream_url_async.assert_not_called()
 
+    def test_truncated_range_cache_part_falls_back_to_stream(self):
+        path = "/liked_songs/song.m4a"
+        video_id = "abc123"
+        range_dir = self.cache_dir / "ranges" / "141" / video_id
+        range_dir.mkdir(parents=True)
+        # The name promises 100 bytes, but only 50 were written.
+        (range_dir / "0-100.part").write_bytes(b"a" * 50)
+        fh = self.file_handler.open(path, video_id)
+        self.file_handler.open_files[fh]["stream_url"] = "https://example.com/a.m4a"
+        self.file_handler.open_files[fh]["format_id"] = "141"
+
+        with patch.object(
+            self.file_handler, "_stream_content", return_value=b"b" * 100
+        ) as mock_stream:
+            data = self.file_handler.read(path, size=100, offset=0, fh=fh)
+
+        self.assertEqual(data, b"b" * 100)
+        mock_stream.assert_called_once()
+
+    def test_stream_info_tolerates_future_removed_by_another_reader(self):
+        path = "/liked_songs/song.m4a"
+        video_id = "abc123"
+        fh = self.file_handler.open(path, video_id)
+        info = {
+            "status": "success",
+            "stream_url": "https://example.com/audio.m4a",
+            "format_id": "141",
+            "http_headers": {},
+            "cookies": {},
+        }
+
+        def result(timeout):
+            # A concurrent reader of the same video finishes first.
+            self.file_handler.futures.pop(video_id, None)
+            return info
+
+        future = Mock()
+        future.result.side_effect = result
+        self.yt_dlp_utils.extract_stream_url_async.return_value = future
+
+        with patch.object(
+            self.file_handler, "_stream_content", return_value=b"payload"
+        ):
+            data = self.file_handler.read(path, size=1024, offset=0, fh=fh)
+
+        self.assertEqual(data, b"payload")
+        self.assertNotIn(video_id, self.file_handler.futures)
+
     def test_timeout_error_message_is_not_empty(self):
         path = "/playlists/my_playlist/song.m4a"
         video_id = "abc123"
@@ -1117,6 +1165,18 @@ class TestFileHandler(unittest.TestCase):
         self.assertIn("after 3 attempts", str(context.exception))
         self.assertEqual(mock_http_get.call_count, 3)
         mock_sleep.assert_has_calls([call(1.0), call(2.0)])
+
+    @patch("ytmusicfs.file_handler.http_get")
+    def test_stream_content_with_zero_retries_raises_eio_without_request(
+        self, mock_http_get
+    ):
+        with self.assertRaises(OSError) as context:
+            self.file_handler._stream_content(
+                StreamRequest("https://example.com/stream.m4a", 0, 1024, retries=0)
+            )
+
+        self.assertEqual(context.exception.errno, errno.EIO)
+        mock_http_get.assert_not_called()
 
     @patch("ytmusicfs.file_handler.http_get")
     @patch("ytmusicfs.file_handler.time.sleep")
