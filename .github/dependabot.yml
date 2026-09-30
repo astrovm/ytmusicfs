@@ -2,6 +2,7 @@ version: 2
 updates:
   # Keeps the SHA-pinned actions (and their version comments) on the latest release.
   - package-ecosystem: github-actions
+    assignees: [astrovm]
     directory: /
     schedule:
       interval: weekly
@@ -11,6 +12,7 @@ updates:
 
   # Bumps the exact pins in pyproject.toml, runtime and dev tools alike.
   - package-ecosystem: pip
+    assignees: [astrovm]
     directory: /
     schedule:
       interval: weekly
