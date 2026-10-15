@@ -940,6 +940,17 @@ class TestYouTubeMusicFSRecentResults(YouTubeMusicFSTestCase):
 
         self.assertEqual(self.mock_router.route.call_count, 2)
 
+    def test_readdir_routes_within_cooldown_when_no_result_was_stored(self):
+        # An earlier call that failed starts the cooldown without a result.
+        self.fs.last_access_time["readdir:/playlists/Mix"] = time.time()
+        self.mock_router.validate_path.return_value = True
+        self.mock_router.route.return_value = [".", "..", "a.m4a"]
+
+        result = self.fs.readdir("/playlists/Mix", None)
+
+        self.assertEqual(result, [".", "..", "a.m4a"])
+        self.mock_router.route.assert_called_once_with("/playlists/Mix")
+
     def test_getattr_reuses_result_within_cooldown(self):
         self.mock_cache.get_file_attrs_from_parent_dir.return_value = {
             "st_mode": stat.S_IFREG | 0o444,
