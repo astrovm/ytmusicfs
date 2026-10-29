@@ -1,4 +1,4 @@
-cachetools==7.2.4
+cachetools==7.2.5
 fusepy==3.0.1
 requests==2.34.2
 yt-dlp==2026.10.21
