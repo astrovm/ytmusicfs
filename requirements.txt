@@ -1,6 +1,6 @@
-cachetools==7.2.5
+cachetools==7.2.6
 fusepy==3.0.1
 requests==2.34.2
-yt-dlp==2026.10.21
+yt-dlp==2026.10.26
 yt-dlp-ejs==0.8.0
 ytmusicapi==1.12.3
