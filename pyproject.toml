@@ -39,7 +39,7 @@ ytmusicfs = "ytmusicfs.cli:main"
 [project.optional-dependencies]
 dev = [
   "build==1.6.1",
-  "pytest==9.1.1",
+  "pytest==9.2.0",
   "pytest-cov==7.1.0",
   "black==26.10.1",
   "ruff==0.17.3",
