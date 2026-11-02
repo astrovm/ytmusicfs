@@ -45,6 +45,7 @@ dev = [
   "ruff==0.17.3",
   "mypy==2.4.1",
 ]
+mutants = ["mutmut==3.8.1"]
 
 [tool.setuptools]
 packages = ["ytmusicfs"]
@@ -120,3 +121,17 @@ omit = ["ytmusicfs/protocols.py"]
 fail_under = 100
 skip_covered = true
 show_missing = true
+
+# Mutation testing, run through scripts/mutants.py (see the README).
+[tool.mutmut]
+source_paths = ["ytmusicfs"]
+# What the coverage gate leaves out is left out here too.
+do_not_mutate = ["ytmusicfs/protocols.py"]
+# Log messages are not behavior.
+do_not_mutate_patterns = ['logger\.\w+']
+pytest_add_cli_args_test_selection = ["tests/"]
+# Only fast unit tests: no FUSE mount, and the tests of the scripts themselves.
+pytest_add_cli_args = [
+  "--ignore=tests/test_end_to_end.py",
+  "--ignore-glob=tests/test_mutants*.py",
+]
