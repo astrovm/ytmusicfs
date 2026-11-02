@@ -483,6 +483,23 @@ def change_line(root: Path, old: str, new: str) -> None:
     )
 
 
+class TestParse:
+    def test_parse_takes_out_after_the_mode_as_the_workflow_spells_it(self):
+        diff = mutants.parse(["diff", "HEAD^1", "--out", "build/mutants"])
+        part = mutants.parse(["part", "3", "64", "--out", "build/mutants"])
+
+        assert (diff.mode, diff.base, diff.out) == ("diff", "HEAD^1", "build/mutants")
+        assert (part.mode, part.k, part.n, part.out) == (
+            "part",
+            3,
+            64,
+            "build/mutants",
+        )
+
+    def test_parse_leaves_out_empty_without_it(self):
+        assert mutants.parse(["part", "0", "64"]).out is None
+
+
 class TestMain:
     def test_main_diff_runs_the_touched_functions_and_lists_what_lived(
         self, project, tmp_path, capsys
@@ -502,7 +519,7 @@ class TestMain:
         )
         out = tmp_path / "out"
 
-        code = mutants.main(["--out", str(out), "diff", "HEAD^"])
+        code = mutants.main(["diff", "HEAD^", "--out", str(out)])
 
         assert code == 0
         assert json.loads(log.read_text()) == ["run", "ytmusicfs.a.x_clamp__mutmut_*"]
@@ -525,7 +542,7 @@ class TestMain:
         out = tmp_path / "out"
 
         # The file has 9 lines: part 0 of 3 is lines 1 to 3.
-        code = mutants.main(["--out", str(out), "part", "0", "3"])
+        code = mutants.main(["part", "0", "3", "--out", str(out)])
 
         assert code == 0
         assert (out / "lived.txt").read_text() == (
@@ -541,7 +558,7 @@ class TestMain:
         )
         out = tmp_path / "out"
 
-        assert mutants.main(["--out", str(out), "part", "0", "3"]) == 0
+        assert mutants.main(["part", "0", "3", "--out", str(out)]) == 0
         assert (out / "lived.txt").read_text() == ""
         assert (out / "tally.txt").read_text() == "2 of 2\n"
 
@@ -555,7 +572,7 @@ class TestMain:
         change_line(root, "\n\n\nclass Box", "\n\n\n\nclass Box")
         out = tmp_path / "out"
 
-        code = mutants.main(["--out", str(out), "diff", "HEAD^"])
+        code = mutants.main(["diff", "HEAD^", "--out", str(out)])
 
         assert code == 0
         assert not log.exists()

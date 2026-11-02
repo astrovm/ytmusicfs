@@ -397,10 +397,17 @@ def parse(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m scripts.mutants", description=__doc__
     )
-    parser.add_argument("--out", help="also write lived.txt and tally.txt here")
+    # On each mode, after its own arguments, the way the workflow spells it.
+    shared = argparse.ArgumentParser(add_help=False)
+    shared.add_argument("--out", help="also write lived.txt and tally.txt here")
     modes = parser.add_subparsers(dest="mode", required=True)
-    modes.add_parser("diff", help="the lines changed since BASE").add_argument("base")
-    part = modes.add_parser("part", help="part K of N equal parts of all source lines")
+    diff = modes.add_parser(
+        "diff", parents=[shared], help="the lines changed since BASE"
+    )
+    diff.add_argument("base")
+    part = modes.add_parser(
+        "part", parents=[shared], help="part K of N equal parts of all source lines"
+    )
     part.add_argument("k", type=int)
     part.add_argument("n", type=int)
     return parser.parse_args(argv)
