@@ -333,4 +333,14 @@ Warnings fail the run, and coverage must stay at 100%.
 `tests/test_end_to_end.py` mounts the filesystem through FUSE against a local
 fake of YouTube; it is skipped when `/dev/fuse` or `fusermount` is unavailable.
 
+Mutation testing checks that the tests would notice a change to the code.
+CI runs it on every pull request that touches `ytmusicfs/`, on the changed lines only,
+and keeps one comment listing the changes no test caught.
+Every Saturday it also runs a quarter of all the code and lists what lived in the open
+"Missed mutants" issue.
+It never blocks a merge: a lived change is a lead, not a failure.
+It uses [mutmut](https://github.com/boxed/mutmut), set up in `pyproject.toml` and driven by
+`scripts/mutants.py`, with only the fast unit tests (no FUSE mount).
+It is slow, so leave it to CI.
+
 </details>

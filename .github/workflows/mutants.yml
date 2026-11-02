@@ -1,0 +1,173 @@
+name: Mutants
+# Mutation testing (scripts/mutants.py with mutmut). It never blocks a merge: no
+# other workflow needs it.
+# - A pull request mutates the source lines it changed, and one comment lists the
+#   changes no test noticed, for a follow-up. A pull request that changes this
+#   setup also runs one real part, so a broken setup shows before Saturday.
+# - Every week, a quarter of all source lines, split into 64 parts, so four weeks
+#   cover everything. What lived is listed in the open "Missed mutants" issue.
+on:
+  pull_request:
+    paths:
+      - ytmusicfs/**
+      - pyproject.toml
+      - scripts/mutants.py
+      - scripts/mutants-comment.sh
+      - .github/workflows/mutants.yml
+  schedule:
+    - cron: "0 5 * * 6"
+  workflow_dispatch:
+    inputs:
+      quarter:
+        description: Which quarter of the parts to run, 0 to 3 (empty for this week's)
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push replaces a pull request's run; full runs never cancel.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || 'full' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changed:
+    name: Mutants / Changed code
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The merge commit and its first parent, the base branch.
+          fetch-depth: 2
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: ".python-version"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fuse3 libfuse2t64
+      - name: Install project
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev,mutants]'
+      - name: Mutate the changed code
+        run: python -m scripts.mutants diff HEAD^1 --out build/mutants
+      - name: Try one part of everything
+        run: |
+          if git diff --quiet HEAD^1 -- pyproject.toml scripts/mutants.py scripts/mutants-comment.sh .github/workflows/mutants.yml; then
+            echo "The setup didn't change."
+          else
+            python -m scripts.mutants part 0 64 --out build/mutants-part
+            cat build/mutants-part/lived.txt >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Comment what lived
+        # A fork's token can't comment; its run page has the summary.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: scripts/mutants-comment.sh build/mutants
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutants-changed
+          path: build/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  plan:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    outputs:
+      parts: ${{ steps.plan.outputs.parts }}
+    steps:
+      - name: Pick this week's parts
+        id: plan
+        env:
+          QUARTER: ${{ inputs.quarter }}
+        run: |
+          quarter=${QUARTER:-$(( $(date -u +%s) / 604800 % 4 ))}
+          [[ $quarter =~ ^[0-3]$ ]] || { echo "Quarter must be 0 to 3, got $quarter" >&2; exit 1; }
+          echo "parts=$(jq -cn --argjson q "$quarter" '[range($q * 16; $q * 16 + 16)]')" >> "$GITHUB_OUTPUT"
+
+  part:
+    name: Part ${{ matrix.part }} of 64
+    needs: plan
+    runs-on: ubuntu-26.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ${{ fromJSON(needs.plan.outputs.parts) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version-file: ".python-version"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fuse3 libfuse2t64
+      - name: Install project
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev,mutants]'
+      # Lived changes are findings for the issue; only a run that never got to its tally fails.
+      - name: Mutation testing
+        run: python -m scripts.mutants part "${{ matrix.part }}" 64 --out build/mutants
+      - name: Upload what lived
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: mutants-part-${{ matrix.part }}
+          path: build/mutants/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  report:
+    needs: [plan, part]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: mutants-part-*
+          path: results
+      - name: List what lived in the open issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PARTS: ${{ needs.plan.outputs.parts }}
+          JOBS: ${{ needs.part.result }}
+        run: |
+          lived=$(cat results/*/lived.txt 2>/dev/null | sort -u || true)
+          parts=$(jq -r 'map(tostring) | join(", ")' <<< "$PARTS")
+          issue=$(gh issue list --state open --search 'in:title "Missed mutants"' --json number --jq '.[0].number // empty')
+          {
+            echo "Parts $parts of 64: [run]($RUN), jobs $JOBS."
+            echo
+            if [ -z "$lived" ]; then
+              echo 'Every change in these parts was caught by a test.'
+            else
+              echo "### Lived ($(wc -l <<< "$lived"))"
+              echo 'No test noticed these changes. Real gaps get their own PR; changes that keep the same behavior can be ignored.'
+              echo '```'
+              echo "$lived"
+              echo '```'
+            fi
+          } > report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body-file report.md
+          elif [ -n "$lived" ]; then
+            gh issue create --title 'Missed mutants' --body-file report.md
+          fi
