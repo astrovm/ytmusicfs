@@ -26,7 +26,7 @@ if (( ${#body} > 60000 )) || (( $(printf '%s' "$body" | wc -c) > 60000 )); then
 
 Report truncated. [Full report]($RUN)"
   budget=$((60000 - $(printf '%s\n%s\n' "$prefix" "$suffix" | wc -c)))
-  rows=$(printf '%s\n' "$lived" | LC_ALL=C awk -v limit="$budget" '{ if (size + length($0) + 1 > limit) exit; print; size += length($0) + 1 }')
+  rows=$(printf '%s\n' "$lived" | LC_ALL=C awk -v limit="$budget" '{ if (size + length($0) + 1 > limit) full = 1; if (!full) { print; size += length($0) + 1 } }')
   body="$prefix
 $rows
 $suffix"
