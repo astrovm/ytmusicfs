@@ -823,12 +823,22 @@ class FileHandler:
             return
 
         range_dir = self._range_cache_dir(file_info["video_id"], format_id)
-        range_dir.mkdir(parents=True, exist_ok=True)
         end = offset + len(data)
         path = range_dir / f"{offset}-{end}.part"
-        if path.exists():
+        # Written beside the part and renamed into place, so a failed write
+        # never leaves a part that claims bytes it does not hold.
+        pending = path.with_suffix(f".{threading.get_ident()}.tmp")
+        try:
+            range_dir.mkdir(parents=True, exist_ok=True)
+            if path.exists():
+                return
+            pending.write_bytes(data)
+            pending.replace(path)
+        except OSError as exc:
+            # The range cache only speeds up later reads; the bytes are fetched.
+            self.logger.warning("Range cache write failed for %s: %s", path, exc)
+            pending.unlink(missing_ok=True)
             return
-        path.write_bytes(data)
         with self.range_index_lock:
             ranges = self.range_index.get(range_dir)
             if ranges is not None:
