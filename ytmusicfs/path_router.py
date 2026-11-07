@@ -5,6 +5,8 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+from ytmusicfs.logging_utils import add_secret_redaction
+
 RouteHandler = Callable[..., list[str]]
 PatternHandler = tuple[re.Pattern[str], RouteHandler]
 EMPTY_DIRECTORY = [".", ".."]
@@ -20,7 +22,7 @@ class PathRouter:
         self.pattern_handlers: list[PatternHandler] = []
         self.fetcher: Any = None
         self.cache: Any = None
-        self.logger = logging.getLogger("YTMusicFS")
+        self.logger = add_secret_redaction(logging.getLogger("YTMusicFS"))
 
     def set_fetcher(self, fetcher: Any) -> None:
         """Use the fetcher's cache for route validation."""

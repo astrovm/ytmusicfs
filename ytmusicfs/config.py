@@ -5,6 +5,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from ytmusicfs.logging_utils import add_secret_redaction
+
 
 class ConfigManager:
     """Centralized configuration manager for YTMusicFS."""
@@ -22,7 +24,7 @@ class ConfigManager:
         logger: logging.Logger | None = None,
     ) -> None:
         """Initialize with optional overrides for defaults."""
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = add_secret_redaction(logger or logging.getLogger(__name__))
         self.cache_dir = Path(cache_dir) if cache_dir else self.DEFAULT_CACHE_DIR
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.config_dir = Path(config_dir) if config_dir else self.DEFAULT_CONFIG_DIR

@@ -10,6 +10,7 @@ from typing import Any
 from ytmusicapi import YTMusic
 
 from ytmusicfs.http_utils import _build_sapisidhash
+from ytmusicfs.logging_utils import add_secret_redaction
 from ytmusicfs.retry import RetryPolicy
 
 _YT_ORIGIN = "https://music.youtube.com"
@@ -31,7 +32,7 @@ class YTMusicAuthAdapter:
         logger: logging.Logger | None = None,
     ) -> None:
         """Create a YTMusic client authenticated from browser cookies."""
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = add_secret_redaction(logger or logging.getLogger(__name__))
         self.browser = browser
         self.yt_dlp_utils = yt_dlp_utils
 

@@ -5,6 +5,7 @@ import time
 from json import JSONDecodeError
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from ytmusicfs.logging_utils import add_secret_redaction
 from ytmusicfs.retry import RetryPolicy
 
 if TYPE_CHECKING:
@@ -35,7 +36,9 @@ class YouTubeMusicClient:
             auth_adapter: Configured YTMusicAuthAdapter instance for authentication.
             logger: Optional logger instance; defaults to a new logger if None.
         """
-        self.logger = logger or logging.getLogger("YouTubeMusicClient")
+        self.logger = add_secret_redaction(
+            logger or logging.getLogger("YouTubeMusicClient")
+        )
         self.ytmusic = auth_adapter
         self.logger.info("YouTubeMusicClient initialized with browser auth")
 

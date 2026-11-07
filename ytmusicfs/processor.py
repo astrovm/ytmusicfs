@@ -4,6 +4,8 @@ import logging
 import re
 from typing import Any
 
+from ytmusicfs.logging_utils import add_secret_redaction
+
 
 class TrackProcessor:
     """Processor for handling track metadata."""
@@ -17,7 +19,9 @@ class TrackProcessor:
             logger: Optional logger instance. Defaults to a new logger if None.
             cache_manager: Optional cache manager for retrieving cached durations
         """
-        self.logger = logger or logging.getLogger("TrackProcessor")
+        self.logger = add_secret_redaction(
+            logger or logging.getLogger("TrackProcessor")
+        )
         self.cache_manager = cache_manager
 
     def sanitize_filename(self, name: str) -> str:

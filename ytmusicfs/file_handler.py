@@ -16,6 +16,7 @@ import requests
 from ytmusicfs.dependencies import DownloaderDependencies, FileHandlerDependencies
 from ytmusicfs.downloader import Downloader
 from ytmusicfs.http_utils import ensure_headers_and_cookies, http_get
+from ytmusicfs.logging_utils import add_secret_redaction, redact_log_text
 from ytmusicfs.models import (
     DownloadProgress,
     DownloadRequest,
@@ -47,7 +48,7 @@ class FileHandler:
         self.cache_dir = dependencies.cache_dir
         self.browser = dependencies.browser
         self.cache = dependencies.cache
-        self.logger = dependencies.logger
+        self.logger = add_secret_redaction(dependencies.logger)
         self.update_file_size_callback = dependencies.update_file_size
         self.record_stat_callback = dependencies.record_stat
         self.get_file_size_callback = dependencies.get_file_size
@@ -576,17 +577,21 @@ class FileHandler:
                 f"Refusing fallback format {format_id} after cached preferred ranges",
             )
         stream_url = result["stream_url"]
-        self.logger.debug("yt-dlp stream url for %s: %s...", video_id, stream_url[:60])
+        self.logger.debug(
+            "yt-dlp stream url for %s: %s...",
+            video_id,
+            redact_log_text(stream_url)[:60],
+        )
 
         raw_headers = dict(result.get("http_headers") or {})
         if raw_headers:
             self.logger.debug("yt-dlp headers for %s: %s", video_id, list(raw_headers))
         if "Cookie" in raw_headers or "cookie" in raw_headers:
-            cookie_preview = raw_headers.get("Cookie") or raw_headers.get("cookie")
+            cookie_header = raw_headers.get("Cookie") or raw_headers.get("cookie")
             self.logger.debug(
                 "yt-dlp cookie header for %s: %s",
                 video_id,
-                cookie_preview[:120] if cookie_preview else "empty",
+                "present" if cookie_header else "empty",
             )
 
         auth_headers, cookies = ensure_headers_and_cookies(

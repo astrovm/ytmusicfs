@@ -7,6 +7,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
+from ytmusicfs.logging_utils import add_secret_redaction
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -26,7 +28,7 @@ class ThreadManager:
         Args:
             logger: Logger instance for logging thread-related operations.
         """
-        self.logger = logger or logging.getLogger("ThreadManager")
+        self.logger = add_secret_redaction(logger or logging.getLogger("ThreadManager"))
         self.logger.info("Initializing ThreadManager")
 
         self._pools: dict[str, ThreadPoolExecutor] = {}

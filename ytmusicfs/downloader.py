@@ -6,6 +6,7 @@ import time
 from typing import TYPE_CHECKING
 
 from ytmusicfs.http_utils import ensure_headers_and_cookies, http_get, http_head
+from ytmusicfs.logging_utils import add_secret_redaction
 from ytmusicfs.models import DownloadProgress, DownloadRequest, DownloadStatus
 from ytmusicfs.retry import RetryPolicy
 
@@ -24,7 +25,7 @@ class Downloader:
 
     def __init__(self, dependencies: DownloaderDependencies) -> None:
         self.cache_dir = dependencies.cache_dir
-        self.logger = dependencies.logger
+        self.logger = add_secret_redaction(dependencies.logger)
         self.update_file_size_callback = dependencies.update_file_size
         self.thread_manager = dependencies.thread_manager
         self.active_downloads: dict[str, DownloadProgress] = {}
