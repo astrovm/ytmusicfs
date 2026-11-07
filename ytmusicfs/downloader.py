@@ -343,7 +343,7 @@ class Downloader:
             status = status_path.read_text().strip()
         except OSError:
             return None
-        for prefix in ("complete:", "downloading:", "failed:"):
+        for prefix in ("complete:", "downloading:", "partial:", "failed:"):
             if status.startswith(prefix):
                 return status.removeprefix(prefix)
         return None

@@ -204,6 +204,58 @@ class TestDownloader(unittest.TestCase):
 
     @patch("ytmusicfs.downloader.http_get")
     @patch("ytmusicfs.downloader.http_head")
+    def test_download_task_replaces_partial_cache_from_different_format(
+        self, mock_head, mock_get
+    ):
+        audio_path = self.cache_dir / "audio" / "abc123.m4a"
+        status_path = self.cache_dir / "audio" / "abc123.status"
+        old_data = b"\x00\x00\x00\x18ftypm4a " + (b"\x00" * 90)
+        new_data = b"\x00\x00\x00\x18ftypm4a " + (b"\x01" * 190)
+        audio_path.write_bytes(old_data)
+        status_path.write_text("partial:140")
+
+        # Like a real server: a Range request gets 206 and only the tail.
+        self.ranges = []
+
+        def head(_url, headers, **_kwargs):
+            self.ranges.append(headers)
+            start = int(headers["Range"][6:-1]) if "Range" in headers else 0
+            response = MagicMock()
+            response.status_code = 206 if "Range" in headers else 200
+            response.headers = {"content-length": str(len(new_data) - start)}
+            return response
+
+        def get(_url, headers, **_kwargs):
+            start = int(headers["Range"][6:-1]) if "Range" in headers else 0
+            response = MagicMock()
+            response.status_code = 206 if "Range" in headers else 200
+            response.iter_content.return_value = [new_data[start:]]
+            context = MagicMock()
+            context.__enter__.return_value = response
+            context.__exit__.return_value = None
+            return context
+
+        mock_head.side_effect = head
+        mock_get.side_effect = get
+
+        result = self.downloader._download_task(
+            DownloadRequest(
+                video_id="abc123",
+                stream_url="https://example.com/audio.m4a",
+                path="/playlists/test/song.m4a",
+                format_id="141",
+                retries=1,
+                chunk_size=len(new_data),
+            )
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(audio_path.read_bytes(), new_data)
+        self.assertEqual(status_path.read_text(), "complete:141")
+        self.assertNotIn("Range", self.ranges[0])
+
+    @patch("ytmusicfs.downloader.http_get")
+    @patch("ytmusicfs.downloader.http_head")
     def test_download_task_keeps_partial_cache_after_failure(self, mock_head, mock_get):
         video_id = "abc123"
         stream_url = "https://example.com/audio.m4a"
@@ -619,6 +671,7 @@ class TestDownloader(unittest.TestCase):
         for text, expected in (
             ("complete:141", "141"),
             ("downloading:140", "140"),
+            ("partial:140", "140"),
             ("failed:139", "139"),
             ("interrupted", None),
         ):
