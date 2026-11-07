@@ -346,6 +346,19 @@ class TestSelect:
 
 
 class TestLived:
+    def test_distinct_mutants_with_the_same_displayed_change_remain_distinct(self):
+        first = Mutant(
+            "ytmusicfs/a.py", "module.x__mutmut_1", 0, Located(5, 5, "old", "new")
+        )
+        second = Mutant(
+            "ytmusicfs/a.py", "module.x__mutmut_2", 0, Located(5, 5, "old", "new")
+        )
+
+        rows, total = mutants.lived([first, second])
+
+        assert total == 2
+        assert len(set(rows)) == 2
+
     def test_lived_lists_what_no_test_caught_by_file_and_line(self):
         rows, total = mutants.lived(
             [
@@ -362,13 +375,13 @@ class TestLived:
         )
 
         assert rows == [
-            "ytmusicfs/0.py:2  survived: old -> new",
-            "ytmusicfs/a.py:7  segfault: old -> new",
-            "ytmusicfs/a.py:9  no tests: old -> new",
-            "ytmusicfs/a.py:12  timeout: old -> new",
-            "ytmusicfs/a.py:30  survived: old -> new",
-            "ytmusicfs/a.py:40  suspicious: old -> new",
-            "ytmusicfs/a.py:41  not checked: old -> new",
+            "ytmusicfs/0.py:2  survived: old -> new [ytmusicfs.a.x_f__mutmut_2]",
+            "ytmusicfs/a.py:7  segfault: old -> new [ytmusicfs.a.x_f__mutmut_7]",
+            "ytmusicfs/a.py:9  no tests: old -> new [ytmusicfs.a.x_f__mutmut_9]",
+            "ytmusicfs/a.py:12  timeout: old -> new [ytmusicfs.a.x_f__mutmut_12]",
+            "ytmusicfs/a.py:30  survived: old -> new [ytmusicfs.a.x_f__mutmut_30]",
+            "ytmusicfs/a.py:40  suspicious: old -> new [ytmusicfs.a.x_f__mutmut_40]",
+            "ytmusicfs/a.py:41  not checked: old -> new [ytmusicfs.a.x_f__mutmut_41]",
         ]
         assert total == 9
 
@@ -378,7 +391,7 @@ class TestLived:
     def test_lived_leaves_out_the_change_when_unknown(self):
         unknown = Mutant("ytmusicfs/a.py", "m", 0, Located(5, 5, "", ""))
 
-        assert mutants.lived([unknown]) == (["ytmusicfs/a.py:5  survived"], 1)
+        assert mutants.lived([unknown]) == (["ytmusicfs/a.py:5  survived [m]"], 1)
 
     def test_lived_of_nothing_is_empty(self):
         assert mutants.lived([]) == ([], 0)
@@ -524,7 +537,7 @@ class TestMain:
         assert code == 0
         assert json.loads(log.read_text()) == ["run", "ytmusicfs.a.x_clamp__mutmut_*"]
         assert (out / "lived.txt").read_text() == (
-            "ytmusicfs/a.py:3  survived: return low -> return None\n"
+            "ytmusicfs/a.py:3  survived: return low -> return None [ytmusicfs.a.x_clamp__mutmut_2]\n"
         )
         assert (out / "tally.txt").read_text() == "0 of 1\n"
         assert "0 of 1 changes caught by a test." in capsys.readouterr().out
@@ -546,7 +559,7 @@ class TestMain:
 
         assert code == 0
         assert (out / "lived.txt").read_text() == (
-            "ytmusicfs/a.py:3  survived: return low -> return None\n"
+            "ytmusicfs/a.py:3  survived: return low -> return None [ytmusicfs.a.x_clamp__mutmut_2]\n"
         )
         assert (out / "tally.txt").read_text() == "1 of 2\n"
 

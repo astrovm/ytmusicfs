@@ -324,7 +324,7 @@ def lived(mutants: Sequence[Mutant]) -> tuple[list[str], int]:
         change = (
             f": {m.where.old} -> {m.where.new}" if m.where.old or m.where.new else ""
         )
-        rows.append(f"{m.file}:{m.where.first}  {status}{change}")
+        rows.append(f"{m.file}:{m.where.first}  {status}{change} [{m.name}]")
     return rows, len(counted)
 
 

@@ -142,3 +142,19 @@ class TestMutantsComment:
 
         assert run.code == 0
         assert run.calls[1][:3] == ["api", "-X", "DELETE"]
+
+    def test_long_comment_is_bounded_and_keeps_complete_lines_and_fences(self, comment):
+        rows = "".join(
+            f'ytmusicfs/a.py:{i}  survived: {"ñ" * 40}\n' for i in range(2000)
+        )
+        run = comment(rows, "0 of 2000\n")
+        body = run.calls[-1][-1].removeprefix("body=")
+
+        assert run.code == 0
+        assert len(body.encode()) <= 60000
+        assert body.count("```") == 2
+        assert "[Full report](https://example.test/run/1)" in body
+        assert all(
+            line in rows.splitlines()
+            for line in body.split("```")[1].strip().splitlines()
+        )
