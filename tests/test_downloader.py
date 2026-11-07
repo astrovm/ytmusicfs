@@ -666,6 +666,21 @@ class TestDownloader(unittest.TestCase):
 
         mock_head.assert_not_called()
 
+    @patch("ytmusicfs.downloader.http_get")
+    @patch("ytmusicfs.downloader.http_head")
+    def test_download_file_now_creates_the_audio_folder_on_a_fresh_cache(
+        self, mock_head, mock_get
+    ):
+        shutil.rmtree(self.cache_dir / "audio")
+        mock_head.return_value = self._head(200, len(self.VALID_M4A))
+        mock_get.return_value = self._get(200, [self.VALID_M4A])
+
+        result = self.downloader.download_file_now(self._request())
+
+        self.assertTrue(result)
+        self.assertEqual(self.audio_path.read_bytes(), self.VALID_M4A)
+        self.assertEqual(self.status_path.read_text(), "complete:141")
+
     def test_cached_status_format_parses_known_prefixes(self):
         self.assertIsNone(Downloader._cached_status_format(self.status_path))
         for text, expected in (

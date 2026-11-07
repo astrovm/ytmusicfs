@@ -33,8 +33,6 @@ class Downloader:
 
     def download_file(self, request: DownloadRequest) -> bool:
         """Schedule an audio download unless it is complete or already active."""
-        audio_path = self._audio_path(request.video_id)
-        audio_path.parent.mkdir(parents=True, exist_ok=True)
         if self._is_download_complete(request.video_id, request.format_id):
             self.logger.debug("Download already complete for %s", request.video_id)
             return True
@@ -116,6 +114,7 @@ class Downloader:
             )
             return False
         audio_path = self._audio_path(request.video_id)
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
         status_path = self._status_path(request.video_id)
         cached_format = self._cached_status_format(status_path)
         status_text = status_path.read_text().strip() if status_path.exists() else ""
