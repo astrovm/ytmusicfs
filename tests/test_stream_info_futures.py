@@ -6,9 +6,12 @@ barrier instead of hoping the scheduler produces them.
 """
 
 import contextlib
+import errno
 import threading
 import unittest
 from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from unittest.mock import patch
 
 from tests.test_file_handler import _RealFileHandlerMixin
 
@@ -103,3 +106,41 @@ class TestStreamInfoFuturesAreThreadSafe(_RealFileHandlerMixin, unittest.TestCas
         self.handler._get_stream_info("vid")
 
         self.assertIs(self.handler.futures.get("vid"), newer)
+
+
+class TestFuturesAreClearedWhenAnExtractionIsGivenUp(
+    _RealFileHandlerMixin, unittest.TestCase
+):
+    def _recover(self, error: Exception) -> None:
+        file_info = {"video_id": "vid", "status": "ready"}
+        with self.assertRaises(OSError):
+            self.handler._recover_stream_failure("/a.m4a", file_info, "vid", error)
+
+    def test_a_failed_extraction_is_forgotten_so_the_next_read_retries(self):
+        self.handler.futures["vid"] = Future()
+        self.handler.futures["other"] = Future()
+
+        self._recover(OSError(errno.EIO, "boom"))
+
+        self.assertEqual(list(self.handler.futures), ["other"])
+
+    def test_a_slow_extraction_is_kept_for_the_next_read_to_wait_on(self):
+        slow: Future = Future()
+        self.handler.futures["vid"] = slow
+
+        self._recover(FutureTimeoutError())
+
+        self.assertIs(self.handler.futures["vid"], slow)
+
+    def test_auto_repair_forgets_the_old_track_but_not_other_tracks(self):
+        self.handler.on_stream_unavailable = lambda _old, _path: "new"
+        self.handler.futures["vid"] = Future()
+        self.handler.futures["other"] = Future()
+        file_info = {"video_id": "vid"}
+
+        with patch.object(self.handler, "_extract_and_apply_stream") as extract:
+            repaired = self.handler._attempt_auto_repair("/a.m4a", file_info, "vid")
+
+        self.assertTrue(repaired)
+        extract.assert_called_once_with("new", file_info)
+        self.assertEqual(list(self.handler.futures), ["other"])
