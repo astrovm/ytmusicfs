@@ -13,6 +13,7 @@ from ytmusicfs.retry import RetryPolicy
 RETRY_WAIT_SLICE_SECONDS = 0.1
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from ytmusicfs.dependencies import DownloaderDependencies
@@ -38,16 +39,16 @@ class Downloader:
             self.logger.debug("Download already complete for %s", request.video_id)
             return True
 
-        with self.lock:
-            active = self.active_downloads.get(request.video_id)
-            if active and active.get("status") == DownloadStatus.DOWNLOADING:
-                self.logger.debug(
-                    "Download already in progress for %s", request.video_id
-                )
-                return True
+        if not self._claim(request.video_id):
+            self.logger.debug("Download already in progress for %s", request.video_id)
+            return True
 
         self.logger.debug("Submitting download task for %s", request.video_id)
-        self.thread_manager.submit_task("io", self._download_task, request)
+        try:
+            self.thread_manager.submit_task("io", self._download_task, request)
+        except BaseException:
+            self._release_claim(request.video_id)
+            raise
         return True
 
     def download_file_now(self, request: DownloadRequest) -> bool:
@@ -56,20 +57,59 @@ class Downloader:
             self.logger.debug("Download already complete for %s", request.video_id)
             return True
 
-        with self.lock:
-            active = self.active_downloads.get(request.video_id)
-            if active and active.get("status") in {
-                DownloadStatus.STARTING,
-                DownloadStatus.DOWNLOADING,
-            }:
-                self.logger.debug(
-                    "Download already in progress for %s", request.video_id
-                )
-                return True
+        if not self._claim(request.video_id):
+            self.logger.debug("Download already in progress for %s", request.video_id)
+            return True
 
         return self._download_task(request)
 
+    def run_unless_downloading[T](
+        self, video_id: str, write: Callable[[], T]
+    ) -> T | None:
+        """Run a cache write only while no download owns the track's audio file.
+
+        A download claims the track before it touches the file, and this holds
+        the same lock for the whole write, so the two can never write at once.
+        Returns None, without writing, when a download is active.
+        """
+        with self.lock:
+            if self._is_active(video_id):
+                return None
+            return write()
+
+    def _is_active(self, video_id: str) -> bool:
+        active = self.active_downloads.get(video_id)
+        return bool(
+            active
+            and active.get("status")
+            in {DownloadStatus.STARTING, DownloadStatus.DOWNLOADING}
+        )
+
+    def _claim(self, video_id: str) -> bool:
+        """Take ownership of a track's audio file; False if a download holds it."""
+        with self.lock:
+            if self._is_active(video_id):
+                return False
+            self.active_downloads[video_id] = {
+                "status": DownloadStatus.STARTING,
+                "progress": 0,
+                "total": 0,
+            }
+            return True
+
+    def _release_claim(self, video_id: str) -> None:
+        """Give the track back if its download ended without a final state."""
+        with self.lock:
+            if self._is_active(video_id):
+                self.active_downloads[video_id]["status"] = DownloadStatus.STOPPED
+
     def _download_task(self, request: DownloadRequest) -> bool:
+        try:
+            return self._run_download(request)
+        finally:
+            self._release_claim(request.video_id)
+
+    def _run_download(self, request: DownloadRequest) -> bool:
         if self.thread_manager.is_shutdown():
             self.logger.debug(
                 "Skipping download of %s during shutdown", request.video_id

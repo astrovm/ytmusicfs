@@ -54,6 +54,9 @@ class TestFileHandler(unittest.TestCase):
         # Initialize class attributes
         self.file_handler.next_fh = 1
         self.file_handler.downloader = Mock()
+        self.file_handler.downloader.run_unless_downloading.side_effect = (
+            lambda _video_id, write: write()
+        )
         self.file_handler.futures = {}
 
         # Patch _check_cached_audio method to return False by default
@@ -1470,6 +1473,9 @@ class _RealFileHandlerMixin:
         )
         self.handler.downloader = Mock()
         self.handler.downloader.get_progress.return_value = None
+        self.handler.downloader.run_unless_downloading.side_effect = (
+            lambda _video_id, write: write()
+        )
         self.audio_dir = self.cache_dir / "audio"
         self.audio_dir.mkdir(parents=True)
 
@@ -1879,6 +1885,9 @@ class TestFileHandlerStreaming(unittest.TestCase):
         )
         self.handler.downloader = Mock()
         self.handler.downloader.get_progress.return_value = None
+        self.handler.downloader.run_unless_downloading.side_effect = (
+            lambda _video_id, write: write()
+        )
 
     def tearDown(self):
         shutil.rmtree(self.temp_dir, ignore_errors=True)

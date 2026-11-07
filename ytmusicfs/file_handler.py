@@ -7,6 +7,7 @@ import time
 from collections import deque
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
@@ -779,18 +780,34 @@ class FileHandler:
         if not isinstance(format_id, str) or not format_id:
             return
 
-        cache_path = Path(file_info["cache_path"])
-        status_path = cache_path.with_name(f"{file_info['video_id']}.status")
+        self.downloader.run_unless_downloading(
+            file_info["video_id"],
+            partial(
+                self._append_to_audio_cache,
+                Path(file_info["cache_path"]),
+                format_id,
+                offset,
+                data,
+            ),
+        )
+
+    def _append_to_audio_cache(
+        self, cache_path: Path, format_id: str, offset: int, data: bytes
+    ) -> None:
+        """Append the part of data past the end of a file this handle may extend."""
+        status_path = cache_path.with_suffix(".status")
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         try:
+            # Only a new file or this format's own partial file belongs to a handle.
+            if self._read_cache_status(status_path) not in ("", f"partial:{format_id}"):
+                return
             current_size = cache_path.stat().st_size if cache_path.exists() else 0
             if offset > current_size:
                 return
             if offset + len(data) <= current_size:
                 return
-            start = max(current_size - offset, 0)
             with cache_path.open("ab") as cached:
-                cached.write(data[start:])
+                cached.write(data[current_size - offset :])
             status_path.write_text(f"partial:{format_id}")
             self._record_stat("progressive_cache_writes")
         except OSError as exc:
