@@ -605,7 +605,7 @@ class TestDownloader(unittest.TestCase):
         self.assertFalse(self.downloader._download_task(self._request(retries=3)))
 
         self.assertEqual(self.audio_path.read_bytes(), self.VALID_M4A[:50])
-        self.assertEqual(self.status_path.read_text(), "interrupted")
+        self.assertEqual(self.status_path.read_text(), "interrupted:141")
         self.assertTrue(self.downloader.get_progress("abc123")["stop_requested"])
         mock_get.assert_called_once()
         mock_sleep.assert_not_called()
@@ -687,6 +687,7 @@ class TestDownloader(unittest.TestCase):
             ("complete:141", "141"),
             ("downloading:140", "140"),
             ("partial:140", "140"),
+            ("interrupted:139", "139"),
             ("failed:139", "139"),
             ("interrupted", None),
         ):

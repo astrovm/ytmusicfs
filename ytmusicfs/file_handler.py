@@ -781,9 +781,13 @@ class FileHandler:
     def _cache_status_matches(status: str, format_id: Any) -> bool:
         if status == "failed" or status.startswith("failed:"):
             return False
-        return not status.startswith("partial:") or (
-            status.removeprefix("partial:") == format_id
-        )
+        if status == "interrupted":
+            # Written before the format was recorded: whose bytes are these?
+            return False
+        for prefix in ("partial:", "interrupted:"):
+            if status.startswith(prefix):
+                return bool(status.removeprefix(prefix) == format_id)
+        return True
 
     def _write_progressive_audio_cache(
         self, file_info: FileHandleState, offset: int, data: bytes
