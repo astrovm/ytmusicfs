@@ -301,6 +301,111 @@ class TestHandleLeavesFilesItDoesNotOwn(AudioFileOwnershipTestCase):
         stats.assert_not_called()
 
 
+class TestInterruptedDownloadKeepsItsFormat(AudioFileOwnershipTestCase):
+    """A download stopped half way must not feed its bytes to another format."""
+
+    def interrupt_a_140_download(self):
+        def stop_after_first_chunk(start):
+            if start == 0:
+                self.handler.downloader.stop_download("vid")
+
+        def get_140(_url, headers=None, **_kwargs):
+            return serve(headers, audio=OTHER_FORMAT, on_chunk=stop_after_first_chunk)
+
+        with (
+            patch(
+                "ytmusicfs.downloader.http_head",
+                lambda _u, headers=None, **_k: serve(headers, audio=OTHER_FORMAT),
+            ),
+            patch("ytmusicfs.downloader.http_get", get_140),
+        ):
+            self.assertFalse(
+                self.handler.downloader.download_file_now(self.request(format_id="140"))
+            )
+
+    def download_141(self, ranges=None):
+        def get(_url, headers=None, **_kwargs):
+            if ranges is not None:
+                ranges.append((headers or {}).get("Range"))
+            return serve(headers)
+
+        with (
+            patch(
+                "ytmusicfs.downloader.http_head",
+                lambda _u, headers=None, **_k: serve(headers),
+            ),
+            patch("ytmusicfs.downloader.http_get", get),
+        ):
+            return self.handler.downloader.download_file_now(self.request())
+
+    def test_a_141_download_after_an_interrupted_140_one_equals_the_source(self):
+        self.interrupt_a_140_download()
+        self.assertGreater(self.cached.stat().st_size, 0)
+        self.assertLess(self.cached.stat().st_size, len(OTHER_FORMAT))
+
+        self.assertTrue(self.download_141())
+
+        self.assertCachedEqualsSource()
+        self.assertEqual(self.status.read_text(), "complete:141")
+
+    def test_the_interrupted_status_names_the_format_being_downloaded(self):
+        self.interrupt_a_140_download()
+
+        self.assertEqual(self.status.read_text(), "interrupted:140")
+
+    def test_an_interrupted_download_resumes_in_its_own_format(self):
+        self.cached.write_bytes(SOURCE[:1000])
+        self.status.write_text("interrupted:141")
+        ranges = []
+
+        self.assertTrue(self.download_141(ranges))
+
+        self.assertEqual(ranges[-1], "bytes=1000-")
+        self.assertCachedEqualsSource()
+
+    def test_an_old_interrupted_file_of_unknown_format_starts_over(self):
+        # Status files written before the format was recorded just say this.
+        self.cached.write_bytes(OTHER_FORMAT[:1000])
+        self.status.write_text("interrupted")
+        ranges = []
+
+        self.assertTrue(self.download_141(ranges))
+
+        self.assertIsNone(ranges[-1])
+        self.assertCachedEqualsSource()
+        self.assertEqual(self.status.read_text(), "complete:141")
+
+    def test_a_stop_before_the_status_file_exists_still_marks_it_interrupted(self):
+        self.handler.downloader.active_downloads["vid"] = {
+            "status": DownloadStatus.STARTING
+        }
+
+        self.handler.downloader.stop_download("vid")
+
+        self.assertEqual(self.status.read_text(), "interrupted")
+
+    def test_a_read_in_another_format_does_not_get_interrupted_bytes(self):
+        for status in ("interrupted:140", "interrupted"):
+            with self.subTest(status=status):
+                self.cached.write_bytes(OTHER_FORMAT[:1000])
+                self.status.write_text(status)
+                fh = self.open_handle("141")
+
+                with self.fake_http()[2]:
+                    data = self.handler.read(PATH, 500, 0, fh)
+
+                self.assertEqual(data, SOURCE[:500])
+
+    def test_a_read_in_the_same_format_gets_the_bytes_it_cached(self):
+        self.cached.write_bytes(SOURCE[:1000])
+        self.status.write_text("interrupted:141")
+        fh = self.open_handle("141")
+
+        data = self.handler.read(PATH, 500, 0, fh)
+
+        self.assertEqual(data, SOURCE[:500])
+
+
 class TestProgressiveWriteOffsets(AudioFileOwnershipTestCase):
     def test_an_overlapping_read_appends_only_the_new_bytes(self):
         self.cached.write_bytes(SOURCE[:100])

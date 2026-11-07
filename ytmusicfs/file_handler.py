@@ -16,6 +16,7 @@ import requests
 from ytmusicfs.dependencies import DownloaderDependencies, FileHandlerDependencies
 from ytmusicfs.downloader import Downloader
 from ytmusicfs.http_utils import ensure_headers_and_cookies, http_get
+from ytmusicfs.logging_utils import add_secret_redaction, redact_log_text
 from ytmusicfs.models import (
     DownloadProgress,
     DownloadRequest,
@@ -47,7 +48,7 @@ class FileHandler:
         self.cache_dir = dependencies.cache_dir
         self.browser = dependencies.browser
         self.cache = dependencies.cache
-        self.logger = dependencies.logger
+        self.logger = add_secret_redaction(dependencies.logger)
         self.update_file_size_callback = dependencies.update_file_size
         self.record_stat_callback = dependencies.record_stat
         self.get_file_size_callback = dependencies.get_file_size
@@ -61,6 +62,7 @@ class FileHandler:
         self.file_handle_lock = dependencies.thread_manager.create_lock()
         self.logger.debug("Using ThreadManager for lock creation in FileHandler")
         self.futures: dict[str, Future[Any]] = {}
+        self.futures_lock = threading.Lock()
         self.stream_info_cache: dict[str, dict[str, Any]] = {}
         self.recent_handles: deque[dict[str, Any]] = deque(maxlen=100)
         self.range_index: dict[Path, list[tuple[int, int, Path]]] = {}
@@ -398,7 +400,8 @@ class FileHandler:
             file_info["status"] = "error"
             file_info["error"] = error_msg
         if not isinstance(error, FutureTimeoutError):
-            self.futures.pop(video_id, None)
+            with self.futures_lock:
+                self.futures.pop(video_id, None)
         raise OSError(error_code, error_msg) from error
 
     def _attempt_auto_repair(
@@ -421,7 +424,8 @@ class FileHandler:
             file_info["stream_url"] = None
             file_info["status"] = "ready"
             file_info["error"] = None
-        self.futures.pop(old_video_id, None)
+        with self.futures_lock:
+            self.futures.pop(old_video_id, None)
         self._extract_and_apply_stream(new_video_id, file_info)
         return True
 
@@ -541,16 +545,24 @@ class FileHandler:
         return True
 
     def _get_stream_info(self, video_id: str) -> dict[str, Any]:
-        if video_id in self.futures:
-            future = self.futures[video_id]
-        else:
+        # Reads of one track share a single extraction. Looking up, starting and
+        # removing it each happen under the lock, so two reads cannot both start
+        # one or both remove it. The lock is never held while waiting.
+        with self.futures_lock:
+            future = self.futures.get(video_id)
+            started = future is None
+            if future is None:
+                future = self.yt_dlp_utils.extract_stream_url_async(
+                    video_id, self.browser
+                )
+                self.futures[video_id] = future
+        if started:
             self._record_stat("stream_extractions")
-            future = self.yt_dlp_utils.extract_stream_url_async(video_id, self.browser)
-            self.futures[video_id] = future
 
         result = future.result(timeout=30)
-        if video_id in self.futures:
-            del self.futures[video_id]
+        with self.futures_lock:
+            if self.futures.get(video_id) is future:
+                del self.futures[video_id]
         if not isinstance(result, dict):
             raise OSError(errno.EIO, "Invalid stream extraction result")
         return cast("dict[str, Any]", result)
@@ -576,17 +588,21 @@ class FileHandler:
                 f"Refusing fallback format {format_id} after cached preferred ranges",
             )
         stream_url = result["stream_url"]
-        self.logger.debug("yt-dlp stream url for %s: %s...", video_id, stream_url[:60])
+        self.logger.debug(
+            "yt-dlp stream url for %s: %s...",
+            video_id,
+            redact_log_text(stream_url)[:60],
+        )
 
         raw_headers = dict(result.get("http_headers") or {})
         if raw_headers:
             self.logger.debug("yt-dlp headers for %s: %s", video_id, list(raw_headers))
         if "Cookie" in raw_headers or "cookie" in raw_headers:
-            cookie_preview = raw_headers.get("Cookie") or raw_headers.get("cookie")
+            cookie_header = raw_headers.get("Cookie") or raw_headers.get("cookie")
             self.logger.debug(
                 "yt-dlp cookie header for %s: %s",
                 video_id,
-                cookie_preview[:120] if cookie_preview else "empty",
+                "present" if cookie_header else "empty",
             )
 
         auth_headers, cookies = ensure_headers_and_cookies(
@@ -765,9 +781,13 @@ class FileHandler:
     def _cache_status_matches(status: str, format_id: Any) -> bool:
         if status == "failed" or status.startswith("failed:"):
             return False
-        return not status.startswith("partial:") or (
-            status.removeprefix("partial:") == format_id
-        )
+        if status == "interrupted":
+            # Written before the format was recorded: whose bytes are these?
+            return False
+        for prefix in ("partial:", "interrupted:"):
+            if status.startswith(prefix):
+                return bool(status.removeprefix(prefix) == format_id)
+        return True
 
     def _write_progressive_audio_cache(
         self, file_info: FileHandleState, offset: int, data: bytes

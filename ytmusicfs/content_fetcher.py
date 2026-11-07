@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from ytmusicfs.dependencies import ContentFetcherDependencies, RepairDependencies
+from ytmusicfs.logging_utils import add_secret_redaction
 from ytmusicfs.models import RefreshStatus, RegistryEntry
 from ytmusicfs.yt_dlp_utils import PARTIAL_PLAYLIST_COMPLETE_RATIO
 
@@ -33,7 +34,7 @@ class ContentFetcher:
         self.client = dependencies.client
         self.processor = dependencies.processor
         self.cache = dependencies.cache
-        self.logger = dependencies.logger
+        self.logger = add_secret_redaction(dependencies.logger)
         self.browser = dependencies.browser
         self.yt_dlp_utils = dependencies.yt_dlp
         self.PLAYLIST_REGISTRY: list[RegistryEntry] = []

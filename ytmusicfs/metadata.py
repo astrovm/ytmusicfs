@@ -4,6 +4,8 @@ import errno
 import os
 from typing import TYPE_CHECKING, Any
 
+from ytmusicfs.logging_utils import add_secret_redaction
+
 if TYPE_CHECKING:
     import logging
 
@@ -19,7 +21,7 @@ class MetadataManager:
         content_fetcher: Any = None,
     ) -> None:
         self.cache = cache
-        self.logger = logger
+        self.logger = add_secret_redaction(logger)
         self.thread_manager = thread_manager
         self.content_fetcher = content_fetcher
         self.video_id_cache: dict[str, str] = {}

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from yt_dlp import YoutubeDL
 
+from ytmusicfs.logging_utils import add_secret_redaction
 from ytmusicfs.retry import RetryPolicy
 
 if TYPE_CHECKING:
@@ -77,7 +78,7 @@ class YTDLPUtils:
             logger: Logger instance for logging
         """
         self.thread_manager = thread_manager
-        self.logger = logger or logging.getLogger("YTDLPUtils")
+        self.logger = add_secret_redaction(logger or logging.getLogger("YTDLPUtils"))
         self._browser_cookie_files: dict[str, str] = {}
         self._browser_cookie_file_times: dict[str, float] = {}
         self._cookie_lock = threading.Lock()

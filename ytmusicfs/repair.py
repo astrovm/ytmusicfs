@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ytmusicfs.logging_utils import add_secret_redaction
+
 if TYPE_CHECKING:
     from ytmusicfs.dependencies import RepairDependencies
 
@@ -30,7 +32,9 @@ class LikedSongsRepairer:
         self.yt_dlp_utils = dependencies.yt_dlp
         self.browser = dependencies.browser
         self.sync_account = dependencies.sync_account
-        self.logger = dependencies.logger or logging.getLogger("YTMusicFS")
+        self.logger = add_secret_redaction(
+            dependencies.logger or logging.getLogger("YTMusicFS")
+        )
 
     def repair(self) -> dict[str, int]:
         repairs, dead_tracks, stats = self.plan_repairs()

@@ -6,6 +6,7 @@ import time
 from typing import TYPE_CHECKING
 
 from ytmusicfs.http_utils import ensure_headers_and_cookies, http_get, http_head
+from ytmusicfs.logging_utils import add_secret_redaction
 from ytmusicfs.models import DownloadProgress, DownloadRequest, DownloadStatus
 from ytmusicfs.retry import RetryPolicy
 
@@ -24,7 +25,7 @@ class Downloader:
 
     def __init__(self, dependencies: DownloaderDependencies) -> None:
         self.cache_dir = dependencies.cache_dir
-        self.logger = dependencies.logger
+        self.logger = add_secret_redaction(dependencies.logger)
         self.update_file_size_callback = dependencies.update_file_size
         self.thread_manager = dependencies.thread_manager
         self.active_downloads: dict[str, DownloadProgress] = {}
@@ -123,7 +124,12 @@ class Downloader:
         ):
             return True
 
-        if cached_format not in (None, request.format_id):
+        # A bare "interrupted" is from before the format was recorded: the bytes
+        # could be any format's, so none of them can be resumed.
+        if (
+            cached_format not in (None, request.format_id)
+            or status_text == "interrupted"
+        ):
             audio_path.unlink(missing_ok=True)
         downloaded = audio_path.stat().st_size if audio_path.exists() else 0
         self._set_progress(
@@ -342,7 +348,13 @@ class Downloader:
             status = status_path.read_text().strip()
         except OSError:
             return None
-        for prefix in ("complete:", "downloading:", "partial:", "failed:"):
+        for prefix in (
+            "complete:",
+            "downloading:",
+            "partial:",
+            "interrupted:",
+            "failed:",
+        ):
             if status.startswith(prefix):
                 return status.removeprefix(prefix)
         return None
@@ -450,9 +462,18 @@ class Downloader:
 
                 if self.active_downloads[video_id]["status"] != "complete":
                     status_path = self.cache_dir / "audio" / f"{video_id}.status"
+                    # Name the format, so the next download can tell whose bytes
+                    # are on disk. Without one (a stop before the status file
+                    # exists) the marker is bare.
+                    format_id = self._cached_status_format(status_path)
+                    marker = (
+                        "interrupted"
+                        if format_id is None
+                        else f"interrupted:{format_id}"
+                    )
                     try:
                         with status_path.open("w") as sf:
-                            sf.write("interrupted")
+                            sf.write(marker)
                     except Exception as e:
                         self.logger.warning(
                             f"Failed to update status file for {video_id}: {e}"

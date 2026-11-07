@@ -15,6 +15,7 @@ from typing import Any, ClassVar
 from ytmusicfs import __version__
 from ytmusicfs.config import ConfigManager
 from ytmusicfs.dependencies import RepairDependencies
+from ytmusicfs.logging_utils import add_secret_redaction
 
 LOG_DIR = Path.home() / ".cache" / "ytmusicfs" / "logs"
 LOG_FILE = LOG_DIR / "ytmusicfs.log"
@@ -89,11 +90,13 @@ def setup_logging(args: argparse.Namespace) -> logging.Logger:
     log_level = logging.DEBUG if args.debug else logging.INFO
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
-    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    handlers: list[logging.Handler] = [
+        add_secret_redaction(logging.StreamHandler(sys.stdout))
+    ]
     foreground = getattr(args, "foreground", False)
     if not foreground and not getattr(args, "skip_log_file", False):
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(str(LOG_FILE)))
+        handlers.append(add_secret_redaction(logging.FileHandler(str(LOG_FILE))))
 
     # force closes handlers from an earlier call instead of leaking their files.
     logging.basicConfig(
@@ -131,7 +134,7 @@ class MountCommandHandler:
             logger: Logger instance.
         """
         self.args = args
-        self.logger = logger
+        self.logger = add_secret_redaction(logger)
         self.config = ConfigManager(
             cache_dir=args.cache_dir,
             logger=logger,
@@ -221,7 +224,7 @@ class UnmountCommandHandler:
     def __init__(self, args: argparse.Namespace, logger: logging.Logger) -> None:
         """Initialize the unmount command handler."""
         self.args = args
-        self.logger = logger
+        self.logger = add_secret_redaction(logger)
         self.config = ConfigManager(
             cache_dir=args.cache_dir,
             logger=logger,
@@ -317,7 +320,7 @@ class StatusCommandHandler:
 
     def __init__(self, args: argparse.Namespace, logger: logging.Logger) -> None:
         self.args = args
-        self.logger = logger
+        self.logger = add_secret_redaction(logger)
         self.config = ConfigManager(cache_dir=args.cache_dir, logger=logger)
 
     def execute(self) -> int:
@@ -353,7 +356,7 @@ class ConfigCommandHandler:
 
     def __init__(self, args: argparse.Namespace, logger: logging.Logger) -> None:
         self.args = args
-        self.logger = logger
+        self.logger = add_secret_redaction(logger)
         self.config = ConfigManager(cache_dir=args.cache_dir, logger=logger)
 
     def execute(self) -> int:
@@ -386,7 +389,7 @@ class DoctorCommandHandler:
 
     def __init__(self, args: argparse.Namespace, logger: logging.Logger) -> None:
         self.args = args
-        self.logger = logger
+        self.logger = add_secret_redaction(logger)
         self.config = ConfigManager(cache_dir=args.cache_dir, logger=logger)
 
     def execute(self) -> int:
@@ -416,7 +419,7 @@ class CacheCommandHandler:
 
     def __init__(self, args: argparse.Namespace, logger: logging.Logger) -> None:
         self.args = args
-        self.logger = logger
+        self.logger = add_secret_redaction(logger)
         self.config = ConfigManager(cache_dir=args.cache_dir, logger=logger)
 
     def execute(self) -> int:
@@ -526,7 +529,7 @@ class RepairCommandHandler:
 
     def __init__(self, args: argparse.Namespace, logger: logging.Logger) -> None:
         self.args = args
-        self.logger = logger
+        self.logger = add_secret_redaction(logger)
         self.config = ConfigManager(cache_dir=args.cache_dir, logger=logger)
 
     def execute(self) -> int:
@@ -617,7 +620,7 @@ class LogsCommandHandler:
 
     def __init__(self, args: argparse.Namespace, logger: logging.Logger) -> None:
         self.args = args
-        self.logger = logger
+        self.logger = add_secret_redaction(logger)
 
     def execute(self) -> int:
         if not LOG_FILE.exists():
@@ -639,7 +642,7 @@ class ServiceCommandHandler:
 
     def __init__(self, args: argparse.Namespace, logger: logging.Logger) -> None:
         self.args = args
-        self.logger = logger
+        self.logger = add_secret_redaction(logger)
         self.config = ConfigManager(logger=logger)
 
     def execute(self) -> int:

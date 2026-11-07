@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 from cachetools import LRUCache
 
+from ytmusicfs.logging_utils import add_secret_redaction
+
 if TYPE_CHECKING:
     import builtins
     from collections.abc import Iterable
@@ -45,7 +47,7 @@ class CacheManager:
             maxsize: Maximum number of items to keep in memory cache (default: 1000)
             logger: Logger instance to use
         """
-        self.logger = logger or logging.getLogger("CacheManager")
+        self.logger = add_secret_redaction(logger or logging.getLogger("CacheManager"))
 
         if cache_dir:
             self.cache_dir = Path(cache_dir)

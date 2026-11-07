@@ -28,6 +28,7 @@ from ytmusicfs.dependencies import (
     RepairDependencies,
 )
 from ytmusicfs.file_handler import FileHandler
+from ytmusicfs.logging_utils import add_secret_redaction
 from ytmusicfs.metadata import MetadataManager
 from ytmusicfs.path_router import PathRouter
 from ytmusicfs.processor import TrackProcessor
@@ -89,7 +90,7 @@ class YouTubeMusicFS(Operations):  # type: ignore[misc]
         browser: str = "",
     ) -> None:
         """Build the filesystem components in dependency order."""
-        self.logger = logging.getLogger("YTMusicFS")
+        self.logger = add_secret_redaction(logging.getLogger("YTMusicFS"))
         self.browser = browser
         self._initialize_components(cache_dir)
         self._initialize_runtime_state()
