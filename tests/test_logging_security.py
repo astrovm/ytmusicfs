@@ -18,9 +18,7 @@ HEADER_COOKIE_SECRET = "header-cookie-secret"
 HEADER_AUTH_SECRET = "header-auth-secret"
 COOKIE_MAP_SECRET = "cookie-map-secret"
 COOKIE_FILE_SECRET = "cookie-file-secret"
-SIGNED_URL = (
-    "https://googlevideo.com/videoplayback" f"?expire=123&sig={SIGNED_URL_SECRET}"
-)
+SIGNED_URL = f"https://googlevideo.com/videoplayback?expire=123&sig={SIGNED_URL_SECRET}"
 SECRETS = (
     SIGNED_URL_SECRET,
     HEADER_COOKIE_SECRET,
@@ -72,6 +70,22 @@ def _secret_error(prefix: str) -> RuntimeError:
 def _assert_no_secrets(output: str) -> None:
     for secret in SECRETS:
         assert secret not in output
+
+
+@pytest.fixture
+def restore_root_logging():
+    root = logging.getLogger()
+    saved_handlers = list(root.handlers)
+    saved_level = root.level
+    yield
+    for handler in list(root.handlers):
+        if handler not in saved_handlers:
+            root.removeHandler(handler)
+            handler.close()
+    for handler in saved_handlers:
+        if handler not in root.handlers:
+            root.addHandler(handler)
+    root.setLevel(saved_level)
 
 
 def test_stream_info_logs_no_request_secrets(tmp_path):
@@ -201,9 +215,11 @@ def test_main_read_and_download_logs_exclude_secrets(tmp_path):
         retries=1,
     )
 
-    with patch("ytmusicfs.file_handler.http_get", side_effect=_secret_error("read")):
-        with pytest.raises(OSError):
-            handler.read("/song.m4a", 32, 0, file_handle)
+    with (
+        patch("ytmusicfs.file_handler.http_get", side_effect=_secret_error("read")),
+        pytest.raises(OSError),
+    ):
+        handler.read("/song.m4a", 32, 0, file_handle)
     with patch("ytmusicfs.downloader.http_head", side_effect=_secret_error("download")):
         assert not handler.downloader.download_file_now(request)
 
@@ -215,7 +231,7 @@ def test_main_read_and_download_logs_exclude_secrets(tmp_path):
     [logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR, logging.CRITICAL],
 )
 def test_configured_logging_redacts_request_secrets_at_every_level(
-    level, capsys, tmp_path, monkeypatch
+    level, capsys, tmp_path, monkeypatch, restore_root_logging
 ):
     monkeypatch.setattr("ytmusicfs.cli.LOG_DIR", tmp_path / "logs")
     monkeypatch.setattr("ytmusicfs.cli.LOG_FILE", tmp_path / "logs" / "ytmusicfs.log")
