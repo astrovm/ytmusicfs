@@ -62,6 +62,7 @@ class FileHandler:
         self.file_handle_lock = dependencies.thread_manager.create_lock()
         self.logger.debug("Using ThreadManager for lock creation in FileHandler")
         self.futures: dict[str, Future[Any]] = {}
+        self.futures_lock = threading.Lock()
         self.stream_info_cache: dict[str, dict[str, Any]] = {}
         self.recent_handles: deque[dict[str, Any]] = deque(maxlen=100)
         self.range_index: dict[Path, list[tuple[int, int, Path]]] = {}
@@ -399,7 +400,8 @@ class FileHandler:
             file_info["status"] = "error"
             file_info["error"] = error_msg
         if not isinstance(error, FutureTimeoutError):
-            self.futures.pop(video_id, None)
+            with self.futures_lock:
+                self.futures.pop(video_id, None)
         raise OSError(error_code, error_msg) from error
 
     def _attempt_auto_repair(
@@ -422,7 +424,8 @@ class FileHandler:
             file_info["stream_url"] = None
             file_info["status"] = "ready"
             file_info["error"] = None
-        self.futures.pop(old_video_id, None)
+        with self.futures_lock:
+            self.futures.pop(old_video_id, None)
         self._extract_and_apply_stream(new_video_id, file_info)
         return True
 
@@ -542,16 +545,24 @@ class FileHandler:
         return True
 
     def _get_stream_info(self, video_id: str) -> dict[str, Any]:
-        if video_id in self.futures:
-            future = self.futures[video_id]
-        else:
+        # Reads of one track share a single extraction. Looking up, starting and
+        # removing it each happen under the lock, so two reads cannot both start
+        # one or both remove it. The lock is never held while waiting.
+        with self.futures_lock:
+            future = self.futures.get(video_id)
+            started = future is None
+            if future is None:
+                future = self.yt_dlp_utils.extract_stream_url_async(
+                    video_id, self.browser
+                )
+                self.futures[video_id] = future
+        if started:
             self._record_stat("stream_extractions")
-            future = self.yt_dlp_utils.extract_stream_url_async(video_id, self.browser)
-            self.futures[video_id] = future
 
         result = future.result(timeout=30)
-        if video_id in self.futures:
-            del self.futures[video_id]
+        with self.futures_lock:
+            if self.futures.get(video_id) is future:
+                del self.futures[video_id]
         if not isinstance(result, dict):
             raise OSError(errno.EIO, "Invalid stream extraction result")
         return cast("dict[str, Any]", result)
