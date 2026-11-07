@@ -156,10 +156,18 @@ jobs:
         run: |
           lived=$(cat results/*/lived.txt 2>/dev/null | sort -u || true)
           parts=$(jq -r 'map(tostring) | join(", ")' <<< "$PARTS")
+          # A part whose job died leaves no artifact, so its mutants are in no list below.
+          lost=$(jq -r '.[]' <<< "$PARTS" | while read -r part; do
+            [ -d "results/mutants-part-$part" ] || echo "$part"
+          done | paste -sd, - | sed 's/,/, /g')
           {
             echo "Parts $parts of 64: [run]($RUN), jobs $JOBS."
             echo
-            if [ -z "$lived" ]; then
+            if [ -n "$lost" ]; then
+              echo "**No results from part $lost, so its mutants are not listed.** Rerun the failed jobs of the run."
+              echo
+            fi
+            if [ -z "$lived" ] && [ -z "$lost" ]; then
               echo 'Every change in these parts was caught by a test.'
             else
               echo "### Lived ($(wc -l <<< "$lived"))"
@@ -177,4 +185,5 @@ jobs:
           fi
           has_findings=false
           [ -z "$lived" ] || has_findings=true
+          [ -z "$lost" ] || has_findings=true
           scripts/mutants-post.sh report.md "$has_findings"
