@@ -379,6 +379,64 @@ class TestCacheDownloadStartsOnce(AudioFileOwnershipTestCase):
         self.assertGreater(size_at_start, 0)
         self.assertEqual(self.cached.stat().st_size, size_at_start)
 
+    def test_it_counts_the_bytes_read_and_the_background_download(self):
+        self.handler.downloader = Mock()
+        self.handler.record_stat_callback = Mock()
+        info = self.handler.open_files[self.open_handle()]
+
+        self.handler._maybe_start_cache_download(PATH, info, 10)
+        self.assertEqual(info["bytes_read"], 10)
+        self.handler._maybe_start_cache_download(
+            PATH, info, FileHandler.CACHE_START_BYTES
+        )
+
+        self.handler.record_stat_callback.assert_called_once_with(
+            "background_downloads"
+        )
+
+    def test_it_starts_nothing_for_a_track_served_from_the_cache(self):
+        self.handler.downloader = Mock()
+        info = self.handler.open_files[self.open_handle()]
+        info["stream_url"] = "cached"
+
+        self.handler._maybe_start_cache_download(PATH, info, 10**7)
+
+        self.assertEqual(info["bytes_read"], 0)
+        self.handler.downloader.download_file.assert_not_called()
+
+    def test_it_starts_nothing_without_a_usable_format_and_stream_url(self):
+        self.handler.downloader = Mock()
+        info = self.handler.open_files[self.open_handle()]
+        for field, value in (
+            ("format_id", 141),
+            ("format_id", ""),
+            ("stream_url", None),
+        ):
+            with self.subTest(field=field, value=value):
+                info.update(format_id="141", stream_url=URL)
+                info[field] = value
+
+                self.handler._maybe_start_cache_download(PATH, info, 10**7)
+
+                self.handler.downloader.download_file.assert_not_called()
+                self.assertFalse(info.get("cache_started"))
+
+    def test_it_recreates_a_cache_folder_that_was_removed(self):
+        info = self.handler.open_files[self.open_handle()]
+        shutil.rmtree(self.cache_dir)
+
+        self.handler._write_progressive_audio_cache(info, 0, SOURCE[:100])
+
+        self.assertEqual(self.cached.read_bytes(), SOURCE[:100])
+
+    def test_a_handle_without_a_usable_format_writes_nothing(self):
+        info = self.handler.open_files[self.open_handle()]
+        info["format_id"] = 141
+
+        self.handler._write_progressive_audio_cache(info, 0, SOURCE[:100])
+
+        self.assertFalse(self.cached.exists())
+
     def test_the_download_it_started_leaves_exact_bytes(self):
         fh = self.open_handle()
         head, get, handler_get = self.fake_http()
@@ -444,7 +502,8 @@ class TestDownloaderOwnership(unittest.TestCase):
         self.downloader.download_file(self.request())
 
         self.assertEqual(
-            self.downloader.get_progress("vid")["status"], DownloadStatus.STARTING
+            self.downloader.get_progress("vid"),
+            {"status": DownloadStatus.STARTING, "progress": 0, "total": 0},
         )
         self.assertIsNone(self.downloader.run_unless_downloading("vid", lambda: 7))
 
