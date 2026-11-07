@@ -671,7 +671,7 @@ class TestDownloader(unittest.TestCase):
     def test_download_file_now_creates_the_audio_folder_on_a_fresh_cache(
         self, mock_head, mock_get
     ):
-        shutil.rmtree(self.cache_dir / "audio")
+        shutil.rmtree(self.cache_dir)
         mock_head.return_value = self._head(200, len(self.VALID_M4A))
         mock_get.return_value = self._get(200, [self.VALID_M4A])
 
