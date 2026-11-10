@@ -21,7 +21,7 @@ classifiers = [
 keywords = ["youtube", "music", "fuse", "filesystem", "streaming", "audio"]
 requires-python = ">=3.14"
 dependencies = [
-  "cachetools==7.2.8",
+  "cachetools==8.0.0",
   "fusepy==3.0.1",
   "requests==2.34.2",
   "yt-dlp==2026.10.26",
@@ -42,7 +42,7 @@ dev = [
   "pytest==9.2.0",
   "pytest-cov==7.1.0",
   "black==26.10.1",
-  "ruff==0.17.3",
+  "ruff==0.17.4",
   "mypy==2.4.1",
 ]
 mutants = ["mutmut==3.8.1"]
